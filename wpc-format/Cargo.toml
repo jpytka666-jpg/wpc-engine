@@ -1,0 +1,15 @@
+[package]
+name = "wpc-format"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency definitions for the WPC (Weight Pattern Compression) 6-byte block and the on-disk binary contract."
+
+[dependencies]
+half = "2.4"
+
+[lib]
+# Pure data definitions. No logic, no allocations, no std::arch.
+# This crate exists so the C++ side (via the documented binary layout) and
+# the Rust encoder / evaluator can share *exactly* the same struct layout
+# without any cross-language type generation.
+path = "src/lib.rs"
