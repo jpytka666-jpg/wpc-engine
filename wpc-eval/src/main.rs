@@ -4,7 +4,7 @@ use std::env;
 use std::time::Instant;
 use wpc_core::safetensors::extract_layers;
 use wpc_core::codebook::{PatternDict, BLOCK_DIM};
-use wpc_core::encoder::two_pass_encode;
+use wpc_core::encoder::{two_pass_encode, normalize_block, INPUT_SCALE};
 use wpc_format::{CompressedBlock, BLOCK_SIZE};
 use half::f16;
 use rand::{Rng, SeedableRng};
@@ -58,7 +58,12 @@ fn main() {
 
     // 1. Train Pattern Dictionary (L1)
     println!("Training L1 Pattern Dictionary (256 centroids, 16 iters)...");
-    let pattern_dict = PatternDict::train(&data_blocks, 256, 16);
+    // Must train in the same normalized space that nearest() is queried in
+    // at encode time (see wpc_core::encoder::normalize_block).
+    let normalized_blocks: Vec<[f32; BLOCK_DIM]> = data_blocks.iter()
+        .map(|b| normalize_block(b).norm)
+        .collect();
+    let pattern_dict = PatternDict::train(&normalized_blocks, 256, 16);
     
     // 2. Two-pass encode and train Residual Dictionary (L2)
     println!("Harvesting residuals and training L2 Residual Dictionary (65k centroids, 4 iters)...");
@@ -76,8 +81,12 @@ fn main() {
         (-2.0f32 * u1.ln()).sqrt() * (2.0f32 * std::f32::consts::PI * u2).cos()
     }).collect();
 
-    // Flatten dictionaries
-    let flat_patterns: Vec<f32> = pattern_dict.centroids.iter().flat_map(|b| b.iter().copied()).collect();
+    // Flatten dictionaries. The fused kernel expects on-disk-contract patterns
+    // (pre-divided by INPUT_SCALE) since it reconstructs via `pattern * scale + base`
+    // with no further division -- see wpc-format/src/lib.rs.
+    let flat_patterns: Vec<f32> = pattern_dict.centroids.iter()
+        .flat_map(|b| b.iter().map(|&v| v / INPUT_SCALE))
+        .collect();
     let flat_residuals: Vec<f16> = residual_dict.centroids_f16.iter().flat_map(|b| b.iter().copied()).collect();
 
     if !is_x86_feature_detected!("avx2")
@@ -146,10 +155,10 @@ fn main() {
         let r = &residual_dict.centroids_f16[b.residual_id as usize];
         let base = b.base_value.to_f32();
         let scale = b.scale as f32;
-        let s_decode = scale / 127.0;
-        
+        let s_decode = scale / INPUT_SCALE;
+
         for j in 0..BLOCK_DIM {
-            let approx = p[j] * s_decode + base + r[j].to_f32() / 127.0;
+            let approx = p[j] * s_decode + base + r[j].to_f32() / INPUT_SCALE;
             let orig = layer.data[i * BLOCK_DIM + j];
             let d = approx - orig;
             w_err_sq += d * d;

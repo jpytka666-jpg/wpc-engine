@@ -86,3 +86,62 @@ pub unsafe fn matvec_fp32_baseline(w: *const f32, x: *const f32, n: usize) -> f3
     }
     total
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const INV_INPUT_SCALE: f32 = 1.0 / 127.0;
+
+    /// This is the test that would have caught the 127x contract bug: it feeds
+    /// `matvec_wpc_fused` a pattern array in the documented on-disk convention
+    /// (pre-divided by INPUT_SCALE) and checks the generated weight against the
+    /// same formula wpc-eval's RMSE path and wpc-core's encoder use.
+    #[test]
+    fn fused_kernel_matches_documented_decode_formula() {
+        if !is_x86_feature_detected!("avx2")
+            || !is_x86_feature_detected!("fma")
+            || !is_x86_feature_detected!("f16c")
+        {
+            eprintln!("skipping: CPU lacks AVX2+FMA+F16C");
+            return;
+        }
+
+        let raw_centroid = [0.3_f32; BLOCK_SIZE]; // normalize_block()'s [-1,1] space
+        let on_disk_pattern: Vec<f32> = raw_centroid.iter().map(|&v| v / 127.0).collect();
+        let raw_residual = [12.5_f32; BLOCK_SIZE]; // exactly f16-representable; pre-INPUT_SCALE-multiplied as encoder.rs stores it
+        let residual_f16: Vec<f16> = raw_residual.iter().map(|&v| f16::from_f32(v)).collect();
+
+        let scale: i8 = 50;
+        let base: f32 = 0.2;
+        let block = CompressedBlock {
+            pattern_id: 0,
+            residual_id: 0,
+            base_value: f16::from_f32(base),
+            scale,
+        };
+        let x = [1.0f32; BLOCK_SIZE]; // activations: sum(w) is the expected dot product
+
+        let y = unsafe {
+            matvec_wpc_fused(
+                std::slice::from_ref(&block),
+                on_disk_pattern.as_ptr(),
+                residual_f16.as_ptr(),
+                x.as_ptr(),
+                1,
+            )
+        };
+
+        let mut expected = 0.0f32;
+        for j in 0..BLOCK_SIZE {
+            let w = raw_centroid[j] * (scale as f32 / 127.0) + base + raw_residual[j] * INV_INPUT_SCALE;
+            expected += w;
+        }
+
+        let rel_err = (y - expected).abs() / expected.abs().max(1e-6);
+        assert!(
+            rel_err < 1e-3,
+            "fused kernel y={y} vs documented-decode expected={expected} (rel_err={rel_err})"
+        );
+    }
+}

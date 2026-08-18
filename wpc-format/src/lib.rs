@@ -10,13 +10,27 @@
 //
 //   CompressedBlock (6 bytes, packed):
 //       offset 0 : u8   pattern_id   (0..255)
-//       offset 1 : u16  residual_id  (0..65535)        LE
+//       offset 1 : u16  residual_id  (0..RESIDUAL_COUNT-1, fits u16 while <=65536) LE
 //       offset 3 : f16  base_value   (IEEE 754 half)   LE
 //       offset 5 : i8   scale        (-127..127)
 //
 //   patterns.bin   : 256  * 16 * 4  = 16 384   bytes  (row-major f32 LE)
-//   residuals.bin  : 65536* 16 * 2  = 2 097 152 bytes  (row-major f16 LE)
+//   residuals.bin  : 8192 * 16 * 2  = 262 144  bytes  (row-major f16 LE)
 //   <name>.wpc     : N_BLOCKS * 6                   bytes  (CompressedBlock LE)
+//
+//   RESIDUAL_COUNT was cut from 65536 to 8192: ResidualDict::train() only
+//   ever subsampled 8192 points for k-means anyway (see wpc-core/codebook.rs),
+//   so requesting k=65536 just padded the dictionary with exact duplicate
+//   centroids. 8192 real centroids also makes ResidualDict::nearest()'s
+//   linear scan -- the main per-block encode cost -- 8x cheaper.
+//
+// Scaling contract (INPUT_SCALE = 127.0, see wpc_core::encoder::INPUT_SCALE):
+//   Values in patterns.bin are PRE-DIVIDED by INPUT_SCALE, so decode is a
+//   single FMA with no further division: weight = pattern[pid] * scale + base.
+//   Values in residuals.bin are stored RAW (not pre-divided); decode divides
+//   them by INPUT_SCALE: weight += residual[rid] / INPUT_SCALE.
+//   Both wpc-compiler (writer) and wpc-eval/fused_kernel (reader) must agree
+//   on this; a mismatch here silently produces weights off by ~INPUT_SCALE.
 //
 // The packed `#[repr(C, packed)]` attribute is critical: without it, the
 // compiler is free to insert padding and silently break the C++ decoder.
@@ -85,11 +99,43 @@ const _SIZE_CHECK: [(); 6] = [(); core::mem::size_of::<CompressedBlock>()];
 
 // -----------------------------------------------------------------------------
 // Dictionary dimensions — these are the C++ array sizes. Changing them
-// requires updating `L1_patterns[256][16]` and `L2_residuals[65536][16]`
-// in wpc_inference_engine.cpp.
+// requires updating `L1_patterns[256][16]` and `L2_residuals[RESIDUAL_COUNT][16]`
+// in wpc_inference_engine.cpp (not yet written -- wpc-engine/ is empty).
 // -----------------------------------------------------------------------------
 pub const PATTERN_COUNT: usize = 256;
-pub const RESIDUAL_COUNT: usize = 65536;
+pub const RESIDUAL_COUNT: usize = 8192;
 pub const BLOCK_SIZE: usize = 16;
 pub const PATTERN_TABLE_BYTES: usize = PATTERN_COUNT * BLOCK_SIZE * 4; // 16 384
-pub const RESIDUAL_TABLE_BYTES: usize = RESIDUAL_COUNT * BLOCK_SIZE * 2; // 2 097 152
+pub const RESIDUAL_TABLE_BYTES: usize = RESIDUAL_COUNT * BLOCK_SIZE * 2; // 262 144
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_le_bytes() {
+        let block = CompressedBlock {
+            pattern_id: 200,
+            residual_id: 54321,
+            base_value: f16::from_f32(-3.25),
+            scale: -100,
+        };
+        let bytes = block.to_le_bytes();
+        assert_eq!(CompressedBlock::from_le_bytes(&bytes), block);
+    }
+
+    #[test]
+    fn negative_scale_round_trips() {
+        // scale is i8 in [-127, 127]; make sure the u8 bit-cast in
+        // to_le_bytes/from_le_bytes doesn't corrupt negative values.
+        for scale in [-127i8, -1, 0, 1, 127] {
+            let block = CompressedBlock {
+                pattern_id: 0,
+                residual_id: 0,
+                base_value: f16::from_f32(0.0),
+                scale,
+            };
+            assert_eq!(CompressedBlock::from_le_bytes(&block.to_le_bytes()).scale, scale);
+        }
+    }
+}
