@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "wpc-format",
+    "wpc-eval", "wpc-core", "wpc-compiler",
+]
+exclude = [
+    "wpc-engine",  # C++ lives here, not a Rust crate
+]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
