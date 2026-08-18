@@ -66,7 +66,7 @@ fn main() {
     let pattern_dict = PatternDict::train(&normalized_blocks, 256, 16);
     
     // 2. Two-pass encode and train Residual Dictionary (L2)
-    println!("Harvesting residuals and training L2 Residual Dictionary (65k centroids, 4 iters)...");
+    println!("Harvesting residuals and training L2 Residual Dictionary ({} centroids, 4 iters)...", wpc_format::RESIDUAL_COUNT);
     let (blocks, residual_dict) = two_pass_encode(&layer.data[..n_blocks*BLOCK_SIZE], &pattern_dict, 4);
     
     let enc_ms = t0.elapsed().as_secs_f64() * 1e3;
