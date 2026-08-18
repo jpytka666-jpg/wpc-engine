@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "wpc-format",
     "wpc-eval", "wpc-core", "wpc-compiler",
+    "wpc-runtime",
 ]
 exclude = [
     "wpc-engine",  # C++ lives here, not a Rust crate

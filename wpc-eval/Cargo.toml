@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "WPC encoder, codebook trainer, and Fused-SIMD-compatible evaluator for real .safetensors LLM layers."
 
+[lib]
+name = "wpc_eval"
+path = "src/lib.rs"
+
 [[bin]]
 name = "wpc_eval"
 path = "src/main.rs"
