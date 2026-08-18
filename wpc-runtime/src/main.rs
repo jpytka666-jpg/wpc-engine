@@ -39,6 +39,11 @@ struct Args {
     #[arg(long, value_enum, default_value_t = Arch::Auto)]
     arch: Arch,
 
+    /// WPC compression scheme: "v1" (VQ-codebook) or "v2" (affine 6-bit).
+    /// Only used when --wpc is provided.
+    #[arg(long, default_value = "v1")]
+    scheme: String,
+
     /// Prompt text to complete.
     #[arg(long)]
     prompt: String,
@@ -85,12 +90,21 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
 
     let t0 = Instant::now();
     let model = if let Some(wpc_dir) = &args.wpc {
-        eprintln!(
-            "loading model weights (WPC-compressed) from {} (norms/biases from {}) ...",
-            wpc_dir.display(),
-            args.model.display()
-        );
-        Model::load_wpc(&args.model, wpc_dir, config)?
+        if args.scheme == "v2" {
+            eprintln!(
+                "loading model weights (WPC v2-compressed) from {} (norms/biases from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            Model::load_wpc_v2(&args.model, wpc_dir, config)?
+        } else {
+            eprintln!(
+                "loading model weights (WPC v1-compressed) from {} (norms/biases from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            Model::load_wpc(&args.model, wpc_dir, config)?
+        }
     } else {
         eprintln!("loading model weights (dense) from {} ...", args.model.display());
         Model::load(&args.model, config)?
@@ -139,12 +153,21 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
         .ok_or_else(|| anyhow::anyhow!("--wpc is required for Gemma4 (dense loading is not supported: weights don't fit in RAM)"))?;
 
     let t0 = Instant::now();
-    eprintln!(
-        "loading model weights (WPC-compressed) from {} (norms from {}) ...",
-        wpc_dir.display(),
-        args.model.display()
-    );
-    let model = Gemma4Model::load_wpc(&args.model, wpc_dir, config)?;
+    let model = if args.scheme == "v2" {
+        eprintln!(
+            "loading model weights (WPC v2-compressed) from {} (norms from {}) ...",
+            wpc_dir.display(),
+            args.model.display()
+        );
+        Gemma4Model::load_wpc_v2(&args.model, wpc_dir, config)?
+    } else {
+        eprintln!(
+            "loading model weights (WPC v1-compressed) from {} (norms from {}) ...",
+            wpc_dir.display(),
+            args.model.display()
+        );
+        Gemma4Model::load_wpc(&args.model, wpc_dir, config)?
+    };
     eprintln!("model loaded in {:?}", t0.elapsed());
 
     let prompt_ids = encode_prompt(tokenizer, &args.prompt)?;

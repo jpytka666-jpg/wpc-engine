@@ -1,6 +1,6 @@
 use std::arch::x86_64::*;
 use half::f16;
-use wpc_format::{CompressedBlock, BLOCK_SIZE};
+use wpc_format::{CompressedBlock, QuantBlockV2, BLOCK_SIZE, BLOCK_SIZE_V2};
 
 /// Sum of horizontal adds of a __m256. Standard AVX2 trick.
 #[inline]
@@ -87,6 +87,58 @@ pub unsafe fn matvec_fp32_baseline(w: *const f32, x: *const f32, n: usize) -> f3
     total
 }
 
+/// Fused-SIMD matvec for v2 format: `y = W @ x` where W is stored as a sequence
+/// of QuantBlockV2 blocks (132 bytes each: 4 bytes zero_point+scale, 128 u8 codes).
+///
+/// Each block's 128 weights are decoded via: value = zero_point + code * scale,
+/// then immediately consumed by FMA. Branch-free decode, no dictionary lookups.
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn matvec_v2_fused(
+    blocks: &[QuantBlockV2],
+    x: *const f32,
+    n_blocks: usize,
+) -> f32 {
+    let mut acc = _mm256_setzero_ps();
+    for i in 0..n_blocks {
+        let b = *blocks.get_unchecked(i);
+        let zp = _mm256_set1_ps(b.zero_point.to_f32());
+        let scl = _mm256_set1_ps(b.scale.to_f32());
+
+        // Process 128 codes in 16 groups of 8
+        for g in 0..16 {
+            let code_ptr = b.codes.as_ptr().add(g * 8);
+            let x_ptr = x.add(i * BLOCK_SIZE_V2 + g * 8);
+
+            // Load 8 u8 codes, zero-extend to i32, convert to f32
+            let codes_u8 = _mm_loadl_epi64(code_ptr as *const __m128i);
+            let codes_i32 = _mm256_cvtepu8_epi32(codes_u8);
+            let codes_f32 = _mm256_cvtepi32_ps(codes_i32);
+
+            // Decode: w = zero_point + code * scale
+            let w = _mm256_fmadd_ps(codes_f32, scl, zp);
+
+            // Load 8 activations and FMA
+            let x_vec = _mm256_loadu_ps(x_ptr);
+            acc = _mm256_fmadd_ps(w, x_vec, acc);
+        }
+    }
+    hsum_avx2(acc)
+}
+
+/// Scalar fallback for v2 matvec (no AVX2 available).
+pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
+    let mut acc = 0.0f32;
+    for b in blocks {
+        let zp = b.zero_point.to_f32();
+        let scale = b.scale.to_f32();
+        for (code_idx, &code) in b.codes.iter().enumerate() {
+            let weight = zp + code as f32 * scale;
+            acc += weight * x[code_idx];
+        }
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +195,81 @@ mod tests {
             rel_err < 1e-3,
             "fused kernel y={y} vs documented-decode expected={expected} (rel_err={rel_err})"
         );
+    }
+
+    #[test]
+    fn v2_matvec_varied_codes() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            eprintln!("skipping: CPU lacks AVX2+FMA");
+            return;
+        }
+
+        // Create a v2 block with varied code values (not all constant)
+        let mut codes = [0u8; BLOCK_SIZE_V2];
+        for i in 0..BLOCK_SIZE_V2 {
+            codes[i] = (i % 64) as u8; // Use varied values 0..63
+        }
+        let block = QuantBlockV2 {
+            zero_point: f16::from_f32(-1.0),
+            scale: f16::from_f32(0.032),
+            codes,
+        };
+
+        // Create varied activations
+        let mut x = [0.0f32; BLOCK_SIZE_V2];
+        for i in 0..BLOCK_SIZE_V2 {
+            x[i] = (i as f32 * 0.01 - 0.5) % 1.0; // Vary between -0.5 and 0.5
+        }
+
+        // Compute scalar reference
+        let mut expected = 0.0f32;
+        let zp = block.zero_point.to_f32();
+        let scale = block.scale.to_f32();
+        for i in 0..BLOCK_SIZE_V2 {
+            let w = zp + block.codes[i] as f32 * scale;
+            expected += w * x[i];
+        }
+
+        // Compute v2_fused
+        let y = unsafe {
+            matvec_v2_fused(std::slice::from_ref(&block), x.as_ptr(), 1)
+        };
+
+        let rel_err = (y - expected).abs() / expected.abs().max(1e-6);
+        assert!(
+            rel_err < 1e-2,
+            "v2_matvec y={y} vs expected={expected} (rel_err={rel_err})"
+        );
+    }
+
+    #[test]
+    fn v2_scalar_matches_reference() {
+        let mut codes = [0u8; BLOCK_SIZE_V2];
+        for i in 0..BLOCK_SIZE_V2 {
+            codes[i] = (i % 64) as u8;
+        }
+        let block = QuantBlockV2 {
+            zero_point: f16::from_f32(2.5),
+            scale: f16::from_f32(0.05),
+            codes,
+        };
+
+        let mut x = [1.0f32; BLOCK_SIZE_V2];
+        for i in 0..10 {
+            x[i] = 2.0;
+        }
+
+        let y = matvec_v2_scalar(std::slice::from_ref(&block), &x);
+
+        let mut expected = 0.0f32;
+        let zp = block.zero_point.to_f32();
+        let scale = block.scale.to_f32();
+        for i in 0..BLOCK_SIZE_V2 {
+            let w = zp + block.codes[i] as f32 * scale;
+            expected += w * x[i];
+        }
+
+        let rel_err = (y - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel_err < 1e-5, "scalar v2 y={y} vs expected={expected}");
     }
 }

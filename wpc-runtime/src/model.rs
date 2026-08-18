@@ -3,6 +3,7 @@ use crate::norm::{rms_norm, softmax_inplace};
 use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, SafetensorsFile};
 use crate::wpc_weights::{WpcEmbedding, WpcLinear, WpcModelData};
+use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
 use rayon::prelude::*;
 use std::path::Path;
 
@@ -196,6 +197,101 @@ impl Model {
                 )),
             });
             eprintln!("loaded layer {l}/{} (WPC)", config.num_hidden_layers);
+        }
+
+        let final_norm = st.read_f32("model.norm.weight");
+
+        Ok(Model { config, embed, layers, final_norm })
+    }
+
+    /// Load using the WPC v2-compressed weight backend for every Linear layer
+    /// and the embedding/lm_head table. Similar to `load_wpc`, but using the
+    /// simpler affine 6-bit quantization format (model_v2.wpc + model_v2.meta).
+    pub fn load_wpc_v2(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Model> {
+        let st_path = model_dir.join("model.safetensors");
+        let st = SafetensorsFile::open(&st_path)?;
+        let wpc = WpcModelDataV2::open(wpc_dir)?;
+
+        let h = config.hidden_size;
+        let embed = Box::new(WpcEmbeddingV2::new(
+            wpc.clone(),
+            "model.embed_tokens.weight",
+            config.vocab_size,
+            h,
+        ));
+
+        let n_rep = config.num_attention_heads / config.num_key_value_heads;
+        let head_dim = config.head_dim();
+        let kv_dim = config.num_key_value_heads * head_dim;
+        let _ = n_rep; // used in forward, silence unused in some build configs
+
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for l in 0..config.num_hidden_layers {
+            let p = format!("model.layers.{l}");
+            let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
+            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+
+            let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
+            let k_b = st.read_f32(&format!("{p}.self_attn.k_proj.bias"));
+            let v_b = st.read_f32(&format!("{p}.self_attn.v_proj.bias"));
+
+            let intermediate = config.intermediate_size;
+            let num_attn_out = config.num_attention_heads * head_dim;
+
+            layers.push(DecoderLayer {
+                input_layernorm,
+                post_attention_layernorm,
+                q_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    num_attn_out,
+                    h,
+                    Some(q_b),
+                )),
+                k_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    kv_dim,
+                    h,
+                    Some(k_b),
+                )),
+                v_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    kv_dim,
+                    h,
+                    Some(v_b),
+                )),
+                o_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    h,
+                    num_attn_out,
+                    None,
+                )),
+                gate_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    intermediate,
+                    h,
+                    None,
+                )),
+                up_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.up_proj.weight"),
+                    intermediate,
+                    h,
+                    None,
+                )),
+                down_proj: Box::new(WpcLinearV2::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.down_proj.weight"),
+                    h,
+                    intermediate,
+                    None,
+                )),
+            });
+            eprintln!("loaded layer {l}/{} (WPC v2)", config.num_hidden_layers);
         }
 
         let final_norm = st.read_f32("model.norm.weight");
