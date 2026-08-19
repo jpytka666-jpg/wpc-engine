@@ -183,10 +183,11 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     eprintln!("prefill ({} tokens) in {:?}", prompt_ids.len(), t1.elapsed());
 
     let eos = model.config.eos_token_id;
+    let banned = banned_from_env();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
-        let next_id = argmax(&next_logits);
+        let next_id = argmax_banned(&next_logits, &banned);
         generated.push(next_id);
         if Some(next_id) == eos {
             break;
