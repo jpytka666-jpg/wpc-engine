@@ -128,12 +128,48 @@ pub unsafe fn matvec_v2_fused(
 /// Scalar fallback for v2 matvec (no AVX2 available).
 pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
-    for b in blocks {
+    // `x` spans the whole row, so the activation index must advance with the
+    // block rather than restart inside it. Getting this wrong is invisible in
+    // a single-block test -- block 0 starts at x[0] either way -- and wrong
+    // for every real tensor, where a row is thirty or more blocks wide.
+    for (block_idx, b) in blocks.iter().enumerate() {
         let zp = b.zero_point.to_f32();
         let scale = b.scale.to_f32();
+        let row_base = block_idx * BLOCK_SIZE_V2;
         for (code_idx, &code) in b.codes.iter().enumerate() {
             let weight = zp + code as f32 * scale;
-            acc += weight * x[code_idx];
+            acc += weight * x[row_base + code_idx];
+        }
+    }
+    acc
+}
+
+/// Scalar v3 matvec: v2's arithmetic, reading bit-packed codes.
+///
+/// v3 stores four 6-bit codes per three bytes, so each weight costs a shift
+/// and a mask to recover. That work lands on cores which are idle waiting for
+/// memory anyway, and buys a 24% smaller read per token.
+pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
+    let mut acc = 0.0f32;
+    for (block_idx, b) in blocks.iter().enumerate() {
+        let zp = b.zero_point.to_f32();
+        let scale = b.scale.to_f32();
+        let row_base = block_idx * BLOCK_SIZE_V2;
+        let packed = b.packed;
+        for g in 0..BLOCK_SIZE_V2 / 4 {
+            let b0 = packed[g * 3];
+            let b1 = packed[g * 3 + 1];
+            let b2 = packed[g * 3 + 2];
+            let codes = [
+                b0 & 0x3F,
+                (b0 >> 6) | ((b1 & 0x0F) << 2),
+                (b1 >> 4) | ((b2 & 0x03) << 4),
+                b2 >> 2,
+            ];
+            for (lane, &code) in codes.iter().enumerate() {
+                let weight = zp + code as f32 * scale;
+                acc += weight * x[row_base + g * 4 + lane];
+            }
         }
     }
     acc
