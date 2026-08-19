@@ -191,7 +191,7 @@ fn main() {
             }
 
             // For v2, validate that in_features (shape[1]) is divisible by BLOCK_SIZE_V2
-            if args.scheme == "v2" && shape[1] % BLOCK_SIZE_V2 != 0 {
+            if (args.scheme == "v2" || args.scheme == "v3") && shape[1] % BLOCK_SIZE_V2 != 0 {
                 eprintln!("Skipping tensor '{}' with shape {:?}: in_features {} not divisible by BLOCK_SIZE_V2 ({})",
                     name, shape, shape[1], BLOCK_SIZE_V2);
                 continue;
