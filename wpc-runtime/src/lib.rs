@@ -3,6 +3,7 @@ pub mod gemma4_config;
 pub mod gemma4_model;
 pub mod model;
 pub mod norm;
+pub mod qwen3_model;
 pub mod rope;
 pub mod sampling;
 pub mod weights;
