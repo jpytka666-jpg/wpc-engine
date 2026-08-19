@@ -240,20 +240,31 @@ pub struct QuantBlockV3 {
 impl QuantBlockV3 {
     pub const SIZE: usize = 4 + PACKED_BYTES_V3;
 
-    /// Pack 128 codes into 96 bytes. Values are masked to 6 bits, which
+    /// Byte offset where the high-2-bit plane starts within the payload.
+    pub const HI_PLANE: usize = BLOCK_SIZE_V3 / 2;
+
+    /// Pack 128 codes into the two planes. Values are masked to 6 bits, which
     /// matches the encoder's own clamp to 0..63 -- a code outside that range
     /// is an encoder bug, and silently truncating keeps decode total.
     #[inline]
     pub fn pack_codes(codes: &[u8; BLOCK_SIZE_V3]) -> [u8; PACKED_BYTES_V3] {
         let mut out = [0u8; PACKED_BYTES_V3];
-        for g in 0..BLOCK_SIZE_V3 / 4 {
-            let c0 = codes[g * 4] & 0x3F;
-            let c1 = codes[g * 4 + 1] & 0x3F;
-            let c2 = codes[g * 4 + 2] & 0x3F;
-            let c3 = codes[g * 4 + 3] & 0x3F;
-            out[g * 3] = c0 | (c1 << 6);
-            out[g * 3 + 1] = (c1 >> 2) | (c2 << 4);
-            out[g * 3 + 2] = (c2 >> 4) | (c3 << 2);
+        for g in 0..BLOCK_SIZE_V3 / 32 {
+            let lo_base = g * 16;
+            let hi_base = Self::HI_PLANE + g * 8;
+            for t in 0..32usize {
+                let c = codes[g * 32 + t] & 0x3F;
+                // low nibble: first sixteen of the group fill the low half of
+                // each byte, the next sixteen the high half
+                let lo_byte = lo_base + (t % 16);
+                if t < 16 {
+                    out[lo_byte] |= c & 0x0F;
+                } else {
+                    out[lo_byte] |= (c & 0x0F) << 4;
+                }
+                // high two bits: eight codes share a byte, one 2-bit field each
+                out[hi_base + (t % 8)] |= (c >> 4) << (2 * (t / 8));
+            }
         }
         out
     }
