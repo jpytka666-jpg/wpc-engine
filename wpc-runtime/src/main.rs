@@ -79,6 +79,7 @@ fn main() -> anyhow::Result<()> {
     match arch {
         Arch::Gemma4 => run_gemma4(&args, &config_path, &tokenizer),
         Arch::Qwen2 => run_qwen2(&args, &config_path, &tokenizer),
+        Arch::Qwen3 => run_qwen3(&args, &config_path, &tokenizer),
         Arch::Auto => unreachable!("resolved above"),
     }
 }
