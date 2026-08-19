@@ -263,9 +263,55 @@ fn print_result(tokenizer: &Tokenizer, prompt: &str, generated: &[u32]) -> anyho
     Ok(())
 }
 
-fn config_eos(model_dir: &std::path::Path) -> Option<u32> {
-    let path = model_dir.join("config.json");
-    let text = std::fs::read_to_string(path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+/// Collect every id that should end generation.
+///
+/// `eos_token_id` is a single number on base checkpoints and a list on
+/// instruction-tuned ones, because those have more than one way to stop.
+/// google/gemma-4-12B-it declares `[1, 106, 50]`: end-of-text, end-of-turn,
+/// and "waiting for a tool result". Reading only the first means the model
+/// hands the floor back and the loop keeps asking it for more -- which shows
+/// up as an answer followed by unrequested rambling, not as an error.
+///
+/// generation_config.json is the authority and is checked first; config.json
+/// (top level, then `text_config`) is the fallback for checkpoints that ship
+/// without one.
+fn config_eos_ids(model_dir: &std::path::Path) -> Vec<u32> {
+    fn collect(v: Option<&serde_json::Value>, out: &mut Vec<u32>) {
+        match v {
+            Some(serde_json::Value::Number(n)) => {
+                if let Some(x) = n.as_u64() {
+                    out.push(x as u32);
+                }
+            }
+            Some(serde_json::Value::Array(a)) => {
+                for e in a {
+                    if let Some(x) = e.as_u64() {
+                        out.push(x as u32);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut ids = Vec::new();
+
+    for name in ["generation_config.json", "config.json"] {
+        if let Ok(text) = std::fs::read_to_string(model_dir.join(name)) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                collect(v.get("eos_token_id"), &mut ids);
+                collect(
+                    v.get("text_config").and_then(|t| t.get("eos_token_id")),
+                    &mut ids,
+                );
+            }
+        }
+    }
+
+    ids.sort_unstable();
+    ids.dedup();
+    if !ids.is_empty() {
+        eprintln!("stop tokens: {ids:?}");
+    }
+    ids
 }
