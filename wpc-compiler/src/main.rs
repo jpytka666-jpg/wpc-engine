@@ -220,7 +220,9 @@ fn main() {
     }
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    if args.scheme == "v2" {
+    if args.scheme == "v3" {
+        compress_v3(&args, &all_tensors, &out_dir);
+    } else if args.scheme == "v2" {
         compress_v2(&args, &all_tensors, &out_dir);
     } else {
         compress_v1(&args, &all_tensors, &out_dir);
