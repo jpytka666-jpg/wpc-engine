@@ -136,7 +136,8 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
     for _ in 0..args.max_tokens {
         let next_id = argmax_banned(&next_logits, &banned);
         generated.push(next_id);
-        if Some(next_id) == eos {
+        if eos.contains(&next_id) {
+            eprintln!("stopped on token {next_id} (end of turn / end of text)");
             break;
         }
         next_logits = model.forward_token(next_id, &mut cache);
@@ -208,7 +209,8 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     for _ in 0..args.max_tokens {
         let next_id = argmax_banned(&next_logits, &banned);
         generated.push(next_id);
-        if Some(next_id) == eos {
+        if eos.contains(&next_id) {
+            eprintln!("stopped on token {next_id} (end of turn / end of text)");
             break;
         }
         next_logits = model.forward_token(next_id, &mut cache);
