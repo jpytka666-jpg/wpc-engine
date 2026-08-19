@@ -1,4 +1,4 @@
-use wpc_format::{QuantBlockV2, BLOCK_SIZE_V2};
+use wpc_format::{QuantBlockV2, QuantBlockV3, BLOCK_SIZE_V2};
 use rayon::prelude::*;
 
 /// Quantize a block of 128 f32 values to v2 format (6-bit affine).
