@@ -213,11 +213,43 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     print_result(tokenizer, &args.prompt, &generated)
 }
 
-fn encode_prompt(tokenizer: &Tokenizer, prompt: &str) -> anyhow::Result<Vec<u32>> {
+/// `bos_token_id` from the model's config, checking `text_config` first for
+/// the nested Gemma4-family layout, then the top level.
+fn config_bos(model_dir: &std::path::Path) -> Option<u32> {
+    let text = std::fs::read_to_string(model_dir.join("config.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("text_config")
+        .and_then(|t| t.get("bos_token_id"))
+        .or_else(|| v.get("bos_token_id"))
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
+}
+
+/// Tokenize the prompt, prepending BOS when the tokenizer did not.
+///
+/// Whether BOS is added is a property of the tokenizer's post-processor, and
+/// it differs between releases of the *same* model. google/gemma-4-12B
+/// prepends `<bos>`; google/gemma-4-12B-it does not, because its chat template
+/// emits `bos_token` itself. Feeding raw tokenizer output to a Gemma without
+/// BOS produces pure `<pad>` -- no partial answer, no warning, just silence,
+/// which reads exactly like a broken checkpoint.
+///
+/// So the caller states what BOS is (from config.json) and this adds it only
+/// when it is genuinely missing. Passing `None`, or a prompt that already
+/// starts with BOS, leaves the token stream byte-identical to before.
+fn encode_prompt(tokenizer: &Tokenizer, prompt: &str, bos: Option<u32>) -> anyhow::Result<Vec<u32>> {
     let encoding = tokenizer
         .encode(prompt, true)
         .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
-    let ids: Vec<u32> = encoding.get_ids().to_vec();
+    let mut ids: Vec<u32> = encoding.get_ids().to_vec();
+
+    if let Some(b) = bos {
+        if ids.first() != Some(&b) {
+            ids.insert(0, b);
+            eprintln!("prompt: tokenizer omitted BOS ({b}); prepended it");
+        }
+    }
+
     eprintln!("prompt tokens ({}): {:?}", ids.len(), ids);
     Ok(ids)
 }
