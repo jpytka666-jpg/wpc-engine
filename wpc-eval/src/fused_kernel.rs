@@ -421,6 +421,36 @@ mod tests {
     }
 
     #[test]
+    fn fused_v3_agrees_with_fused_v2_over_many_blocks() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (v2_blocks, x) = multi_block_fixture(13);
+        let v3_blocks: Vec<QuantBlockV3> =
+            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+
+        let v2 = unsafe { matvec_v2_fused(&v2_blocks, x.as_ptr(), v2_blocks.len()) };
+        let v3 = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
+        let rel = (v3 - v2).abs() / v2.abs().max(1e-6);
+        assert!(rel < 1e-5, "fused v3 {v3} vs fused v2 {v2}");
+    }
+
+    #[test]
+    fn fused_v3_agrees_with_scalar_v3() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (v2_blocks, x) = multi_block_fixture(6);
+        let v3_blocks: Vec<QuantBlockV3> =
+            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+
+        let s = matvec_v3_scalar(&v3_blocks, &x);
+        let f = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
+        let rel = (s - f).abs() / f.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v3 {s} vs fused v3 {f}");
+    }
+
+    #[test]
     fn scalar_v3_matches_the_reference_formula() {
         let (v2_blocks, x) = multi_block_fixture(5);
         let v3_blocks: Vec<QuantBlockV3> =
