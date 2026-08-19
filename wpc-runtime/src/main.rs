@@ -62,6 +62,8 @@ fn main() -> anyhow::Result<()> {
         Arch::Auto => {
             if Gemma4Config::try_load(&config_path)?.is_some() {
                 Arch::Gemma4
+            } else if Config::model_type_of(&config_path).as_deref() == Some("qwen3") {
+                Arch::Qwen3
             } else {
                 Arch::Qwen2
             }
