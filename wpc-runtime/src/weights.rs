@@ -8,6 +8,7 @@
 
 use memmap2::Mmap;
 use safetensors::{Dtype, SafeTensors};
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
