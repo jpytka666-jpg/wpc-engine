@@ -85,16 +85,21 @@ mod tests {
         let v2 = affine_quant_block(&weights);
         let v3 = affine_quant_block_v3(&weights);
 
-        assert_eq!(v3.zero_point, v2.zero_point);
-        assert_eq!(v3.scale, v2.scale);
-        assert_eq!(QuantBlockV3::unpack_codes(&v3.packed), v2.codes);
+        // Fields are copied out first: both blocks are `repr(C, packed)`, so
+        // borrowing a field directly would be an unaligned reference.
+        let (v2_zp, v2_sc, v2_codes) = (v2.zero_point, v2.scale, v2.codes);
+        let (v3_zp, v3_sc, v3_packed) = (v3.zero_point, v3.scale, v3.packed);
+
+        assert_eq!(v3_zp, v2_zp);
+        assert_eq!(v3_sc, v2_sc);
+        let unpacked = QuantBlockV3::unpack_codes(&v3_packed);
+        assert_eq!(unpacked, v2_codes);
 
         // And the decoded values themselves, not just the codes.
-        let zp = v2.zero_point.to_f32();
-        let sc = v2.scale.to_f32();
-        let unpacked = QuantBlockV3::unpack_codes(&v3.packed);
+        let zp = v2_zp.to_f32();
+        let sc = v2_sc.to_f32();
         for i in 0..BLOCK_SIZE_V2 {
-            let a = zp + v2.codes[i] as f32 * sc;
+            let a = zp + v2_codes[i] as f32 * sc;
             let b = zp + unpacked[i] as f32 * sc;
             assert_eq!(a.to_bits(), b.to_bits(), "value {i} differs");
         }
