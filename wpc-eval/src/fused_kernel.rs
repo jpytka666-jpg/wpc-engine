@@ -1,6 +1,6 @@
 use std::arch::x86_64::*;
 use half::f16;
-use wpc_format::{CompressedBlock, QuantBlockV2, BLOCK_SIZE, BLOCK_SIZE_V2};
+use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, BLOCK_SIZE, BLOCK_SIZE_V2};
 
 /// Sum of horizontal adds of a __m256. Standard AVX2 trick.
 #[inline]
