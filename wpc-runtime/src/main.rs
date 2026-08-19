@@ -161,7 +161,14 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
         .ok_or_else(|| anyhow::anyhow!("--wpc is required for Gemma4 (dense loading is not supported: weights don't fit in RAM)"))?;
 
     let t0 = Instant::now();
-    let model = if args.scheme == "v2" {
+    let model = if args.scheme == "v3" {
+        eprintln!(
+            "loading model weights (WPC v3-compressed, packed) from {} (norms from {}) ...",
+            wpc_dir.display(),
+            args.model.display()
+        );
+        Gemma4Model::load_wpc_v3(&args.model, wpc_dir, config)?
+    } else if args.scheme == "v2" {
         eprintln!(
             "loading model weights (WPC v2-compressed) from {} (norms from {}) ...",
             wpc_dir.display(),
