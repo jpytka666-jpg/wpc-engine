@@ -11,6 +11,14 @@ use std::path::Path;
 pub struct DecoderLayer {
     pub input_layernorm: Vec<f32>,
     pub post_attention_layernorm: Vec<f32>,
+    /// Qwen3's `self_attn.q_norm.weight`: an RMSNorm of length `head_dim`,
+    /// applied per head to the q_proj output, after the projection and before
+    /// RoPE. `None` on Qwen2, whose checkpoints have no such tensor — the
+    /// forward pass then skips the step entirely and is bit-for-bit what it
+    /// was before this field existed.
+    pub q_norm: Option<Vec<f32>>,
+    /// Same for `self_attn.k_norm.weight`, applied per KV head.
+    pub k_norm: Option<Vec<f32>>,
     pub q_proj: Box<dyn Linear>,
     pub k_proj: Box<dyn Linear>,
     pub v_proj: Box<dyn Linear>,
@@ -90,6 +98,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(DenseLinear::new(config.num_attention_heads * head_dim, h, q_w, Some(q_b))),
                 k_proj: Box::new(DenseLinear::new(kv_dim, h, k_w, Some(k_b))),
                 v_proj: Box::new(DenseLinear::new(kv_dim, h, v_w, Some(v_b))),
@@ -147,6 +157,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(WpcLinear::new(
                     wpc.clone(),
                     &format!("{p}.self_attn.q_proj.weight"),
@@ -242,6 +254,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(WpcLinearV2::new(
                     wpc.clone(),
                     &format!("{p}.self_attn.q_proj.weight"),
@@ -336,6 +350,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(WpcLinearV3::new(
                     wpc.clone(),
                     &format!("{p}.self_attn.q_proj.weight"),
