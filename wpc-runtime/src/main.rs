@@ -122,6 +122,57 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
     };
     eprintln!("model loaded in {:?}", t0.elapsed());
 
+    generate(args, &model, tokenizer)
+}
+
+/// Load a Qwen3 checkpoint and generate. Qwen3 reuses the Qwen2 decoder stack
+/// (`Model`/`forward_token`); only weight loading differs — explicit `head_dim`
+/// from config.json, no q/k/v biases, and per-head q_norm/k_norm before RoPE.
+/// See `qwen3_model.rs`.
+fn run_qwen3(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) -> anyhow::Result<()> {
+    let config = Config::load(config_path)?;
+    eprintln!(
+        "config: hidden={} layers={} heads={} kv_heads={} head_dim={} vocab={}",
+        config.hidden_size, config.num_hidden_layers, config.num_attention_heads,
+        config.num_key_value_heads, config.head_dim(), config.vocab_size
+    );
+
+    let t0 = Instant::now();
+    let model = if let Some(wpc_dir) = &args.wpc {
+        if args.scheme == "v3" {
+            eprintln!(
+                "loading model weights (WPC v3-compressed, packed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            qwen3_model::load_wpc_v3(&args.model, wpc_dir, config)?
+        } else if args.scheme == "v2" {
+            eprintln!(
+                "loading model weights (WPC v2-compressed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            qwen3_model::load_wpc_v2(&args.model, wpc_dir, config)?
+        } else {
+            eprintln!(
+                "loading model weights (WPC v1-compressed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            qwen3_model::load_wpc(&args.model, wpc_dir, config)?
+        }
+    } else {
+        eprintln!("loading model weights (dense) from {} ...", args.model.display());
+        qwen3_model::load(&args.model, config)?
+    };
+    eprintln!("model loaded in {:?}", t0.elapsed());
+
+    generate(args, &model, tokenizer)
+}
+
+/// Prefill the prompt, then greedily decode up to `--max-tokens`. Shared by the
+/// Qwen2 and Qwen3 paths, which run the identical decoder stack.
+fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result<()> {
     let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
