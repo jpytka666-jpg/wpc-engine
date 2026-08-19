@@ -186,18 +186,36 @@ const _QUANT_BLOCK_V2_SIZE_CHECK: [(); 132] = [(); QuantBlockV2::SIZE];
 // given away.
 //
 // v3 keeps v2's quantization EXACTLY: same zero_point, same scale, same 0..63
-// codes, therefore bit-identical reconstruction. Only the layout changes. Four
-// consecutive codes are packed into three bytes:
+// codes, therefore bit-identical reconstruction. Only the layout changes.
 //
-//   byte 0 :  c0[5:0]        | c1[1:0] << 6
-//   byte 1 : (c1[5:2] >> 2)  | c2[3:0] << 4
-//   byte 2 : (c2[5:4] >> 4)  | c3[5:0] << 2
+// The obvious packing -- four codes crammed into three consecutive bytes --
+// was tried first and measured SLOWER end to end than v2, despite reading 24%
+// fewer bytes. The reason is that a code straddles a byte boundary, so every
+// weight costs a shift, a mask, an or, and a merge across two loads, and the
+// result lands in an order SIMD cannot use without a cross-lane shuffle. The
+// decode was eating more than the narrower read saved.
 //
-// 128 codes / 4 = 32 groups * 3 bytes = 96 bytes, plus the same 4-byte header:
-// 100 bytes per 128 values = 6.25 bits/value against v2's 8.25.
+// So the codes are split into two planes instead, each aligned to something
+// the vector unit can eat whole:
 //
-// Unpacking costs a shift and a mask per code, paid on cores that were idle
-// anyway -- spending the surplus to buy back the shortage.
+//   lo plane: 64 bytes. The low 4 bits of every code, two codes per byte.
+//   hi plane: 32 bytes. The high 2 bits of every code, four codes per byte.
+//
+// Same 96 bytes, same 6.25 bits/value. What changes is that eight consecutive
+// output weights now come from eight consecutive bytes of each plane, so the
+// decode is a load, a mask, a widen, a shift and an or -- no shuffles, no
+// straddling, nothing crossing a lane.
+//
+// Within a block the codes are handled in groups of 32, and the assignment of
+// code index to byte and nibble is chosen so that the natural SIMD order comes
+// out matching weight order. That permutation is paid once, offline, in
+// `pack_codes`; the hot path pays nothing for it.
+//
+// Layout of the 96-byte payload, for group g in 0..4 and code index
+// i = g*32 + t, t in 0..32:
+//
+//   lo[g*16 + (t % 16)]  bits 0-3 when t < 16, bits 4-7 when t >= 16
+//   hi[64 + g*8 + (t % 8)]  bits (2 * (t / 8)) .. +2
 
 pub const BLOCK_SIZE_V3: usize = 128;
 /// 128 codes * 6 bits / 8 = 96 bytes of payload.
