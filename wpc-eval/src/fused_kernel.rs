@@ -162,34 +162,68 @@ pub unsafe fn matvec_v3_fused(
     x: *const f32,
     n_blocks: usize,
 ) -> f32 {
+    let mask_lo = _mm256_set1_epi32(0x0F);
+    let mask_hi = _mm256_set1_epi32(0x03);
     let mut acc = _mm256_setzero_ps();
+
     for i in 0..n_blocks {
-        let b = *blocks.get_unchecked(i);
-        let codes = QuantBlockV3::unpack_codes(&b.packed);
+        let b = blocks.get_unchecked(i);
+        let packed = b.packed.as_ptr();
         let zp = _mm256_set1_ps(b.zero_point.to_f32());
         let scl = _mm256_set1_ps(b.scale.to_f32());
+        let x_block = x.add(i * BLOCK_SIZE_V2);
 
-        for g in 0..16 {
-            let code_ptr = codes.as_ptr().add(g * 8);
-            let x_ptr = x.add(i * BLOCK_SIZE_V2 + g * 8);
+        // Four groups of 32 codes. Inside a group the four eight-code lanes
+        // differ only in which nibble of the lo plane they take and how far
+        // the hi plane is shifted -- both compile-time constants, which is why
+        // the lanes are written out rather than looped.
+        for g in 0..4 {
+            let lo_ptr = packed.add(g * 16);
+            let hi_ptr = packed.add(QuantBlockV3::HI_PLANE + g * 8);
+            let hi = _mm256_cvtepu8_epi32(_mm_loadl_epi64(hi_ptr as *const __m128i));
+            let x_group = x_block.add(g * 32);
 
-            let codes_u8 = _mm_loadl_epi64(code_ptr as *const __m128i);
-            let codes_i32 = _mm256_cvtepu8_epi32(codes_u8);
-            let codes_f32 = _mm256_cvtepi32_ps(codes_i32);
+            // t = 0..7 : lo bytes 0-7, low nibble, hi field 0
+            let lo_a = _mm256_cvtepu8_epi32(_mm_loadl_epi64(lo_ptr as *const __m128i));
+            // t = 8..15 : lo bytes 8-15, low nibble, hi field 1
+            let lo_b =
+                _mm256_cvtepu8_epi32(_mm_loadl_epi64(lo_ptr.add(8) as *const __m128i));
 
-            let w = _mm256_fmadd_ps(codes_f32, scl, zp);
-            let x_vec = _mm256_loadu_ps(x_ptr);
-            acc = _mm256_fmadd_ps(w, x_vec, acc);
+            let c0 = _mm256_or_si256(
+                _mm256_and_si256(lo_a, mask_lo),
+                _mm256_slli_epi32(_mm256_and_si256(hi, mask_hi), 4),
+            );
+            let c1 = _mm256_or_si256(
+                _mm256_and_si256(lo_b, mask_lo),
+                _mm256_slli_epi32(_mm256_and_si256(_mm256_srli_epi32(hi, 2), mask_hi), 4),
+            );
+            let c2 = _mm256_or_si256(
+                _mm256_and_si256(_mm256_srli_epi32(lo_a, 4), mask_lo),
+                _mm256_slli_epi32(_mm256_and_si256(_mm256_srli_epi32(hi, 4), mask_hi), 4),
+            );
+            let c3 = _mm256_or_si256(
+                _mm256_and_si256(_mm256_srli_epi32(lo_b, 4), mask_lo),
+                _mm256_slli_epi32(_mm256_and_si256(_mm256_srli_epi32(hi, 6), mask_hi), 4),
+            );
+
+            let w0 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(c0), scl, zp);
+            let w1 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(c1), scl, zp);
+            let w2 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(c2), scl, zp);
+            let w3 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(c3), scl, zp);
+
+            acc = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x_group), acc);
+            acc = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x_group.add(8)), acc);
+            acc = _mm256_fmadd_ps(w2, _mm256_loadu_ps(x_group.add(16)), acc);
+            acc = _mm256_fmadd_ps(w3, _mm256_loadu_ps(x_group.add(24)), acc);
         }
     }
     hsum_avx2(acc)
 }
 
-/// Scalar v3 matvec: v2's arithmetic, reading bit-packed codes.
+/// Scalar v3 matvec: v2's arithmetic, reading the two-plane layout.
 ///
-/// v3 stores four 6-bit codes per three bytes, so each weight costs a shift
-/// and a mask to recover. That work lands on cores which are idle waiting for
-/// memory anyway, and buys a 24% smaller read per token.
+/// Delegates the bit twiddling to `unpack_codes` so there is exactly one
+/// scalar definition of the layout for the vector path to be checked against.
 pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
     for (block_idx, b) in blocks.iter().enumerate() {
@@ -197,20 +231,9 @@ pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
         let scale = b.scale.to_f32();
         let row_base = block_idx * BLOCK_SIZE_V2;
         let packed = b.packed;
-        for g in 0..BLOCK_SIZE_V2 / 4 {
-            let b0 = packed[g * 3];
-            let b1 = packed[g * 3 + 1];
-            let b2 = packed[g * 3 + 2];
-            let codes = [
-                b0 & 0x3F,
-                (b0 >> 6) | ((b1 & 0x0F) << 2),
-                (b1 >> 4) | ((b2 & 0x03) << 4),
-                b2 >> 2,
-            ];
-            for (lane, &code) in codes.iter().enumerate() {
-                let weight = zp + code as f32 * scale;
-                acc += weight * x[row_base + g * 4 + lane];
-            }
+        let codes = QuantBlockV3::unpack_codes(&packed);
+        for (i, &code) in codes.iter().enumerate() {
+            acc += (zp + code as f32 * scale) * x[row_base + i];
         }
     }
     acc
