@@ -90,7 +90,14 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
 
     let t0 = Instant::now();
     let model = if let Some(wpc_dir) = &args.wpc {
-        if args.scheme == "v2" {
+        if args.scheme == "v3" {
+            eprintln!(
+                "loading model weights (WPC v3-compressed, packed) from {} (norms/biases from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            Model::load_wpc_v3(&args.model, wpc_dir, config)?
+        } else if args.scheme == "v2" {
             eprintln!(
                 "loading model weights (WPC v2-compressed) from {} (norms/biases from {}) ...",
                 wpc_dir.display(),
