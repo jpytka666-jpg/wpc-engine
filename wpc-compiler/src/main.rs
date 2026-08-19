@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 use wpc_core::codebook::{PatternDict, ResidualDict, BLOCK_DIM};
 use wpc_core::encoder::{encode_block, normalize_block, BlockNorm, INPUT_SCALE};
 use wpc_core::quant_encoder;
-use wpc_format::{CompressedBlock, QuantBlockV2, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
+use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
 use safetensors::SafeTensors;
 use half::f16;
 
