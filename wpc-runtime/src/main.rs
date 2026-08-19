@@ -6,7 +6,7 @@ use wpc_runtime::config::Config;
 use wpc_runtime::gemma4_config::Gemma4Config;
 use wpc_runtime::gemma4_model::Gemma4Model;
 use wpc_runtime::model::Model;
-use wpc_runtime::sampling::argmax;
+use wpc_runtime::sampling::{argmax_banned, banned_from_env};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Arch {
