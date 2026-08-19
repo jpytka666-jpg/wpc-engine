@@ -270,17 +270,22 @@ impl QuantBlockV3 {
     }
 
     /// Exact inverse of `pack_codes`.
+    ///
+    /// This is the reference and the scalar fallback. The vector path in
+    /// `wpc_eval::fused_kernel` reads the same layout directly, eight codes at
+    /// a time, and the tests hold the two against each other.
     #[inline]
     pub fn unpack_codes(packed: &[u8; PACKED_BYTES_V3]) -> [u8; BLOCK_SIZE_V3] {
         let mut codes = [0u8; BLOCK_SIZE_V3];
-        for g in 0..BLOCK_SIZE_V3 / 4 {
-            let b0 = packed[g * 3];
-            let b1 = packed[g * 3 + 1];
-            let b2 = packed[g * 3 + 2];
-            codes[g * 4] = b0 & 0x3F;
-            codes[g * 4 + 1] = (b0 >> 6) | ((b1 & 0x0F) << 2);
-            codes[g * 4 + 2] = (b1 >> 4) | ((b2 & 0x03) << 4);
-            codes[g * 4 + 3] = b2 >> 2;
+        for g in 0..BLOCK_SIZE_V3 / 32 {
+            let lo_base = g * 16;
+            let hi_base = Self::HI_PLANE + g * 8;
+            for t in 0..32usize {
+                let lo_byte = packed[lo_base + (t % 16)];
+                let low4 = if t < 16 { lo_byte & 0x0F } else { lo_byte >> 4 };
+                let hi2 = (packed[hi_base + (t % 8)] >> (2 * (t / 8))) & 0x03;
+                codes[g * 32 + t] = low4 | (hi2 << 4);
+            }
         }
         codes
     }
