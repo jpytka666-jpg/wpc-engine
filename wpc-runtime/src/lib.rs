@@ -8,3 +8,4 @@ pub mod sampling;
 pub mod weights;
 pub mod wpc_weights;
 pub mod wpc_weights_v2;
+pub mod wpc_weights_v3;
