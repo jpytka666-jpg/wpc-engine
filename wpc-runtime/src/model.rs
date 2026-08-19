@@ -299,6 +299,100 @@ impl Model {
         Ok(Model { config, embed, layers, final_norm })
     }
 
+    /// Load using the WPC v3 backend: v2's quantization with the 6-bit codes
+    /// bit-packed (model_v3.wpc + model_v3.meta). Reconstruction is identical
+    /// to v2 by construction; the file is 24% smaller, and since decoding is
+    /// memory-bandwidth bound, so is most of the read time.
+    pub fn load_wpc_v3(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Model> {
+        let st_path = model_dir.join("model.safetensors");
+        let st = SafetensorsFile::open(&st_path)?;
+        let wpc = WpcModelDataV3::open(wpc_dir)?;
+
+        let h = config.hidden_size;
+        let embed = Box::new(WpcEmbeddingV3::new(
+            wpc.clone(),
+            "model.embed_tokens.weight",
+            config.vocab_size,
+            h,
+        ));
+
+        let head_dim = config.head_dim();
+        let kv_dim = config.num_key_value_heads * head_dim;
+
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for l in 0..config.num_hidden_layers {
+            let p = format!("model.layers.{l}");
+            let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
+            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+
+            let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
+            let k_b = st.read_f32(&format!("{p}.self_attn.k_proj.bias"));
+            let v_b = st.read_f32(&format!("{p}.self_attn.v_proj.bias"));
+
+            let intermediate = config.intermediate_size;
+            let num_attn_out = config.num_attention_heads * head_dim;
+
+            layers.push(DecoderLayer {
+                input_layernorm,
+                post_attention_layernorm,
+                q_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    num_attn_out,
+                    h,
+                    Some(q_b),
+                )),
+                k_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    kv_dim,
+                    h,
+                    Some(k_b),
+                )),
+                v_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    kv_dim,
+                    h,
+                    Some(v_b),
+                )),
+                o_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    h,
+                    num_attn_out,
+                    None,
+                )),
+                gate_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    intermediate,
+                    h,
+                    None,
+                )),
+                up_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.up_proj.weight"),
+                    intermediate,
+                    h,
+                    None,
+                )),
+                down_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.down_proj.weight"),
+                    h,
+                    intermediate,
+                    None,
+                )),
+            });
+            eprintln!("loaded layer {l}/{} (WPC v3)", config.num_hidden_layers);
+        }
+
+        let final_norm = st.read_f32("model.norm.weight");
+
+        Ok(Model { config, embed, layers, final_norm })
+    }
+
     pub fn new_cache(&self) -> KvCache {
         KvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)
     }
