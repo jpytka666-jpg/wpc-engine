@@ -118,7 +118,7 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
     };
     eprintln!("model loaded in {:?}", t0.elapsed());
 
-    let prompt_ids = encode_prompt(tokenizer, &args.prompt)?;
+    let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
     let mut next_logits: Vec<f32> = Vec::new();
@@ -185,7 +185,7 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     };
     eprintln!("model loaded in {:?}", t0.elapsed());
 
-    let prompt_ids = encode_prompt(tokenizer, &args.prompt)?;
+    let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
     let mut next_logits: Vec<f32> = Vec::new();
