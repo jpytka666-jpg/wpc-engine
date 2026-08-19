@@ -1,0 +1,14 @@
+[package]
+name = "wpc-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core algorithms for WPC: k-means codebook training, encoder pipeline, and safetensors extraction."
+
+[dependencies]
+wpc-format = { path = "../wpc-format" }
+half = "2.4"
+rand = "0.8"
+rand_xoshiro = "0.6"
+safetensors = "0.4"
+memmap2 = "0.9"
+rayon = "1.8"
