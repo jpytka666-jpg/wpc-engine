@@ -129,7 +129,7 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
     }
     eprintln!("prefill ({} tokens) in {:?}", prompt_ids.len(), t1.elapsed());
 
-    let eos = config_eos(&args.model);
+    let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
 
     let t2 = Instant::now();
