@@ -419,3 +419,66 @@ fn compress_v2(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
 
     println!("Done! Compiled WPC v2 model saved to {:?}", out_dir);
 }
+
+/// v3: identical quantization to v2, with the 6-bit codes bit-packed.
+///
+/// 100 bytes per 128 weights instead of 132, so a v3 model is ~24% smaller
+/// than the v2 model of the same tensors, with bit-identical reconstruction.
+/// Since generation here is memory-bandwidth bound, those bytes are also
+/// roughly 24% of the generation time.
+///
+/// The output keeps the v2 file names and metadata shape on purpose: only the
+/// block layout differs, so the runtime distinguishes them by `--scheme`, not
+/// by parsing a different manifest.
+fn compress_v3(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
+    println!("Starting v3 (affine 6-bit, packed) compression...");
+    let out_wpc = out_dir.join("model_v3.wpc");
+    let mut wpc_file = File::create(&out_wpc).unwrap();
+    let mut current_offset = 0;
+
+    let mut meta = ModelMetaV2 {
+        layers: Vec::new(),
+        block_size: BLOCK_SIZE_V2,
+    };
+
+    let mut v2_equivalent_bytes = 0usize;
+
+    for (idx, t_ref) in all_tensors.iter().enumerate() {
+        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
+
+        let compressed_blocks: Vec<QuantBlockV3> = quant_encoder::encode_tensor_v3(&t_data);
+
+        let size_bytes = compressed_blocks.len() * QuantBlockV3::SIZE;
+        v2_equivalent_bytes += compressed_blocks.len() * QuantBlockV2::SIZE;
+
+        meta.layers.push(LayerMetaV2 {
+            name: t_ref.name.clone(),
+            shape: t_ref.shape.clone(),
+            offset_bytes: current_offset,
+            size_bytes,
+        });
+
+        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        wpc_file.write_all(&bytes).unwrap();
+
+        current_offset += size_bytes;
+
+        drop(t_data);
+    }
+
+    let meta_path = out_dir.join("model_v3.meta");
+    let meta_json = serde_json::to_string_pretty(&meta).unwrap();
+    std::fs::write(&meta_path, meta_json).unwrap();
+
+    let saved = v2_equivalent_bytes.saturating_sub(current_offset);
+    println!(
+        "Done! Compiled WPC v3 model saved to {:?}\n  \
+         size: {:.2} GB (v2 would be {:.2} GB, saved {:.2} GB = {:.1}%)",
+        out_dir,
+        current_offset as f64 / 1024.0 / 1024.0 / 1024.0,
+        v2_equivalent_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+        saved as f64 / 1024.0 / 1024.0 / 1024.0,
+        if v2_equivalent_bytes > 0 { saved as f64 * 100.0 / v2_equivalent_bytes as f64 } else { 0.0 },
+    );
+}
