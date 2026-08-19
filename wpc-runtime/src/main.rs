@@ -12,14 +12,15 @@ use wpc_runtime::sampling::{argmax_banned, banned_from_env};
 enum Arch {
     /// Detect from `config.json`: presence of a top-level `text_config` key
     /// (as used by Gemma4-family multimodal configs) selects Gemma4,
-    /// otherwise Qwen2.
+    /// `model_type: "qwen3"` selects Qwen3, otherwise Qwen2.
     Auto,
     Qwen2,
+    Qwen3,
     Gemma4,
 }
 
 /// Transformer inference engine, dense or WPC-compressed weights, for the
-/// Qwen2 and Gemma4 text architectures.
+/// Qwen2, Qwen3 and Gemma4 text architectures.
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
