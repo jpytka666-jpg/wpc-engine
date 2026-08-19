@@ -441,6 +441,26 @@ impl Model {
             layer.k_proj.matvec(&normed, &mut k);
             layer.v_proj.matvec(&normed, &mut v);
 
+            // Qwen3 only: RMSNorm each head's q/k vector (length head_dim)
+            // after the projection and before RoPE, exactly as Gemma4 does.
+            // Qwen2 carries `None` here and drops straight through to RoPE.
+            if let Some(q_norm) = &layer.q_norm {
+                let mut tmp = vec![0.0f32; head_dim];
+                for hd in 0..num_heads {
+                    let slice = &mut q[hd * head_dim..(hd + 1) * head_dim];
+                    rms_norm(slice, q_norm, eps, &mut tmp);
+                    slice.copy_from_slice(&tmp);
+                }
+            }
+            if let Some(k_norm) = &layer.k_norm {
+                let mut tmp = vec![0.0f32; head_dim];
+                for hd in 0..num_kv_heads {
+                    let slice = &mut k[hd * head_dim..(hd + 1) * head_dim];
+                    rms_norm(slice, k_norm, eps, &mut tmp);
+                    slice.copy_from_slice(&tmp);
+                }
+            }
+
             for hd in 0..num_heads {
                 apply_rope(&mut q[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
             }
