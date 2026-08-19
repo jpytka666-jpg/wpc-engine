@@ -143,8 +143,8 @@ fn read_tensor_f32(shard_path: &Path, name: &str) -> Vec<f32> {
 fn main() {
     let args = Args::parse();
 
-    if args.scheme != "v1" && args.scheme != "v2" {
-        eprintln!("Invalid scheme '{}'. Must be 'v1' or 'v2'.", args.scheme);
+    if args.scheme != "v1" && args.scheme != "v2" && args.scheme != "v3" {
+        eprintln!("Invalid scheme '{}'. Must be 'v1', 'v2' or 'v3'.", args.scheme);
         return;
     }
 
