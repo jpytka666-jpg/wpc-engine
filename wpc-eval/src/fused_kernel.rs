@@ -144,6 +144,47 @@ pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
     acc
 }
 
+/// Fused-SIMD v3 matvec.
+///
+/// The packing is undone into a 128-byte stack buffer first, then the same
+/// AVX2 multiply-accumulate as v2 runs over it. Unpacking with shuffles
+/// directly in registers would avoid the buffer, but the buffer is 128 bytes
+/// -- it stays in L1 and never reaches memory, which is the only place this
+/// workload is actually short of bandwidth. The simple version keeps the
+/// bit-twiddling in one place, shared with the scalar path.
+///
+/// # Safety
+/// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
+/// floats.
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn matvec_v3_fused(
+    blocks: &[QuantBlockV3],
+    x: *const f32,
+    n_blocks: usize,
+) -> f32 {
+    let mut acc = _mm256_setzero_ps();
+    for i in 0..n_blocks {
+        let b = *blocks.get_unchecked(i);
+        let codes = QuantBlockV3::unpack_codes(&b.packed);
+        let zp = _mm256_set1_ps(b.zero_point.to_f32());
+        let scl = _mm256_set1_ps(b.scale.to_f32());
+
+        for g in 0..16 {
+            let code_ptr = codes.as_ptr().add(g * 8);
+            let x_ptr = x.add(i * BLOCK_SIZE_V2 + g * 8);
+
+            let codes_u8 = _mm_loadl_epi64(code_ptr as *const __m128i);
+            let codes_i32 = _mm256_cvtepu8_epi32(codes_u8);
+            let codes_f32 = _mm256_cvtepi32_ps(codes_i32);
+
+            let w = _mm256_fmadd_ps(codes_f32, scl, zp);
+            let x_vec = _mm256_loadu_ps(x_ptr);
+            acc = _mm256_fmadd_ps(w, x_vec, acc);
+        }
+    }
+    hsum_avx2(acc)
+}
+
 /// Scalar v3 matvec: v2's arithmetic, reading bit-packed codes.
 ///
 /// v3 stores four 6-bit codes per three bytes, so each weight costs a shift
