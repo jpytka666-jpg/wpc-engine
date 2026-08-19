@@ -30,6 +30,7 @@ use crate::rope::apply_rope_partial;
 use crate::weights::{EmbeddingTable, Linear, SafetensorsFile};
 use crate::wpc_weights::{WpcEmbedding, WpcLinear, WpcModelData};
 use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
+use crate::wpc_weights_v3::{WpcEmbeddingV3, WpcLinearV3, WpcModelDataV3};
 use rayon::prelude::*;
 use std::path::Path;
 
