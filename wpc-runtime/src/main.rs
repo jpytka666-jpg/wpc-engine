@@ -46,7 +46,8 @@ struct Args {
     #[arg(long, value_enum, default_value_t = Arch::Auto)]
     arch: Arch,
 
-    /// WPC compression scheme: "v1" (VQ-codebook) or "v2" (affine 6-bit).
+    /// WPC compression scheme: "v3" (packed affine, 6.25 bits/weight - recommended),
+    /// "v2" (byte-aligned affine, 8.25 bits/weight) or "v1" (VQ-codebook, superseded).
     /// Only used when --wpc is provided.
     #[arg(long, default_value = "v1")]
     scheme: String,

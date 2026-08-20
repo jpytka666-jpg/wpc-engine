@@ -24,8 +24,9 @@ struct Args {
     #[arg(short, long)]
     output: PathBuf,
 
-    /// Compression scheme: "v1" (VQ-codebook) or "v2" (affine 6-bit)
-    #[arg(long, default_value = "v1")]
+    /// Compression scheme: "v3" (packed affine, 6.25 bits/weight - recommended),
+    /// "v2" (byte-aligned affine, 8.25 bits/weight) or "v1" (VQ-codebook, superseded).
+    #[arg(long, default_value = "v3")]
     scheme: String,
 }
 

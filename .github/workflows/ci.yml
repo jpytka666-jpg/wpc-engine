@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --workspace --release
+      - name: Test
+        # The AVX2 kernels are gated at runtime; GitHub runners provide AVX2.
+        run: cargo test --workspace --release
+      - name: Formatting
+        run: cargo fmt --all --check
+        continue-on-error: true
