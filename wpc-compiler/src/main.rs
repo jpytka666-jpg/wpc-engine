@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 use wpc_core::codebook::{PatternDict, ResidualDict, BLOCK_DIM};
 use wpc_core::encoder::{encode_block, normalize_block, BlockNorm, INPUT_SCALE};
 use wpc_core::quant_encoder;
-use wpc_format::{CompressedBlock, QuantBlockV2, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
+use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
 use safetensors::SafeTensors;
 use half::f16;
 
@@ -143,8 +143,8 @@ fn read_tensor_f32(shard_path: &Path, name: &str) -> Vec<f32> {
 fn main() {
     let args = Args::parse();
 
-    if args.scheme != "v1" && args.scheme != "v2" {
-        eprintln!("Invalid scheme '{}'. Must be 'v1' or 'v2'.", args.scheme);
+    if args.scheme != "v1" && args.scheme != "v2" && args.scheme != "v3" {
+        eprintln!("Invalid scheme '{}'. Must be 'v1', 'v2' or 'v3'.", args.scheme);
         return;
     }
 
@@ -164,6 +164,14 @@ fn main() {
     println!("Found {} shards. Extracting tensor metadata...", shards.len());
 
     let mut all_tensors = Vec::new();
+    // Tallied so the run can report what it left behind instead of dropping
+    // tensors silently.
+    let mut skipped_not_2d = 0usize;
+    let mut skipped_too_small = 0usize;
+    let mut skipped_dtype = 0usize;
+    let mut skipped_router = 0usize;
+    let mut skipped_bad_width = 0usize;
+    let mut skipped_bytes = 0usize;
     for shard in &shards {
         let file = match File::open(shard) {
             Ok(f) => f,
@@ -180,20 +188,59 @@ fn main() {
 
         for (name, view) in st.tensors() {
             let shape = view.shape().to_vec();
-            if shape.len() != 2 { continue; }
+            if shape.len() != 2 {
+                // Two very different things land here. 1D tensors are the norms
+                // and biases, which are meant to stay dense and which the
+                // runtime always reads from the checkpoint. 3D/4D tensors are
+                // convolution kernels — and that is why a multimodal
+                // checkpoint's vision tower never reaches the .wpc file at all:
+                // it starts with a 4D patch convolution, so the whole tower gets
+                // dropped here without ever being mentioned.
+                skipped_not_2d += 1;
+                skipped_bytes += view.data().len();
+                continue;
+            }
 
             let n: usize = shape.iter().product();
-            if n < 4096 { continue; }
+            if n < 4096 {
+                skipped_too_small += 1;
+                skipped_bytes += view.data().len();
+                continue;
+            }
 
             match view.dtype() {
                 safetensors::Dtype::F32 | safetensors::Dtype::F16 | safetensors::Dtype::BF16 => {}
-                _ => continue,
+                _ => {
+                    skipped_dtype += 1;
+                    skipped_bytes += view.data().len();
+                    continue;
+                }
+            }
+
+            // MoE routers (`mlp.gate.weight`) are deliberately left uncompressed.
+            // Every other matrix computes a value, where quantization error
+            // averages out over thousands of terms. The router instead makes a
+            // discrete choice: when two experts score within quantization noise
+            // of each other, rounding decides which one runs and the token takes
+            // a different computation path — an error nothing downstream can
+            // dilute. All routers together are ~0.04% of a Qwen3-MoE model, so
+            // exactness here is nearly free. The runtime reads them from the
+            // dense checkpoint, next to the 1D norms.
+            //
+            // Note the exact suffix: `mlp.gate.weight` is the router,
+            // `mlp.gate_proj.weight` is an ordinary SwiGLU gate and IS compressed.
+            if name.ends_with(".mlp.gate.weight") {
+                skipped_router += 1;
+                skipped_bytes += view.data().len();
+                continue;
             }
 
             // For v2, validate that in_features (shape[1]) is divisible by BLOCK_SIZE_V2
-            if args.scheme == "v2" && shape[1] % BLOCK_SIZE_V2 != 0 {
+            if (args.scheme == "v2" || args.scheme == "v3") && shape[1] % BLOCK_SIZE_V2 != 0 {
                 eprintln!("Skipping tensor '{}' with shape {:?}: in_features {} not divisible by BLOCK_SIZE_V2 ({})",
                     name, shape, shape[1], BLOCK_SIZE_V2);
+                skipped_bad_width += 1;
+                skipped_bytes += view.data().len();
                 continue;
             }
 
@@ -209,6 +256,41 @@ fn main() {
     let total_blocks: usize = all_tensors.iter().map(|t| t.num_blocks).sum();
     println!("Extracted {} valid 2D matrix tensors. Total blocks: {}", all_tensors.len(), total_blocks);
 
+    // Say out loud what was left behind. Silently dropping tensors is how a
+    // multimodal model's whole vision tower went missing from a .wpc without
+    // anyone noticing until the model was asked to look at something.
+    let skipped_total = skipped_not_2d
+        + skipped_too_small
+        + skipped_dtype
+        + skipped_router
+        + skipped_bad_width;
+    if skipped_total > 0 {
+        println!(
+            "NOT compressed: {} tensors, {:.1} MB total",
+            skipped_total,
+            skipped_bytes as f64 / 1024.0 / 1024.0
+        );
+        if skipped_not_2d > 0 {
+            println!(
+                "  {skipped_not_2d:6}  not a 2D matrix — 1D norms/biases (expected), \
+                 or 3D/4D conv kernels (a vision tower would land here)"
+            );
+        }
+        if skipped_too_small > 0 {
+            println!("  {skipped_too_small:6}  fewer than 4096 elements");
+        }
+        if skipped_dtype > 0 {
+            println!("  {skipped_dtype:6}  unsupported dtype (not F32/F16/BF16)");
+        }
+        if skipped_router > 0 {
+            println!("  {skipped_router:6}  MoE routers — deliberate, must stay exact");
+        }
+        if skipped_bad_width > 0 {
+            println!("  {skipped_bad_width:6}  width not divisible by {BLOCK_SIZE_V2}");
+        }
+        println!("  The runtime must read these from the dense checkpoint.");
+    }
+
     if total_blocks == 0 {
         eprintln!("No valid blocks found to compress.");
         return;
@@ -220,7 +302,9 @@ fn main() {
     }
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    if args.scheme == "v2" {
+    if args.scheme == "v3" {
+        compress_v3(&args, &all_tensors, &out_dir);
+    } else if args.scheme == "v2" {
         compress_v2(&args, &all_tensors, &out_dir);
     } else {
         compress_v1(&args, &all_tensors, &out_dir);
@@ -416,4 +500,67 @@ fn compress_v2(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
     std::fs::write(&meta_path, meta_json).unwrap();
 
     println!("Done! Compiled WPC v2 model saved to {:?}", out_dir);
+}
+
+/// v3: identical quantization to v2, with the 6-bit codes bit-packed.
+///
+/// 100 bytes per 128 weights instead of 132, so a v3 model is ~24% smaller
+/// than the v2 model of the same tensors, with bit-identical reconstruction.
+/// Since generation here is memory-bandwidth bound, those bytes are also
+/// roughly 24% of the generation time.
+///
+/// The output keeps the v2 file names and metadata shape on purpose: only the
+/// block layout differs, so the runtime distinguishes them by `--scheme`, not
+/// by parsing a different manifest.
+fn compress_v3(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
+    println!("Starting v3 (affine 6-bit, packed) compression...");
+    let out_wpc = out_dir.join("model_v3.wpc");
+    let mut wpc_file = File::create(&out_wpc).unwrap();
+    let mut current_offset = 0;
+
+    let mut meta = ModelMetaV2 {
+        layers: Vec::new(),
+        block_size: BLOCK_SIZE_V2,
+    };
+
+    let mut v2_equivalent_bytes = 0usize;
+
+    for (idx, t_ref) in all_tensors.iter().enumerate() {
+        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
+
+        let compressed_blocks: Vec<QuantBlockV3> = quant_encoder::encode_tensor_v3(&t_data);
+
+        let size_bytes = compressed_blocks.len() * QuantBlockV3::SIZE;
+        v2_equivalent_bytes += compressed_blocks.len() * QuantBlockV2::SIZE;
+
+        meta.layers.push(LayerMetaV2 {
+            name: t_ref.name.clone(),
+            shape: t_ref.shape.clone(),
+            offset_bytes: current_offset,
+            size_bytes,
+        });
+
+        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        wpc_file.write_all(&bytes).unwrap();
+
+        current_offset += size_bytes;
+
+        drop(t_data);
+    }
+
+    let meta_path = out_dir.join("model_v3.meta");
+    let meta_json = serde_json::to_string_pretty(&meta).unwrap();
+    std::fs::write(&meta_path, meta_json).unwrap();
+
+    let saved = v2_equivalent_bytes.saturating_sub(current_offset);
+    println!(
+        "Done! Compiled WPC v3 model saved to {:?}\n  \
+         size: {:.2} GB (v2 would be {:.2} GB, saved {:.2} GB = {:.1}%)",
+        out_dir,
+        current_offset as f64 / 1024.0 / 1024.0 / 1024.0,
+        v2_equivalent_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+        saved as f64 / 1024.0 / 1024.0 / 1024.0,
+        if v2_equivalent_bytes > 0 { saved as f64 * 100.0 / v2_equivalent_bytes as f64 } else { 0.0 },
+    );
 }

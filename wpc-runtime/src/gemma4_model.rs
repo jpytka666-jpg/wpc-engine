@@ -30,6 +30,7 @@ use crate::rope::apply_rope_partial;
 use crate::weights::{EmbeddingTable, Linear, SafetensorsFile};
 use crate::wpc_weights::{WpcEmbedding, WpcLinear, WpcModelData};
 use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
+use crate::wpc_weights_v3::{WpcEmbeddingV3, WpcLinearV3, WpcModelDataV3};
 use rayon::prelude::*;
 use std::path::Path;
 
@@ -287,6 +288,110 @@ impl Gemma4Model {
             });
             eprintln!(
                 "loaded layer {l}/{} (Gemma4 WPC v2, {})",
+                config.num_hidden_layers,
+                if layers.last().unwrap().spec.is_full { "full_attention" } else { "sliding_attention" }
+            );
+        }
+
+        let final_norm = st.read_f32(&format!("{LANG_PREFIX}.norm.weight"));
+
+        Ok(Gemma4Model { config, embed, layers, final_norm })
+    }
+
+    /// Load using WPC v3: v2's affine quantization with the 6-bit codes
+    /// bit-packed (model_v3.wpc + model_v3.meta).
+    ///
+    /// Reconstruction is identical to v2 by construction -- v3 blocks are a
+    /// re-layout of v2 blocks, not a requantization -- so this differs from
+    /// `load_wpc_v2` only in which backend reads the bytes. The file is 24%
+    /// smaller, and since a token costs one full pass over the weights and the
+    /// cores idle waiting for memory, most of that is off the clock too.
+    pub fn load_wpc_v3(model_dir: &Path, wpc_dir: &Path, config: Gemma4Config) -> anyhow::Result<Gemma4Model> {
+        let st_path = model_dir.join("model.safetensors");
+        let st = SafetensorsFile::open(&st_path)?;
+        let wpc = WpcModelDataV3::open(wpc_dir)?;
+
+        let h = config.hidden_size;
+        let embed = Box::new(WpcEmbeddingV3::new(
+            wpc.clone(),
+            &format!("{LANG_PREFIX}.embed_tokens.weight"),
+            config.vocab_size,
+            h,
+        ));
+
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for l in 0..config.num_hidden_layers {
+            let spec = config.layer_spec(l);
+            let p = format!("{LANG_PREFIX}.layers.{l}");
+
+            let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
+            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let pre_feedforward_layernorm = st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
+            let post_feedforward_layernorm = st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
+            let q_norm = st.read_f32(&format!("{p}.self_attn.q_norm.weight"));
+            let k_norm = st.read_f32(&format!("{p}.self_attn.k_norm.weight"));
+            let layer_scalar = st.read_f32(&format!("{p}.layer_scalar"))[0];
+
+            let num_q_out = config.num_attention_heads * spec.head_dim;
+            let kv_dim = spec.num_kv_heads * spec.head_dim;
+
+            let q_proj = Box::new(WpcLinearV3::new(
+                wpc.clone(),
+                &format!("{p}.self_attn.q_proj.weight"),
+                num_q_out,
+                h,
+                None,
+            ));
+            let k_proj = Box::new(WpcLinearV3::new(
+                wpc.clone(),
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
+                None,
+            ));
+            let v_proj: Option<Box<dyn Linear>> = if spec.has_v_proj {
+                Some(Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    kv_dim,
+                    h,
+                    None,
+                )))
+            } else {
+                None
+            };
+            let o_proj = Box::new(WpcLinearV3::new(
+                wpc.clone(),
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                num_q_out,
+                None,
+            ));
+
+            let inter = config.intermediate_size;
+            let gate_proj = Box::new(WpcLinearV3::new(wpc.clone(), &format!("{p}.mlp.gate_proj.weight"), inter, h, None));
+            let up_proj = Box::new(WpcLinearV3::new(wpc.clone(), &format!("{p}.mlp.up_proj.weight"), inter, h, None));
+            let down_proj = Box::new(WpcLinearV3::new(wpc.clone(), &format!("{p}.mlp.down_proj.weight"), h, inter, None));
+
+            layers.push(Gemma4Layer {
+                input_layernorm,
+                post_attention_layernorm,
+                pre_feedforward_layernorm,
+                post_feedforward_layernorm,
+                q_norm,
+                k_norm,
+                q_proj,
+                k_proj,
+                v_proj,
+                o_proj,
+                gate_proj,
+                up_proj,
+                down_proj,
+                layer_scalar,
+                spec,
+            });
+            eprintln!(
+                "loaded layer {l}/{} (Gemma4 WPC v3, {})",
                 config.num_hidden_layers,
                 if layers.last().unwrap().spec.is_full { "full_attention" } else { "sliding_attention" }
             );

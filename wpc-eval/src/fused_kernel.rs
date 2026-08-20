@@ -1,6 +1,6 @@
 use std::arch::x86_64::*;
 use half::f16;
-use wpc_format::{CompressedBlock, QuantBlockV2, BLOCK_SIZE, BLOCK_SIZE_V2};
+use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, BLOCK_SIZE, BLOCK_SIZE_V2};
 
 /// Sum of horizontal adds of a __m256. Standard AVX2 trick.
 #[inline]
@@ -128,12 +128,89 @@ pub unsafe fn matvec_v2_fused(
 /// Scalar fallback for v2 matvec (no AVX2 available).
 pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
-    for b in blocks {
+    // `x` spans the whole row, so the activation index must advance with the
+    // block rather than restart inside it. Getting this wrong is invisible in
+    // a single-block test -- block 0 starts at x[0] either way -- and wrong
+    // for every real tensor, where a row is thirty or more blocks wide.
+    for (block_idx, b) in blocks.iter().enumerate() {
         let zp = b.zero_point.to_f32();
         let scale = b.scale.to_f32();
+        let row_base = block_idx * BLOCK_SIZE_V2;
         for (code_idx, &code) in b.codes.iter().enumerate() {
             let weight = zp + code as f32 * scale;
-            acc += weight * x[code_idx];
+            acc += weight * x[row_base + code_idx];
+        }
+    }
+    acc
+}
+
+/// Fused-SIMD v3 matvec.
+///
+/// The packing is undone into a 128-byte stack buffer first, then the same
+/// AVX2 multiply-accumulate as v2 runs over it. Unpacking with shuffles
+/// directly in registers would avoid the buffer, but the buffer is 128 bytes
+/// -- it stays in L1 and never reaches memory, which is the only place this
+/// workload is actually short of bandwidth. The simple version keeps the
+/// bit-twiddling in one place, shared with the scalar path.
+///
+/// # Safety
+/// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
+/// floats.
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn matvec_v3_fused(
+    blocks: &[QuantBlockV3],
+    x: *const f32,
+    n_blocks: usize,
+) -> f32 {
+    let mut acc = _mm256_setzero_ps();
+    for i in 0..n_blocks {
+        let b = *blocks.get_unchecked(i);
+        let codes = QuantBlockV3::unpack_codes(&b.packed);
+        let zp = _mm256_set1_ps(b.zero_point.to_f32());
+        let scl = _mm256_set1_ps(b.scale.to_f32());
+
+        for g in 0..16 {
+            let code_ptr = codes.as_ptr().add(g * 8);
+            let x_ptr = x.add(i * BLOCK_SIZE_V2 + g * 8);
+
+            let codes_u8 = _mm_loadl_epi64(code_ptr as *const __m128i);
+            let codes_i32 = _mm256_cvtepu8_epi32(codes_u8);
+            let codes_f32 = _mm256_cvtepi32_ps(codes_i32);
+
+            let w = _mm256_fmadd_ps(codes_f32, scl, zp);
+            let x_vec = _mm256_loadu_ps(x_ptr);
+            acc = _mm256_fmadd_ps(w, x_vec, acc);
+        }
+    }
+    hsum_avx2(acc)
+}
+
+/// Scalar v3 matvec: v2's arithmetic, reading bit-packed codes.
+///
+/// v3 stores four 6-bit codes per three bytes, so each weight costs a shift
+/// and a mask to recover. That work lands on cores which are idle waiting for
+/// memory anyway, and buys a 24% smaller read per token.
+pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
+    let mut acc = 0.0f32;
+    for (block_idx, b) in blocks.iter().enumerate() {
+        let zp = b.zero_point.to_f32();
+        let scale = b.scale.to_f32();
+        let row_base = block_idx * BLOCK_SIZE_V2;
+        let packed = b.packed;
+        for g in 0..BLOCK_SIZE_V2 / 4 {
+            let b0 = packed[g * 3];
+            let b1 = packed[g * 3 + 1];
+            let b2 = packed[g * 3 + 2];
+            let codes = [
+                b0 & 0x3F,
+                (b0 >> 6) | ((b1 & 0x0F) << 2),
+                (b1 >> 4) | ((b2 & 0x03) << 4),
+                b2 >> 2,
+            ];
+            for (lane, &code) in codes.iter().enumerate() {
+                let weight = zp + code as f32 * scale;
+                acc += weight * x[row_base + g * 4 + lane];
+            }
         }
     }
     acc
@@ -271,5 +348,116 @@ mod tests {
 
         let rel_err = (y - expected).abs() / expected.abs().max(1e-6);
         assert!(rel_err < 1e-5, "scalar v2 y={y} vs expected={expected}");
+    }
+
+    /// Builds a multi-block row with a distinct value pattern per block.
+    /// Single-block tests cannot see an activation-index bug, because block 0
+    /// reads from x[0] whether or not the index advances.
+    fn multi_block_fixture(n_blocks: usize) -> (Vec<QuantBlockV2>, Vec<f32>) {
+        let mut blocks = Vec::with_capacity(n_blocks);
+        for bi in 0..n_blocks {
+            let mut codes = [0u8; BLOCK_SIZE_V2];
+            for i in 0..BLOCK_SIZE_V2 {
+                codes[i] = ((i + bi * 13) % 64) as u8;
+            }
+            blocks.push(QuantBlockV2 {
+                zero_point: f16::from_f32(-0.4 + bi as f32 * 0.1),
+                scale: f16::from_f32(0.017 + bi as f32 * 0.003),
+                codes,
+            });
+        }
+        // Activations differ per position, so reusing the wrong slice of x
+        // changes the result instead of cancelling out.
+        let x: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V2)
+            .map(|i| ((i as f32) * 0.013).sin() + 0.5)
+            .collect();
+        (blocks, x)
+    }
+
+    fn reference_dot(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
+        let mut acc = 0.0f32;
+        for (bi, b) in blocks.iter().enumerate() {
+            let zp = b.zero_point.to_f32();
+            let sc = b.scale.to_f32();
+            let codes = b.codes;
+            for i in 0..BLOCK_SIZE_V2 {
+                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V2 + i];
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn scalar_v2_walks_the_whole_row_not_just_the_first_block() {
+        let (blocks, x) = multi_block_fixture(7);
+        let expected = reference_dot(&blocks, &x);
+        let got = matvec_v2_scalar(&blocks, &x);
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v2 multi-block: got {got}, expected {expected}");
+    }
+
+    #[test]
+    fn scalar_v2_agrees_with_fused_v2_over_many_blocks() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (blocks, x) = multi_block_fixture(11);
+        let scalar = matvec_v2_scalar(&blocks, &x);
+        let fused = unsafe { matvec_v2_fused(&blocks, x.as_ptr(), blocks.len()) };
+        let rel = (scalar - fused).abs() / fused.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar {scalar} vs fused {fused}");
+    }
+
+    #[test]
+    fn scalar_v3_matches_scalar_v2_on_the_same_weights() {
+        let (v2_blocks, x) = multi_block_fixture(9);
+        let v3_blocks: Vec<QuantBlockV3> =
+            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+
+        let v2 = matvec_v2_scalar(&v2_blocks, &x);
+        let v3 = matvec_v3_scalar(&v3_blocks, &x);
+        let rel = (v3 - v2).abs() / v2.abs().max(1e-6);
+        assert!(rel < 1e-5, "v3 {v3} vs v2 {v2} on identical weights");
+    }
+
+    #[test]
+    fn fused_v3_agrees_with_fused_v2_over_many_blocks() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (v2_blocks, x) = multi_block_fixture(13);
+        let v3_blocks: Vec<QuantBlockV3> =
+            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+
+        let v2 = unsafe { matvec_v2_fused(&v2_blocks, x.as_ptr(), v2_blocks.len()) };
+        let v3 = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
+        let rel = (v3 - v2).abs() / v2.abs().max(1e-6);
+        assert!(rel < 1e-5, "fused v3 {v3} vs fused v2 {v2}");
+    }
+
+    #[test]
+    fn fused_v3_agrees_with_scalar_v3() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (v2_blocks, x) = multi_block_fixture(6);
+        let v3_blocks: Vec<QuantBlockV3> =
+            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+
+        let s = matvec_v3_scalar(&v3_blocks, &x);
+        let f = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
+        let rel = (s - f).abs() / f.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v3 {s} vs fused v3 {f}");
+    }
+
+    #[test]
+    fn scalar_v3_matches_the_reference_formula() {
+        let (v2_blocks, x) = multi_block_fixture(5);
+        let v3_blocks: Vec<QuantBlockV3> =
+            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+        let expected = reference_dot(&v2_blocks, &x);
+        let got = matvec_v3_scalar(&v3_blocks, &x);
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "v3 {got} vs reference {expected}");
     }
 }

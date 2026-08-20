@@ -8,6 +8,7 @@
 
 use memmap2::Mmap;
 use safetensors::{Dtype, SafeTensors};
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
@@ -172,5 +173,92 @@ impl SafetensorsFile {
             }
             other => panic!("unsupported dtype {other:?} for tensor {name}"),
         }
+    }
+}
+
+/// A whole checkpoint directory, whether it is one `model.safetensors` or a
+/// set of shards described by `model.safetensors.index.json`.
+///
+/// Hugging Face splits any checkpoint over ~5 GB into
+/// `model-00001-of-000NN.safetensors` files plus an index that maps every
+/// tensor name to the shard holding it; Qwen3-4B ships that way. Reading only
+/// `model.safetensors` would fail on such a directory before a single weight
+/// was touched, so this resolves names across shards. A directory that does
+/// have a plain `model.safetensors` is served from that one file, which makes
+/// this a drop-in superset of [`SafetensorsFile`].
+pub struct ShardedSafetensors {
+    shards: Vec<SafetensorsFile>,
+    /// tensor name -> index into `shards`. Empty for a single-file checkpoint,
+    /// where every lookup goes to shard 0.
+    index: HashMap<String, usize>,
+}
+
+impl ShardedSafetensors {
+    pub fn open(model_dir: &Path) -> anyhow::Result<Self> {
+        let single = model_dir.join("model.safetensors");
+        if single.exists() {
+            return Ok(ShardedSafetensors {
+                shards: vec![SafetensorsFile::open(&single)?],
+                index: HashMap::new(),
+            });
+        }
+
+        let index_path = model_dir.join("model.safetensors.index.json");
+        if !index_path.exists() {
+            anyhow::bail!(
+                "{}: contains neither model.safetensors nor model.safetensors.index.json",
+                model_dir.display()
+            );
+        }
+        let text = std::fs::read_to_string(&index_path)?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
+        let weight_map = v
+            .get("weight_map")
+            .and_then(|m| m.as_object())
+            .ok_or_else(|| anyhow::anyhow!("{}: no `weight_map` object", index_path.display()))?;
+
+        let mut shards: Vec<SafetensorsFile> = Vec::new();
+        let mut shard_of_file: HashMap<String, usize> = HashMap::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for (tensor, file) in weight_map {
+            let Some(file) = file.as_str() else { continue };
+            let slot = match shard_of_file.get(file) {
+                Some(&i) => i,
+                None => {
+                    shards.push(SafetensorsFile::open(&model_dir.join(file))?);
+                    let i = shards.len() - 1;
+                    shard_of_file.insert(file.to_string(), i);
+                    i
+                }
+            };
+            index.insert(tensor.clone(), slot);
+        }
+        eprintln!(
+            "safetensors: {} shard(s), {} tensors indexed",
+            shards.len(),
+            index.len()
+        );
+        Ok(ShardedSafetensors { shards, index })
+    }
+
+    /// Decode a tensor to a flat row-major `Vec<f32>`, from whichever shard
+    /// holds it. Panics on an unknown name, matching [`SafetensorsFile`].
+    pub fn read_f32(&self, name: &str) -> Vec<f32> {
+        let slot = match self.index.get(name) {
+            Some(&i) => i,
+            None if self.index.is_empty() => 0,
+            None => panic!("missing tensor {name} (not in safetensors index)"),
+        };
+        self.shards[slot].read_f32(name)
+    }
+
+    /// Shape of a tensor, from whichever shard holds it.
+    pub fn shape(&self, name: &str) -> Vec<usize> {
+        let slot = match self.index.get(name) {
+            Some(&i) => i,
+            None if self.index.is_empty() => 0,
+            None => panic!("missing tensor {name} (not in safetensors index)"),
+        };
+        self.shards[slot].shape(name)
     }
 }

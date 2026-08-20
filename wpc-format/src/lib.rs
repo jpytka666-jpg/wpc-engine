@@ -171,6 +171,126 @@ impl QuantBlockV2 {
 #[allow(dead_code)]
 const _QUANT_BLOCK_V2_SIZE_CHECK: [(); 132] = [(); QuantBlockV2::SIZE];
 
+// =============================================================================
+// v3 format: v2's arithmetic, with the 6-bit codes actually packed
+// =============================================================================
+// v2 writes each 6-bit code into a whole byte, so two bits per weight reach
+// the disk as padding -- 24% of every v2 file. That was a deliberate trade for
+// branch-free decode, made before the bottleneck was known.
+//
+// It is known now. Generation on this workload is memory-bandwidth bound: one
+// token costs a full pass over the weights, and the cores idle waiting for
+// them (measured 190-350% CPU out of 800% available, ~10 GB/s sustained out of
+// ~25 GB/s the memory can do). Bytes not read are time not spent, so that
+// padding is not merely disk space -- it is roughly 24% of generation speed,
+// given away.
+//
+// v3 keeps v2's quantization EXACTLY: same zero_point, same scale, same 0..63
+// codes, therefore bit-identical reconstruction. Only the layout changes. Four
+// consecutive codes are packed into three bytes:
+//
+//   byte 0 :  c0[5:0]        | c1[1:0] << 6
+//   byte 1 : (c1[5:2] >> 2)  | c2[3:0] << 4
+//   byte 2 : (c2[5:4] >> 4)  | c3[5:0] << 2
+//
+// 128 codes / 4 = 32 groups * 3 bytes = 96 bytes, plus the same 4-byte header:
+// 100 bytes per 128 values = 6.25 bits/value against v2's 8.25.
+//
+// Unpacking costs a shift and a mask per code, paid on cores that were idle
+// anyway -- spending the surplus to buy back the shortage.
+
+pub const BLOCK_SIZE_V3: usize = 128;
+/// 128 codes * 6 bits / 8 = 96 bytes of payload.
+pub const PACKED_BYTES_V3: usize = BLOCK_SIZE_V3 * 6 / 8;
+
+/// v3 on-disk block: v2's affine quantization with the codes bit-packed.
+///
+/// offset layout (repr(C, packed)):
+///   offset 0-1  : f16  zero_point (LE, stores min(block))
+///   offset 2-3  : f16  scale      (LE, stores (max-min)/63)
+///   offset 4-99 : u8[96]  packed 6-bit codes, four per three bytes
+///
+/// total size: 4 + 96 = 100 bytes per 128 values.
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuantBlockV3 {
+    pub zero_point: f16,
+    pub scale: f16,
+    pub packed: [u8; PACKED_BYTES_V3],
+}
+
+impl QuantBlockV3 {
+    pub const SIZE: usize = 4 + PACKED_BYTES_V3;
+
+    /// Pack 128 codes into 96 bytes. Values are masked to 6 bits, which
+    /// matches the encoder's own clamp to 0..63 -- a code outside that range
+    /// is an encoder bug, and silently truncating keeps decode total.
+    #[inline]
+    pub fn pack_codes(codes: &[u8; BLOCK_SIZE_V3]) -> [u8; PACKED_BYTES_V3] {
+        let mut out = [0u8; PACKED_BYTES_V3];
+        for g in 0..BLOCK_SIZE_V3 / 4 {
+            let c0 = codes[g * 4] & 0x3F;
+            let c1 = codes[g * 4 + 1] & 0x3F;
+            let c2 = codes[g * 4 + 2] & 0x3F;
+            let c3 = codes[g * 4 + 3] & 0x3F;
+            out[g * 3] = c0 | (c1 << 6);
+            out[g * 3 + 1] = (c1 >> 2) | (c2 << 4);
+            out[g * 3 + 2] = (c2 >> 4) | (c3 << 2);
+        }
+        out
+    }
+
+    /// Exact inverse of `pack_codes`.
+    #[inline]
+    pub fn unpack_codes(packed: &[u8; PACKED_BYTES_V3]) -> [u8; BLOCK_SIZE_V3] {
+        let mut codes = [0u8; BLOCK_SIZE_V3];
+        for g in 0..BLOCK_SIZE_V3 / 4 {
+            let b0 = packed[g * 3];
+            let b1 = packed[g * 3 + 1];
+            let b2 = packed[g * 3 + 2];
+            codes[g * 4] = b0 & 0x3F;
+            codes[g * 4 + 1] = (b0 >> 6) | ((b1 & 0x0F) << 2);
+            codes[g * 4 + 2] = (b1 >> 4) | ((b2 & 0x03) << 4);
+            codes[g * 4 + 3] = b2 >> 2;
+        }
+        codes
+    }
+
+    pub fn to_le_bytes(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        let zp = self.zero_point.to_le_bytes();
+        out[0] = zp[0];
+        out[1] = zp[1];
+        let sc = self.scale.to_le_bytes();
+        out[2] = sc[0];
+        out[3] = sc[1];
+        out[4..Self::SIZE].copy_from_slice(&self.packed);
+        out
+    }
+
+    pub fn from_le_bytes(b: &[u8; Self::SIZE]) -> Self {
+        let zero_point = f16::from_le_bytes([b[0], b[1]]);
+        let scale = f16::from_le_bytes([b[2], b[3]]);
+        let mut packed = [0u8; PACKED_BYTES_V3];
+        packed.copy_from_slice(&b[4..Self::SIZE]);
+        QuantBlockV3 { zero_point, scale, packed }
+    }
+
+    /// Rebuild a v3 block from a v2 one. The arithmetic is identical, so this
+    /// is a pure re-layout: no requantization, no extra error.
+    pub fn from_v2(v2: &QuantBlockV2) -> Self {
+        let codes = v2.codes;
+        QuantBlockV3 {
+            zero_point: v2.zero_point,
+            scale: v2.scale,
+            packed: Self::pack_codes(&codes),
+        }
+    }
+}
+
+#[allow(dead_code)]
+const _QUANT_BLOCK_V3_SIZE_CHECK: [(); 100] = [(); QuantBlockV3::SIZE];
+
 #[cfg(test)]
 mod tests {
     use super::*;

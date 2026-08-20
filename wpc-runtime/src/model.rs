@@ -4,12 +4,21 @@ use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, SafetensorsFile};
 use crate::wpc_weights::{WpcEmbedding, WpcLinear, WpcModelData};
 use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
+use crate::wpc_weights_v3::{WpcEmbeddingV3, WpcLinearV3, WpcModelDataV3};
 use rayon::prelude::*;
 use std::path::Path;
 
 pub struct DecoderLayer {
     pub input_layernorm: Vec<f32>,
     pub post_attention_layernorm: Vec<f32>,
+    /// Qwen3's `self_attn.q_norm.weight`: an RMSNorm of length `head_dim`,
+    /// applied per head to the q_proj output, after the projection and before
+    /// RoPE. `None` on Qwen2, whose checkpoints have no such tensor — the
+    /// forward pass then skips the step entirely and is bit-for-bit what it
+    /// was before this field existed.
+    pub q_norm: Option<Vec<f32>>,
+    /// Same for `self_attn.k_norm.weight`, applied per KV head.
+    pub k_norm: Option<Vec<f32>>,
     pub q_proj: Box<dyn Linear>,
     pub k_proj: Box<dyn Linear>,
     pub v_proj: Box<dyn Linear>,
@@ -89,6 +98,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(DenseLinear::new(config.num_attention_heads * head_dim, h, q_w, Some(q_b))),
                 k_proj: Box::new(DenseLinear::new(kv_dim, h, k_w, Some(k_b))),
                 v_proj: Box::new(DenseLinear::new(kv_dim, h, v_w, Some(v_b))),
@@ -146,6 +157,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(WpcLinear::new(
                     wpc.clone(),
                     &format!("{p}.self_attn.q_proj.weight"),
@@ -241,6 +254,8 @@ impl Model {
             layers.push(DecoderLayer {
                 input_layernorm,
                 post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
                 q_proj: Box::new(WpcLinearV2::new(
                     wpc.clone(),
                     &format!("{p}.self_attn.q_proj.weight"),
@@ -299,6 +314,102 @@ impl Model {
         Ok(Model { config, embed, layers, final_norm })
     }
 
+    /// Load using the WPC v3 backend: v2's quantization with the 6-bit codes
+    /// bit-packed (model_v3.wpc + model_v3.meta). Reconstruction is identical
+    /// to v2 by construction; the file is 24% smaller, and since decoding is
+    /// memory-bandwidth bound, so is most of the read time.
+    pub fn load_wpc_v3(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Model> {
+        let st_path = model_dir.join("model.safetensors");
+        let st = SafetensorsFile::open(&st_path)?;
+        let wpc = WpcModelDataV3::open(wpc_dir)?;
+
+        let h = config.hidden_size;
+        let embed = Box::new(WpcEmbeddingV3::new(
+            wpc.clone(),
+            "model.embed_tokens.weight",
+            config.vocab_size,
+            h,
+        ));
+
+        let head_dim = config.head_dim();
+        let kv_dim = config.num_key_value_heads * head_dim;
+
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for l in 0..config.num_hidden_layers {
+            let p = format!("model.layers.{l}");
+            let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
+            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+
+            let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
+            let k_b = st.read_f32(&format!("{p}.self_attn.k_proj.bias"));
+            let v_b = st.read_f32(&format!("{p}.self_attn.v_proj.bias"));
+
+            let intermediate = config.intermediate_size;
+            let num_attn_out = config.num_attention_heads * head_dim;
+
+            layers.push(DecoderLayer {
+                input_layernorm,
+                post_attention_layernorm,
+                q_norm: None,
+                k_norm: None,
+                q_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    num_attn_out,
+                    h,
+                    Some(q_b),
+                )),
+                k_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    kv_dim,
+                    h,
+                    Some(k_b),
+                )),
+                v_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    kv_dim,
+                    h,
+                    Some(v_b),
+                )),
+                o_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    h,
+                    num_attn_out,
+                    None,
+                )),
+                gate_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    intermediate,
+                    h,
+                    None,
+                )),
+                up_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.up_proj.weight"),
+                    intermediate,
+                    h,
+                    None,
+                )),
+                down_proj: Box::new(WpcLinearV3::new(
+                    wpc.clone(),
+                    &format!("{p}.mlp.down_proj.weight"),
+                    h,
+                    intermediate,
+                    None,
+                )),
+            });
+            eprintln!("loaded layer {l}/{} (WPC v3)", config.num_hidden_layers);
+        }
+
+        let final_norm = st.read_f32("model.norm.weight");
+
+        Ok(Model { config, embed, layers, final_norm })
+    }
+
     pub fn new_cache(&self) -> KvCache {
         KvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)
     }
@@ -329,6 +440,26 @@ impl Model {
             layer.q_proj.matvec(&normed, &mut q);
             layer.k_proj.matvec(&normed, &mut k);
             layer.v_proj.matvec(&normed, &mut v);
+
+            // Qwen3 only: RMSNorm each head's q/k vector (length head_dim)
+            // after the projection and before RoPE, exactly as Gemma4 does.
+            // Qwen2 carries `None` here and drops straight through to RoPE.
+            if let Some(q_norm) = &layer.q_norm {
+                let mut tmp = vec![0.0f32; head_dim];
+                for hd in 0..num_heads {
+                    let slice = &mut q[hd * head_dim..(hd + 1) * head_dim];
+                    rms_norm(slice, q_norm, eps, &mut tmp);
+                    slice.copy_from_slice(&tmp);
+                }
+            }
+            if let Some(k_norm) = &layer.k_norm {
+                let mut tmp = vec![0.0f32; head_dim];
+                for hd in 0..num_kv_heads {
+                    let slice = &mut k[hd * head_dim..(hd + 1) * head_dim];
+                    rms_norm(slice, k_norm, eps, &mut tmp);
+                    slice.copy_from_slice(&tmp);
+                }
+            }
 
             for hd in 0..num_heads {
                 apply_rope(&mut q[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
