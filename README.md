@@ -2,153 +2,66 @@
 
 **Weight-Pattern Compression — a tensor compilation and inference engine in pure Rust.**
 
-Runs large language models on ordinary CPUs by compressing their weights to as few as
-4.25 bits each, with no GPU, no Python runtime, and no external inference dependencies.
+Runs large language models on ordinary CPUs by compressing their weights to as few as 4.25 bits each.
 
----
+## AIONS agent integration
 
-## What it does
+The repository includes `aions-agent`, a thin autonomous loop connecting the WPC runtime to AIONS through MCP. It dynamically calls `initialize` and `tools/list` at startup, so it does not hard-code a fixed number of AIONS tools.
 
-A 30-billion-parameter mixture-of-experts model — Qwen3-Coder-30B-A3B — compresses from
-**57.0 GB to 15.10 GB** and generates correct code on a 2016 quad-core laptop CPU, at
-**2.35 tokens per second — roughly 120 words per minute**.
+Execution path:
 
-| Model | Source | v3 (6.25 bit) | v4 (4.25 bit) | Best ratio |
-|---|---|---|---|---|
-| Qwen3-Coder-30B-A3B (MoE) | 57.0 GB | 22.21 GB | **15.10 GB** | 3.77x |
-| Qwen3-4B (dense) | — | 3.0 GB | **2 038 MiB** | — |
-| Gemma-12B-it (dense) | 23.0 GB | 8.70 GB | — | 2.64x |
-| Qwen2.5-0.5B (dense) | 0.95 GB | 0.37 GB | — | 2.57x |
-
-**v4 is the recommended scheme, and the obvious choice whenever memory is tight** — a small
-GPU, a laptop, or anything that has to hold the model in a limited amount of RAM. It is not a
-quality trade: on the dense control model, the 4.25-bit build emits **token ids identical to
-the 6.25-bit build**, and on the coder model it produces correct code, correct tool calls, and
-correct end-of-turn termination.
-
-Going below four bits does not pay. A 2.25-bit build is 47% smaller and *slower*, and its
-output degenerates — below roughly 2 GB the model stops being limited by memory bandwidth, so
-further compression buys nothing and costs everything.
-
-Full measurements, parameter accounting, and performance analysis are in
-[WHITEPAPER.md](WHITEPAPER.md).
-
----
-
-## How it works
-
-Weights are quantised per block of 128 values using an affine map:
-
-```
-w = zero_point + code * scale
+```text
+user task
+  -> AIONS agent / router
+  -> live MCP tools/list
+  -> WPC Qwen3-Coder-30B-A3B v4
+  -> TOOL_CALL
+  -> AIONS MCP server
+  -> TOOL_RESULT
+  -> next agent turn
 ```
 
-Each block stores a 16-bit `zero_point`, a 16-bit `scale`, and the codes themselves:
+Adding a new AIONS MCP tool therefore does not require changing the agent binary.
 
-| Scheme | Codes | Bytes per block | Bits per weight |
-|---|---|---|---|
-| v3 | 128 × 6-bit, bit-packed | 100 | 6.25 |
-| **v4** | **128 × 4-bit, two per byte** | **68** | **4.25** |
+Example:
 
-At six bits, how the codes are arranged inside the block matters as much as the density: a
-**two-plane layout** — a 64-byte low plane holding bits 0–3 and a 32-byte high plane holding
-bits 4–5, permuted at pack time — lets the decode path recover eight weights per AVX2
-instruction group with no cross-lane shuffles. On a dense model this is the difference between
-the packing costing 65% of decode throughput and costing nothing.
+```text
+AIONS_MCP_COMMAND=/path/to/aions-mcp-server cargo run --release --bin aions-agent -- --task "inspect the repository and fix the failing test" --model /home/aions/qwen3-coder-model --wpc /home/aions/qwen3-coder-wpc4 --scheme v4 --max-turns 6
+```
 
-At four bits the problem disappears entirely. A 4-bit code divides a byte exactly, so
-extraction is a shift and a mask — no shuffles, no planes, no pack-time permutation.
+The MCP connection stays alive across agent turns. The current implementation launches `wpc-runtime` for each model turn; the next performance step is a long-lived runtime so the model and KV cache remain resident throughout the tool loop.
 
-**Layout matters outside the block, too.** Sorting tensors so that each expert occupies one
-contiguous run — instead of scattering its three projections across the artifact — is worth
-**+45% throughput on its own**, with every weight value left untouched and reconstruction
-bit-identical.
+## Current WPC results
 
-Routers in mixture-of-experts models are deliberately left uncompressed: expert selection is a
-discrete argmax, where quantisation error would change *which* experts run rather than merely
-by how much.
+Qwen3-Coder-30B-A3B: 57.0 GB source -> 15.10 GB v4 artifact, 4.25 bits/weight, measured 2.35 tok/s on the 2016 quad-core CPU used in the study. Tensor ordering alone gave +45% throughput with bit-identical reconstruction. The 2.25-bit build is smaller but slower and degenerate.
 
----
-
-## Supported architectures
-
-| Architecture | Status |
-|---|---|
-| Qwen2 | dense, compressed |
-| Qwen3 | dense, compressed |
-| Qwen3-MoE | sparse, compressed (router + top-k expert routing) |
-| Gemma4 | dense, compressed |
-
-Architecture is auto-detected from `config.json`.
-
----
+See `WHITEPAPER.md` for the full revision-2 measurements.
 
 ## Usage
 
-Compile a model:
-
-```
+```text
 wpc-compiler --input <bf16 model dir> --output <artifact dir> --scheme v4
+wpc-runtime --model <tokenizer + norms dir> --wpc <artifact dir> --scheme v4 --prompt "def binary_search(arr, target):" --max-tokens 60
 ```
-
-Run it:
-
-```
-wpc-runtime --model <tokenizer + norms dir> \
-            --wpc <artifact dir> \
-            --scheme v4 \
-            --prompt "def binary_search(arr, target):" \
-            --max-tokens 60
-```
-
-Compression schemes:
-
-| Scheme | Bits/weight | Use |
-|---|---|---|
-| `v1` | codebook | superseded — see the whitepaper for why the premise failed |
-| `v2` | 8.25 | superseded, byte-aligned affine |
-| `v3` | 6.25 | supported |
-| `v4` | **4.25** | **recommended, and required when memory is tight** |
-| `v5` | 2.25 | implemented and rejected; output degenerates |
-
----
 
 ## Known limitation
 
-The engine processes **one token at a time**. There is no batched forward pass, so reading a
-prompt costs the same per token as writing a reply, and batched prefill, speculative decoding,
-and expert-grouped execution are all blocked behind it. This is the principal outstanding item
-of work.
-
----
+The runtime still performs one forward pass per token. Batched prefill, speculative decoding, and expert-grouped execution remain the main performance work. The AIONS agent is therefore an orchestration proof, not yet the final high-throughput agent runtime.
 
 ## Repository layout
 
-| Crate | Purpose |
-|---|---|
-| `wpc-core` | Quantisation encoders, codebooks, safetensors reader |
-| `wpc-format` | On-disk block formats and packing/unpacking |
-| `wpc-compiler` | Command-line model compiler |
-| `wpc-runtime` | Inference engine: attention, RoPE, norms, MoE routing, sampling |
-| `wpc-eval` | Fused AVX2 kernels and correctness tests |
-
----
+- `wpc-core` — quantisation and safetensors primitives
+- `wpc-format` — on-disk formats
+- `wpc-compiler` — model compiler
+- `wpc-runtime` — inference engine
+- `wpc-runtime/src/bin/aions-agent.rs` — AIONS MCP-aware agent
+- `wpc-eval` — SIMD kernels and tests
 
 ## Building
 
-```
+```text
 cargo build --release
 cargo test
 ```
 
-93 tests pass. Requires a CPU with AVX2 and FMA. No other dependencies.
-
----
-
-## Licence and a request
-
-**Free and Open Source. However, if you monetize this project, you are kindly asked to
-donate 1% of your profits to a charity supporting neurodivergent individuals, honoring
-the project author's request.**
-
-This is a request, not a licence condition. It is made in good faith and left to yours.
+Requires AVX2 + FMA.
