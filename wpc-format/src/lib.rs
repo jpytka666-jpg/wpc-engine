@@ -291,6 +291,105 @@ impl QuantBlockV3 {
 #[allow(dead_code)]
 const _QUANT_BLOCK_V3_SIZE_CHECK: [(); 100] = [(); QuantBlockV3::SIZE];
 
+// =============================================================================
+// v4 format: the same affine scheme at 4 bits, two codes per byte
+// =============================================================================
+// v3 costs 6.25 bits/weight. A 4B model is 2.93 GB that way, and a 4 GB card
+// with ~2839 MiB actually free cannot take it -- it misses by about 100 MB.
+// Four bits puts the same model at ~1918 MiB, which fits with room left for
+// the KV cache.
+//
+// The quantization is v2/v3's, with one number changed: codes run 0..15 instead
+// of 0..63, so scale = (max - min) / 15. Reconstruction is the same single FMA,
+// `w = zero_point + code * scale`.
+//
+// The layout is chosen for the decoder rather than for the writer. Two codes
+// share a byte, but NOT as neighbours: byte j holds code j in its low nibble
+// and code j+64 in its high nibble. That is what makes the SIMD path free of
+// shuffles -- `_mm256_cvtepu8_epi32` over 8 bytes yields 8 lanes, `& 0x0F`
+// gives weights j..j+8 and `>> 4` gives weights j+64..j+72, and BOTH runs of
+// activations are contiguous in `x`. Had the pairs been neighbours (j, j+1),
+// the codes would come out even-and-odd and every load of `x` would need a
+// deinterleave to match.
+//
+// 128 codes / 2 = 64 bytes, plus the same 4-byte header: 68 bytes per 128
+// values = 4.25 bits/value, against v3's 6.25 and v2's 8.25.
+
+pub const BLOCK_SIZE_V4: usize = 128;
+/// 128 codes * 4 bits / 8 = 64 bytes of payload.
+pub const PACKED_BYTES_V4: usize = BLOCK_SIZE_V4 * 4 / 8;
+/// Highest 4-bit code. The encoder's `levels`, spelled once.
+pub const MAX_CODE_V4: u8 = 15;
+
+/// v4 on-disk block: affine 4-bit quantization, two codes per byte.
+///
+/// offset layout (repr(C, packed)):
+///   offset 0-1  : f16  zero_point (LE, stores min(block))
+///   offset 2-3  : f16  scale      (LE, stores (max-min)/15)
+///   offset 4-67 : u8[64]  packed 4-bit codes; byte j is
+///                 `codes[j] | (codes[j + 64] << 4)`
+///
+/// total size: 4 + 64 = 68 bytes per 128 values.
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuantBlockV4 {
+    pub zero_point: f16,
+    pub scale: f16,
+    pub packed: [u8; PACKED_BYTES_V4],
+}
+
+impl QuantBlockV4 {
+    pub const SIZE: usize = 4 + PACKED_BYTES_V4;
+
+    /// Pack 128 codes into 64 bytes. Values are masked to 4 bits, matching the
+    /// encoder's own clamp to 0..15 -- a code outside that range is an encoder
+    /// bug, and truncating keeps decode total.
+    #[inline]
+    pub fn pack_codes(codes: &[u8; BLOCK_SIZE_V4]) -> [u8; PACKED_BYTES_V4] {
+        let mut out = [0u8; PACKED_BYTES_V4];
+        for j in 0..PACKED_BYTES_V4 {
+            let lo = codes[j] & 0x0F;
+            let hi = codes[j + PACKED_BYTES_V4] & 0x0F;
+            out[j] = lo | (hi << 4);
+        }
+        out
+    }
+
+    /// Exact inverse of `pack_codes`.
+    #[inline]
+    pub fn unpack_codes(packed: &[u8; PACKED_BYTES_V4]) -> [u8; BLOCK_SIZE_V4] {
+        let mut codes = [0u8; BLOCK_SIZE_V4];
+        for j in 0..PACKED_BYTES_V4 {
+            codes[j] = packed[j] & 0x0F;
+            codes[j + PACKED_BYTES_V4] = packed[j] >> 4;
+        }
+        codes
+    }
+
+    pub fn to_le_bytes(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        let zp = self.zero_point.to_le_bytes();
+        out[0] = zp[0];
+        out[1] = zp[1];
+        let sc = self.scale.to_le_bytes();
+        out[2] = sc[0];
+        out[3] = sc[1];
+        out[4..Self::SIZE].copy_from_slice(&self.packed);
+        out
+    }
+
+    pub fn from_le_bytes(b: &[u8; Self::SIZE]) -> Self {
+        let zero_point = f16::from_le_bytes([b[0], b[1]]);
+        let scale = f16::from_le_bytes([b[2], b[3]]);
+        let mut packed = [0u8; PACKED_BYTES_V4];
+        packed.copy_from_slice(&b[4..Self::SIZE]);
+        QuantBlockV4 { zero_point, scale, packed }
+    }
+}
+
+#[allow(dead_code)]
+const _QUANT_BLOCK_V4_SIZE_CHECK: [(); 68] = [(); QuantBlockV4::SIZE];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +434,54 @@ mod tests {
         };
         let bytes = block.to_le_bytes();
         assert_eq!(QuantBlockV2::from_le_bytes(&bytes), block);
+    }
+
+    #[test]
+    fn v4_block_is_sixty_eight_bytes() {
+        assert_eq!(QuantBlockV4::SIZE, 68);
+        assert_eq!(core::mem::size_of::<QuantBlockV4>(), 68);
+        // 68 bytes / 128 values = 4.25 bits per value.
+        assert_eq!(PACKED_BYTES_V4, 64);
+    }
+
+    #[test]
+    fn v4_round_trips_through_le_bytes() {
+        let mut codes = [0u8; BLOCK_SIZE_V4];
+        for i in 0..BLOCK_SIZE_V4 {
+            codes[i] = (i % 16) as u8;
+        }
+        let block = QuantBlockV4 {
+            zero_point: f16::from_f32(-1.5),
+            scale: f16::from_f32(0.025),
+            packed: QuantBlockV4::pack_codes(&codes),
+        };
+        let bytes = block.to_le_bytes();
+        assert_eq!(QuantBlockV4::from_le_bytes(&bytes), block);
+    }
+
+    #[test]
+    fn v4_packing_round_trips_every_code_in_every_nibble() {
+        // Both nibbles of every byte, for every legal code value: a swapped
+        // shift or a missing mask cannot hide in a half the test never uses.
+        for v in 0u8..=MAX_CODE_V4 {
+            let uniform = [v; BLOCK_SIZE_V4];
+            let p = QuantBlockV4::pack_codes(&uniform);
+            assert_eq!(QuantBlockV4::unpack_codes(&p), uniform, "code value {v} failed");
+        }
+
+        // And a pattern where the low half and the high half differ, so the
+        // two nibbles cannot be confused for one another.
+        let mut codes = [0u8; BLOCK_SIZE_V4];
+        for i in 0..BLOCK_SIZE_V4 {
+            codes[i] = ((i * 5 + i / 16) % 16) as u8;
+        }
+        let packed = QuantBlockV4::pack_codes(&codes);
+        assert_eq!(QuantBlockV4::unpack_codes(&packed), codes);
+
+        // The documented byte layout itself, not just the round trip.
+        for j in 0..PACKED_BYTES_V4 {
+            assert_eq!(packed[j] & 0x0F, codes[j]);
+            assert_eq!(packed[j] >> 4, codes[j + PACKED_BYTES_V4]);
+        }
     }
 }

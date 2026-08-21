@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 use wpc_core::codebook::{PatternDict, ResidualDict, BLOCK_DIM};
 use wpc_core::encoder::{encode_block, normalize_block, BlockNorm, INPUT_SCALE};
 use wpc_core::quant_encoder;
-use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
+use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
 use safetensors::SafeTensors;
 use half::f16;
 
@@ -24,7 +24,8 @@ struct Args {
     #[arg(short, long)]
     output: PathBuf,
 
-    /// Compression scheme: "v3" (packed affine, 6.25 bits/weight - recommended),
+    /// Compression scheme: "v3" (packed affine 6-bit, 6.25 bits/weight - default),
+    /// "v4" (packed affine 4-bit, 4.25 bits/weight - for cards too small for v3),
     /// "v2" (byte-aligned affine, 8.25 bits/weight) or "v1" (VQ-codebook, superseded).
     #[arg(long, default_value = "v3")]
     scheme: String,
@@ -70,6 +71,60 @@ struct TensorRef {
     name: String,
     shape: Vec<usize>,
     num_blocks: usize,
+}
+
+/// Sort key: (layer, section, expert, projection).
+///
+/// Tensors arrive in shard/manifest order, which is effectively random: the
+/// first tensors of layer 0 were experts 99, 109, 77, 80, 47, ... and each
+/// expert's gate/up/down sat far apart in the file. At generation time a layer
+/// activates 8 of its 128 experts, so that layout turned every expert into
+/// three seeks across a 22 GB file - 1152 random jumps per token - which the
+/// hardware prefetcher cannot follow. Measured effective bandwidth was
+/// 2.14 GB/s against ~10 GB/s the machine sustains on sequential reads.
+///
+/// Sorting costs nothing at compile time and makes one expert one contiguous
+/// ~3.5 MB run. The weights themselves are untouched; only their order in the
+/// file changes, so reconstruction stays bit-identical.
+///
+/// Non-layer tensors (embeddings, final norm) sort to the front, keeping their
+/// relative order. Within a layer: attention, then the router, then experts in
+/// numeric order with each expert's gate/up/down adjacent.
+fn tensor_sort_key(name: &str) -> (usize, usize, usize, usize) {
+    let layer = name
+        .split("layers.")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .map(|l| l + 1)
+        .unwrap_or(0);
+
+    let expert = name
+        .split("experts.")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .and_then(|n| n.parse::<usize>().ok());
+
+    let proj = if name.contains("gate_proj") {
+        0
+    } else if name.contains("up_proj") {
+        1
+    } else if name.contains("down_proj") {
+        2
+    } else {
+        3
+    };
+
+    match expert {
+        Some(e) => (layer, 2, e, proj),
+        None if name.contains("mlp.gate.weight") => (layer, 1, 0, 0),
+        None => (layer, 0, 0, proj),
+    }
+}
+
+/// Reorder for read locality. Stable, so equal keys keep their original order.
+fn sort_tensors_for_locality(tensors: &mut [TensorRef]) {
+    tensors.sort_by_key(|t| tensor_sort_key(&t.name));
 }
 
 fn classify_tensor(name: &str) -> &'static str {
@@ -144,8 +199,8 @@ fn read_tensor_f32(shard_path: &Path, name: &str) -> Vec<f32> {
 fn main() {
     let args = Args::parse();
 
-    if args.scheme != "v1" && args.scheme != "v2" && args.scheme != "v3" {
-        eprintln!("Invalid scheme '{}'. Must be 'v1', 'v2' or 'v3'.", args.scheme);
+    if args.scheme != "v1" && args.scheme != "v2" && args.scheme != "v3" && args.scheme != "v4" {
+        eprintln!("Invalid scheme '{}'. Must be 'v1', 'v2', 'v3' or 'v4'.", args.scheme);
         return;
     }
 
@@ -236,8 +291,11 @@ fn main() {
                 continue;
             }
 
-            // For v2, validate that in_features (shape[1]) is divisible by BLOCK_SIZE_V2
-            if (args.scheme == "v2" || args.scheme == "v3") && shape[1] % BLOCK_SIZE_V2 != 0 {
+            // For the affine schemes, in_features (shape[1]) must be a whole
+            // number of blocks. v2, v3 and v4 all use 128-wide blocks.
+            if (args.scheme == "v2" || args.scheme == "v3" || args.scheme == "v4")
+                && shape[1] % BLOCK_SIZE_V2 != 0
+            {
                 eprintln!("Skipping tensor '{}' with shape {:?}: in_features {} not divisible by BLOCK_SIZE_V2 ({})",
                     name, shape, shape[1], BLOCK_SIZE_V2);
                 skipped_bad_width += 1;
@@ -303,7 +361,14 @@ fn main() {
     }
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    if args.scheme == "v3" {
+    // Group each expert's three matrices together before writing; see
+    // tensor_sort_key. This is the single largest win available on the MoE path
+    // and it does not touch a single weight. Applies to every scheme.
+    sort_tensors_for_locality(&mut all_tensors);
+
+    if args.scheme == "v4" {
+        compress_v4(&args, &all_tensors, &out_dir);
+    } else if args.scheme == "v3" {
         compress_v3(&args, &all_tensors, &out_dir);
     } else if args.scheme == "v2" {
         compress_v2(&args, &all_tensors, &out_dir);
@@ -563,5 +628,69 @@ fn compress_v3(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         v2_equivalent_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
         saved as f64 / 1024.0 / 1024.0 / 1024.0,
         if v2_equivalent_bytes > 0 { saved as f64 * 100.0 / v2_equivalent_bytes as f64 } else { 0.0 },
+    );
+}
+
+/// v4: the same affine quantization at 4 bits, two codes per byte.
+///
+/// 68 bytes per 128 weights instead of v3's 100, so a v4 model is 32% smaller
+/// than the v3 model of the same tensors. Unlike the v2 -> v3 step this is not
+/// free: 16 levels per block instead of 64 is a real loss of precision, paid to
+/// make a model fit a card that v3 misses.
+///
+/// The output uses its own file names (`model_v4.wpc` / `model_v4.meta`) so a
+/// v3 and a v4 build can share one directory, and the runtime picks between
+/// them by `--scheme`.
+fn compress_v4(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
+    println!("Starting v4 (affine 4-bit, packed) compression...");
+    let out_wpc = out_dir.join("model_v4.wpc");
+    let mut wpc_file = File::create(&out_wpc).unwrap();
+    let mut current_offset = 0;
+
+    let mut meta = ModelMetaV2 {
+        layers: Vec::new(),
+        block_size: BLOCK_SIZE_V2,
+    };
+
+    let mut v3_equivalent_bytes = 0usize;
+
+    for (idx, t_ref) in all_tensors.iter().enumerate() {
+        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
+
+        let compressed_blocks: Vec<QuantBlockV4> = quant_encoder::encode_tensor_v4(&t_data);
+
+        let size_bytes = compressed_blocks.len() * QuantBlockV4::SIZE;
+        v3_equivalent_bytes += compressed_blocks.len() * QuantBlockV3::SIZE;
+
+        meta.layers.push(LayerMetaV2 {
+            name: t_ref.name.clone(),
+            shape: t_ref.shape.clone(),
+            offset_bytes: current_offset,
+            size_bytes,
+        });
+
+        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        wpc_file.write_all(&bytes).unwrap();
+
+        current_offset += size_bytes;
+
+        drop(t_data);
+    }
+
+    let meta_path = out_dir.join("model_v4.meta");
+    let meta_json = serde_json::to_string_pretty(&meta).unwrap();
+    std::fs::write(&meta_path, meta_json).unwrap();
+
+    let saved = v3_equivalent_bytes.saturating_sub(current_offset);
+    println!(
+        "Done! Compiled WPC v4 model saved to {:?}\n  \
+         size: {:.2} GB / {:.0} MiB (v3 would be {:.2} GB, saved {:.2} GB = {:.1}%)",
+        out_dir,
+        current_offset as f64 / 1024.0 / 1024.0 / 1024.0,
+        current_offset as f64 / 1024.0 / 1024.0,
+        v3_equivalent_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+        saved as f64 / 1024.0 / 1024.0 / 1024.0,
+        if v3_equivalent_bytes > 0 { saved as f64 * 100.0 / v3_equivalent_bytes as f64 } else { 0.0 },
     );
 }

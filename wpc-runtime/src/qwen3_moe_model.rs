@@ -44,6 +44,7 @@ use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, ShardedSafetensors};
 use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
 use crate::wpc_weights_v3::{WpcEmbeddingV3, WpcLinearV3, WpcModelDataV3};
+use crate::wpc_weights_v4::{WpcEmbeddingV4, WpcLinearV4, WpcModelDataV4};
 use rayon::prelude::*;
 use std::path::Path;
 
@@ -304,6 +305,51 @@ impl Qwen3MoeModel {
                 Box::new(WpcLinearV3::new(wpc.clone(), name, out, inp, None))
             },
             "Qwen3-MoE WPC v3",
+        );
+        let final_norm = st.read_f32("model.norm.weight");
+        Ok(Qwen3MoeModel {
+            config,
+            embed,
+            lm_head,
+            layers,
+            final_norm,
+            top_k,
+            norm_topk,
+            moe_inter,
+        })
+    }
+
+    /// Load through the WPC v4 backend (affine 4-bit, two codes per byte).
+    ///
+    /// The routers stay dense, as they do for every scheme: they make a
+    /// discrete choice between experts, and 4-bit noise there would change
+    /// which expert runs rather than merely perturb a value.
+    pub fn load_wpc_v4(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Self> {
+        let (n_exp, top_k, moe_inter, norm_topk) = moe_dims(&config)?;
+        let st = ShardedSafetensors::open(model_dir)?;
+        let wpc = WpcModelDataV4::open(wpc_dir)?;
+        let embed: Box<dyn EmbeddingTable> = Box::new(WpcEmbeddingV4::new(
+            wpc.clone(),
+            "model.embed_tokens.weight",
+            config.vocab_size,
+            config.hidden_size,
+        ));
+        let lm_head: Box<dyn Linear> = Box::new(WpcLinearV4::new(
+            wpc.clone(),
+            "lm_head.weight",
+            config.vocab_size,
+            config.hidden_size,
+            None,
+        ));
+        let layers = build_layers(
+            &st,
+            &config,
+            n_exp,
+            moe_inter,
+            |name: &str, out, inp| -> Box<dyn Linear> {
+                Box::new(WpcLinearV4::new(wpc.clone(), name, out, inp, None))
+            },
+            "Qwen3-MoE WPC v4",
         );
         let final_norm = st.read_f32("model.norm.weight");
         Ok(Qwen3MoeModel {

@@ -46,7 +46,8 @@ struct Args {
     #[arg(long, value_enum, default_value_t = Arch::Auto)]
     arch: Arch,
 
-    /// WPC compression scheme: "v3" (packed affine, 6.25 bits/weight - recommended),
+    /// WPC compression scheme: "v3" (packed affine 6-bit, 6.25 bits/weight - recommended),
+    /// "v4" (packed affine 4-bit, 4.25 bits/weight - for cards too small for v3),
     /// "v2" (byte-aligned affine, 8.25 bits/weight) or "v1" (VQ-codebook, superseded).
     /// Only used when --wpc is provided.
     #[arg(long, default_value = "v1")]
@@ -149,7 +150,14 @@ fn run_qwen3(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
 
     let t0 = Instant::now();
     let model = if let Some(wpc_dir) = &args.wpc {
-        if args.scheme == "v3" {
+        if args.scheme == "v4" {
+            eprintln!(
+                "loading model weights (WPC v4-compressed, 4-bit packed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            qwen3_model::load_wpc_v4(&args.model, wpc_dir, config)?
+        } else if args.scheme == "v3" {
             eprintln!(
                 "loading model weights (WPC v3-compressed, packed) from {} (norms from {}) ...",
                 wpc_dir.display(),
@@ -200,7 +208,14 @@ fn run_qwen3_moe(
 
     let t0 = Instant::now();
     let model = if let Some(wpc_dir) = &args.wpc {
-        if args.scheme == "v3" {
+        if args.scheme == "v4" {
+            eprintln!(
+                "loading MoE weights (WPC v4-compressed, 4-bit packed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            Qwen3MoeModel::load_wpc_v4(&args.model, wpc_dir, config)?
+        } else if args.scheme == "v3" {
             eprintln!(
                 "loading MoE weights (WPC v3-compressed, packed) from {} (norms from {}) ...",
                 wpc_dir.display(),
@@ -216,7 +231,7 @@ fn run_qwen3_moe(
             Qwen3MoeModel::load_wpc_v2(&args.model, wpc_dir, config)?
         } else {
             anyhow::bail!(
-                "--scheme {} is not supported for Qwen3-MoE; use v2 or v3",
+                "--scheme {} is not supported for Qwen3-MoE; use v2, v3 or v4",
                 args.scheme
             );
         }

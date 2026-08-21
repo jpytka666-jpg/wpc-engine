@@ -1,6 +1,9 @@
 use std::arch::x86_64::*;
 use half::f16;
-use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, BLOCK_SIZE, BLOCK_SIZE_V2};
+use wpc_format::{
+    CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, BLOCK_SIZE, BLOCK_SIZE_V2,
+    BLOCK_SIZE_V4, PACKED_BYTES_V4,
+};
 
 /// Sum of horizontal adds of a __m256. Standard AVX2 trick.
 #[inline]
@@ -211,6 +214,80 @@ pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
                 let weight = zp + code as f32 * scale;
                 acc += weight * x[row_base + g * 4 + lane];
             }
+        }
+    }
+    acc
+}
+
+/// Fused-SIMD v4 matvec: affine 4-bit codes, two per byte, decoded in
+/// registers.
+///
+/// v3 unpacks into a 128-byte stack buffer because its four-codes-per-three-
+/// bytes grouping does not line up with any lane width. v4 needs no buffer at
+/// all: byte j carries code j in its low nibble and code j+64 in its high one,
+/// so one 8-byte load widened by `_mm256_cvtepu8_epi32` yields, after a mask
+/// and a shift, two full YMM registers of codes -- and the activations they
+/// pair with, `x[j..j+8]` and `x[j+64..j+72]`, are both contiguous. No
+/// shuffles, no buffer, two FMAs per 8 bytes read.
+///
+/// # Safety
+/// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
+/// floats.
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn matvec_v4_fused(
+    blocks: &[QuantBlockV4],
+    x: *const f32,
+    n_blocks: usize,
+) -> f32 {
+    let mut acc = _mm256_setzero_ps();
+    let nibble_mask = _mm256_set1_epi32(0x0F);
+    for i in 0..n_blocks {
+        let b = blocks.get_unchecked(i);
+        let zp = _mm256_set1_ps(b.zero_point.to_f32());
+        let scl = _mm256_set1_ps(b.scale.to_f32());
+        let packed_ptr = b.packed.as_ptr();
+        let row = x.add(i * BLOCK_SIZE_V4);
+
+        // 64 payload bytes in 8 groups of 8; each group covers 16 weights.
+        for g in 0..PACKED_BYTES_V4 / 8 {
+            let raw = _mm_loadl_epi64(packed_ptr.add(g * 8) as *const __m128i);
+            let widened = _mm256_cvtepu8_epi32(raw);
+
+            // Low nibbles -> codes g*8 .. g*8+8, activations at the same offset.
+            let lo_codes = _mm256_cvtepi32_ps(_mm256_and_si256(widened, nibble_mask));
+            let w_lo = _mm256_fmadd_ps(lo_codes, scl, zp);
+            let x_lo = _mm256_loadu_ps(row.add(g * 8));
+            acc = _mm256_fmadd_ps(w_lo, x_lo, acc);
+
+            // High nibbles -> codes 64+g*8 .. 64+g*8+8. The byte was
+            // zero-extended, so a plain shift leaves the nibble clean.
+            let hi_codes = _mm256_cvtepi32_ps(_mm256_srli_epi32(widened, 4));
+            let w_hi = _mm256_fmadd_ps(hi_codes, scl, zp);
+            let x_hi = _mm256_loadu_ps(row.add(PACKED_BYTES_V4 + g * 8));
+            acc = _mm256_fmadd_ps(w_hi, x_hi, acc);
+        }
+    }
+    hsum_avx2(acc)
+}
+
+/// Scalar v4 matvec: the same arithmetic, for CPUs without AVX2+FMA.
+///
+/// Walks the payload in the stored order (low nibbles first, then high), which
+/// is the SIMD kernel's order too, so the two agree term by term and not merely
+/// in the final sum.
+pub fn matvec_v4_scalar(blocks: &[QuantBlockV4], x: &[f32]) -> f32 {
+    let mut acc = 0.0f32;
+    for (block_idx, b) in blocks.iter().enumerate() {
+        let zp = b.zero_point.to_f32();
+        let scale = b.scale.to_f32();
+        let row_base = block_idx * BLOCK_SIZE_V4;
+        let packed = b.packed;
+        for j in 0..PACKED_BYTES_V4 {
+            let byte = packed[j];
+            let lo = (byte & 0x0F) as f32;
+            let hi = (byte >> 4) as f32;
+            acc += (zp + lo * scale) * x[row_base + j];
+            acc += (zp + hi * scale) * x[row_base + PACKED_BYTES_V4 + j];
         }
     }
     acc
@@ -459,5 +536,149 @@ mod tests {
         let got = matvec_v3_scalar(&v3_blocks, &x);
         let rel = (got - expected).abs() / expected.abs().max(1e-6);
         assert!(rel < 1e-4, "v3 {got} vs reference {expected}");
+    }
+
+    // -------------------------------------------------------------------------
+    // v4
+    // -------------------------------------------------------------------------
+
+    /// v4 blocks with a distinct code pattern per block, and activations that
+    /// differ at every position. A kernel that read the wrong half of the block
+    /// -- or restarted `x` at each block -- would still pass a single-block,
+    /// constant-activation test; it cannot pass this one.
+    fn multi_block_fixture_v4(n_blocks: usize) -> (Vec<QuantBlockV4>, Vec<f32>) {
+        let mut blocks = Vec::with_capacity(n_blocks);
+        for bi in 0..n_blocks {
+            let mut codes = [0u8; BLOCK_SIZE_V4];
+            for i in 0..BLOCK_SIZE_V4 {
+                codes[i] = ((i * 3 + bi * 5) % 16) as u8;
+            }
+            blocks.push(QuantBlockV4 {
+                zero_point: f16::from_f32(-0.4 + bi as f32 * 0.1),
+                scale: f16::from_f32(0.017 + bi as f32 * 0.003),
+                packed: QuantBlockV4::pack_codes(&codes),
+            });
+        }
+        let x: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V4)
+            .map(|i| ((i as f32) * 0.013).sin() + 0.5)
+            .collect();
+        (blocks, x)
+    }
+
+    /// Reference dot product straight from the documented decode formula, in
+    /// natural weight order -- deliberately NOT in the packed order the kernels
+    /// walk, so an agreement means the layout is right and not just consistent.
+    fn reference_dot_v4(blocks: &[QuantBlockV4], x: &[f32]) -> f32 {
+        let mut acc = 0.0f32;
+        for (bi, b) in blocks.iter().enumerate() {
+            let zp = b.zero_point.to_f32();
+            let sc = b.scale.to_f32();
+            let packed = b.packed;
+            let codes = QuantBlockV4::unpack_codes(&packed);
+            for i in 0..BLOCK_SIZE_V4 {
+                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn scalar_v4_matches_the_reference_formula() {
+        let (blocks, x) = multi_block_fixture_v4(5);
+        let expected = reference_dot_v4(&blocks, &x);
+        let got = matvec_v4_scalar(&blocks, &x);
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v4 {got} vs reference {expected}");
+    }
+
+    #[test]
+    fn scalar_v4_walks_the_whole_row_not_just_the_first_block() {
+        let (blocks, x) = multi_block_fixture_v4(7);
+        let expected = reference_dot_v4(&blocks, &x);
+        let got = matvec_v4_scalar(&blocks, &x);
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v4 multi-block: got {got}, expected {expected}");
+    }
+
+    #[test]
+    fn fused_v4_agrees_with_scalar_v4_over_many_blocks() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            eprintln!("skipping: CPU lacks AVX2+FMA");
+            return;
+        }
+        let (blocks, x) = multi_block_fixture_v4(13);
+        let s = matvec_v4_scalar(&blocks, &x);
+        let f = unsafe { matvec_v4_fused(&blocks, x.as_ptr(), blocks.len()) };
+        let rel = (s - f).abs() / f.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v4 {s} vs fused v4 {f}");
+    }
+
+    #[test]
+    fn fused_v4_matches_the_reference_formula() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (blocks, x) = multi_block_fixture_v4(9);
+        let expected = reference_dot_v4(&blocks, &x);
+        let got = unsafe { matvec_v4_fused(&blocks, x.as_ptr(), blocks.len()) };
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "fused v4 {got} vs reference {expected}");
+    }
+
+    /// Every code value in every nibble position, checked through the kernel
+    /// rather than only through pack/unpack: a mask applied to the wrong half
+    /// shows up here as a wrong dot product.
+    #[test]
+    fn fused_v4_handles_every_code_value() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        for v in 0u8..=15 {
+            let codes = [v; BLOCK_SIZE_V4];
+            let block = QuantBlockV4 {
+                zero_point: f16::from_f32(-0.25),
+                scale: f16::from_f32(0.03125), // exact in f16, so the check is tight
+                packed: QuantBlockV4::pack_codes(&codes),
+            };
+            let x: Vec<f32> = (0..BLOCK_SIZE_V4).map(|i| (i as f32) * 0.01 - 0.6).collect();
+
+            let got = unsafe { matvec_v4_fused(std::slice::from_ref(&block), x.as_ptr(), 1) };
+            let expected = reference_dot_v4(std::slice::from_ref(&block), &x);
+            let rel = (got - expected).abs() / expected.abs().max(1e-6);
+            assert!(rel < 1e-4, "code {v}: fused {got} vs reference {expected}");
+        }
+    }
+
+    /// The end-to-end shape of the claim: encode real-looking weights at v3 and
+    /// at v4, and check the v4 dot product is close to the v3 one. Not equal --
+    /// v4 is genuinely coarser -- but close enough that a model built on it is
+    /// computing the same function.
+    #[test]
+    fn fused_v4_tracks_fused_v3_on_the_same_weights() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let n_blocks = 11;
+        let weights: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V4)
+            .map(|i| ((i as f32) * 0.011).sin() * 0.04)
+            .collect();
+        let x: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V4)
+            .map(|i| ((i as f32) * 0.019).cos())
+            .collect();
+
+        let v3_blocks = wpc_core::quant_encoder::encode_tensor_v3(&weights);
+        let v4_blocks = wpc_core::quant_encoder::encode_tensor_v4(&weights);
+
+        let exact = unsafe { matvec_fp32_baseline(weights.as_ptr(), x.as_ptr(), weights.len()) };
+        let y3 = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
+        let y4 = unsafe { matvec_v4_fused(&v4_blocks, x.as_ptr(), v4_blocks.len()) };
+
+        // Scaled against the magnitude of the terms rather than against the sum,
+        // which is a near-cancellation of positives and negatives and so is a
+        // misleading denominator.
+        let scale: f32 = weights.iter().zip(x.iter()).map(|(w, a)| (w * a).abs()).sum();
+        let e3 = (y3 - exact).abs() / scale;
+        let e4 = (y4 - exact).abs() / scale;
+        assert!(e4 < 0.02, "v4 dot product off by {e4} of term magnitude (v3: {e3})");
     }
 }
