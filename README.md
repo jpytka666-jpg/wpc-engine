@@ -121,6 +121,38 @@ to AIONS over MCP. At startup it performs the standard `initialize` handshake fo
 discovered at run time rather than compiled in. Adding a new AIONS tool therefore requires no
 change to the agent binary.
 
+The AIONS MCP server in `jpytka666-jpg/aions-mcp-server` is documented to expose stdio through
+Docker with:
+
+```
+docker exec -i aions-mcp python -m src stdio
+```
+
+Use the command as program + arguments because `aions-agent` intentionally does not invoke a
+shell for the MCP child:
+
+```
+cargo run --release --bin aions-agent -- \
+  --mcp-command docker \
+  --mcp-arg exec \
+  --mcp-arg -i \
+  --mcp-arg aions-mcp \
+  --mcp-arg python \
+  --mcp-arg -m \
+  --mcp-arg src \
+  --mcp-arg stdio \
+  --task "inspect the repository and fix the failing test" \
+  --model /home/aions/qwen3-coder-run \
+  --wpc /home/aions/qwen3-coder-wpc4 \
+  --scheme v4 \
+  --max-turns 6
+```
+
+For repeat use, the same server command can be supplied by whatever launcher or wrapper you
+use to populate `--mcp-command` and repeated `--mcp-arg` values. The agent keeps the MCP
+connection alive across turns and can optionally require approval before every tool call with
+`--ask`.
+
 ```
 user task
   -> AIONS agent / router
@@ -132,19 +164,9 @@ user task
   -> next agent turn
 ```
 
-```
-AIONS_MCP_COMMAND=<path to aions-mcp-server> \
-  cargo run --release --bin aions-agent -- \
-    --task "inspect the repository and fix the failing test" \
-    --model <tokenizer + norms dir> \
-    --wpc <artifact dir> \
-    --scheme v4 \
-    --max-turns 6
-```
-
-The MCP connection persists across agent turns, but the current implementation launches
-`wpc-runtime` afresh for each model turn. Making the runtime long-lived — so that weights and
-the KV cache stay resident across the whole tool loop — is the next step. Details are in
+The current implementation launches `wpc-runtime` afresh for each model turn. Making the
+runtime long-lived — so that weights and the KV cache stay resident across the whole tool loop —
+is the next performance step. Details are in
 [WHITEPAPER_ADDENDUM_AIONS_AGENT.md](WHITEPAPER_ADDENDUM_AIONS_AGENT.md).
 
 ---
