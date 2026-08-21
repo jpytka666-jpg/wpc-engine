@@ -449,9 +449,9 @@ quality. §7 explains why the obvious candidate does not exist.
 
 Verbatim v5 output, same prompt as the v3/v4 runs above:
 
-```
+~~~
 def binary_search(arr, target):md.'``` `.``` `cer`` ``` ```` between`````` economist
-```
+~~~
 
 A single token id, 63, accounts for **25 of the 40 emitted tokens**. This is not a model
 producing worse code; it is a model whose output distribution has collapsed onto a small number
