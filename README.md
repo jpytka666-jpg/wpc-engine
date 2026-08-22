@@ -51,22 +51,13 @@ Each block stores a 16-bit `zero_point`, a 16-bit `scale`, and the codes themsel
 | **v4** | **128 × 4-bit, two per byte** | **68** | **4.25** |
 
 At six bits, how the codes are arranged inside the block matters as much as the density: a
-**two-plane layout** — a 64-byte low plane holding bits 0–3 and a 32-byte high plane holding
-bits 4–5, permuted at pack time — lets the decode path recover eight weights per AVX2
-instruction group with no cross-lane shuffles. On a dense model this is the difference between
-the packing costing 65% of decode throughput and costing nothing.
+**two-plane layout** — a 64-byte low plane holding bits 0–3 and a 32-byte high plane holding bits 4–5, permuted at pack time — lets the decode path recover eight weights per AVX2 instruction group with no cross-lane shuffles. On a dense model this is the difference between the packing costing 65% of decode throughput and costing nothing.
 
-At four bits the problem disappears entirely. A 4-bit code divides a byte exactly, so
-extraction is a shift and a mask — no shuffles, no planes, no pack-time permutation.
+At four bits the problem disappears entirely. A 4-bit code divides a byte exactly, so extraction is a shift and a mask — no shuffles, no planes, no pack-time permutation.
 
-**Layout matters outside the block, too.** Sorting tensors so that each expert occupies one
-contiguous run — instead of scattering its three projections across the artifact — is worth
-**+45% throughput on its own**, with every weight value left untouched and reconstruction
-bit-identical.
+**Layout matters outside the block, too.** Sorting tensors so that each expert occupies one contiguous run — instead of scattering its three projections across the artifact — is worth **+45% throughput on its own**, with every weight value left untouched and reconstruction bit-identical.
 
-Routers in mixture-of-experts models are deliberately left uncompressed: expert selection is a
-discrete argmax, where quantisation error would change *which* experts run rather than merely
-by how much.
+Routers in mixture-of-experts models are deliberately left uncompressed: expert selection is a discrete argmax, where quantisation error would change *which* experts run rather than merely by how much.
 
 ---
 
@@ -115,21 +106,17 @@ Compression schemes:
 
 ## AIONS agent integration
 
-The repository also ships `aions-agent`, a thin autonomous loop that connects the WPC runtime
-to AIONS over MCP. At startup it performs the standard `initialize` handshake followed by
-`tools/list`, so the live tool catalogue — names, descriptions and input schemas — is
-discovered at run time rather than compiled in. Adding a new AIONS tool therefore requires no
-change to the agent binary.
+The repository ships `aions-agent`, a thin autonomous loop connecting the WPC runtime to AIONS over MCP. At startup it performs the standard `initialize` handshake followed by `tools/list`, so the live tool catalogue is discovered at run time rather than compiled in.
 
-The AIONS MCP server in `jpytka666-jpg/aions-mcp-server` is documented to expose stdio through
-Docker with:
+The important runtime property is now **resident model state**: the Qwen3-MoE WPC v4 model is loaded once when `aions-agent` starts and remains resident across agent turns. The previous implementation launched `wpc-runtime` for every turn, repeatedly paying model-load cost. The resident API keeps the model weights in memory and creates a fresh KV cache per task turn.
+
+The AIONS MCP server is documented to expose stdio through Docker with:
 
 ```
 docker exec -i aions-mcp python -m src stdio
 ```
 
-Use the command as program + arguments because `aions-agent` intentionally does not invoke a
-shell for the MCP child:
+Use the command as program + arguments because `aions-agent` intentionally does not invoke a shell for the MCP child:
 
 ```
 cargo run --release --bin aions-agent -- \
@@ -148,66 +135,63 @@ cargo run --release --bin aions-agent -- \
   --max-turns 6
 ```
 
-For repeat use, the same server command can be supplied by whatever launcher or wrapper you
-use to populate `--mcp-command` and repeated `--mcp-arg` values. The agent keeps the MCP
-connection alive across turns and can optionally require approval before every tool call with
-`--ask`.
+Runtime flow:
 
 ```
 user task
   -> AIONS agent / router
   -> live MCP tools/list
-  -> WPC Qwen3-Coder-30B-A3B v4
+  -> resident WPC Qwen3-Coder-30B-A3B v4
   -> TOOL_CALL
   -> AIONS MCP server
   -> TOOL_RESULT
+  -> same resident model
   -> next agent turn
 ```
 
-The current implementation launches `wpc-runtime` afresh for each model turn. Making the
-runtime long-lived — so that weights and the KV cache stay resident across the whole tool loop —
-is the next performance step. Details are in
-[WHITEPAPER_ADDENDUM_AIONS_AGENT.md](WHITEPAPER_ADDENDUM_AIONS_AGENT.md).
+The standalone `wpc-resident` binary exposes the same resident model through JSONL for integration and testing. The reusable implementation lives in `wpc-runtime::resident::ResidentEngine`.
 
 ---
 
-## Known limitation
+## Known performance work
 
-The engine processes **one token at a time**. There is no batched forward pass, so reading a
-prompt costs the same per token as writing a reply, and batched prefill, speculative decoding,
-and expert-grouped execution are all blocked behind it. This is the principal outstanding item
-of work, and the agent loop above does not change it.
+The runtime still has important optimisation work ahead. The current standard inference path processes one token at a time. The `integration/aions-unified-stack` branch additionally contains the `BatchEngine`, mmap-backed KV layer, GEMM attention path, correctness tests and benchmarks from `feature/forward-batch-gemm-bench`.
+
+The next step after resident weights is to make KV state reusable across compatible turns and to route batched prompt prefill through `BatchEngine`, so the full prompt is not processed as a sequence of independent single-token forwards.
 
 ---
 
 ## Repository layout
 
-| Crate | Purpose |
+| Crate / component | Purpose |
 |---|---|
 | `wpc-core` | Quantisation encoders, codebooks, safetensors reader |
 | `wpc-format` | On-disk block formats and packing/unpacking |
 | `wpc-compiler` | Command-line model compiler |
 | `wpc-runtime` | Inference engine: attention, RoPE, norms, MoE routing, sampling |
-| `wpc-runtime/src/bin/aions-agent.rs` | AIONS MCP-aware agent loop |
+| `wpc-runtime/src/resident.rs` | Long-lived Qwen3-MoE WPC runtime API |
+| `wpc-runtime/src/forward_batch.rs` | Batched attention, mmap KV storage and GEMM path |
+| `wpc-runtime/src/bin/aions-agent.rs` | AIONS MCP-aware resident agent loop |
+| `wpc-runtime/src/bin/wpc-resident.rs` | JSONL resident-runtime process |
 | `wpc-eval` | Fused AVX2 kernels and correctness tests |
 
 ---
 
-## Building
+## Building and testing
 
 ```
-cargo build --release
-cargo test
+cargo build --workspace --release
+cargo test --workspace --release
+cargo fmt --all --check
+cargo clippy -p wpc-runtime --all-targets --release -- -D warnings
 ```
 
-93 tests pass. Requires a CPU with AVX2 and FMA. No other dependencies.
+The integration branch CI also compiles the attention benchmark and runs a short benchmark smoke test.
 
 ---
 
 ## Licence and a request
 
-**Free and Open Source. However, if you monetize this project, you are kindly asked to
-donate 1% of your profits to a charity supporting neurodivergent individuals, honoring
-the project author's request.**
+**Free and Open Source. However, if you monetize this project, you are kindly asked to donate 1% of your profits to a charity supporting neurodivergent individuals, honoring the project author's request.**
 
 This is a request, not a licence condition. It is made in good faith and left to yours.
