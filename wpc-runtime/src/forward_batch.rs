@@ -64,6 +64,15 @@ impl MmapF32 {
         self.len
     }
 
+    /// Mark the first `used` elements as initialized so growth can preserve them.
+    pub fn mark_used(&mut self, used: usize) -> Result<()> {
+        if used > self.len {
+            anyhow::bail!("used exceeds capacity");
+        }
+        self.used = used;
+        Ok(())
+    }
+
     pub fn ensure_capacity(&mut self, need: usize) -> Result<()> {
         if need <= self.len {
             return Ok(());
@@ -130,40 +139,40 @@ impl KvLayer {
         if need <= self.keys.capacity() {
             return Ok(());
         }
-
-        self.keys.ensure_capacity(need)?;
-        self.values.ensure_capacity(need)?;
+        let new_rows = total_rows
+            .checked_next_power_of_two()
+            .ok_or_else(|| anyhow::anyhow!("row capacity overflow"))?;
+        let new_cap = new_rows
+            .checked_mul(self.dim)
+            .ok_or_else(|| anyhow::anyhow!("capacity overflow"))?;
+        let mut new_keys = MmapF32::new(new_cap)?;
+        let mut new_vals = MmapF32::new(new_cap)?;
+        let copy_elems = self.seq_len * self.dim;
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.keys.ptr, new_keys.ptr, copy_elems);
+            std::ptr::copy_nonoverlapping(self.values.ptr, new_vals.ptr, copy_elems);
+        }
+        new_keys.used = copy_elems;
+        new_vals.used = copy_elems;
+        self.keys = new_keys;
+        self.values = new_vals;
         Ok(())
     }
 
-    pub fn append_batch(
-        &mut self,
-        k_batch: &[f32],
-        v_batch: &[f32],
-        batch_rows: usize,
-    ) -> Result<()> {
+    pub fn append_batch(&mut self, k_batch: &[f32], v_batch: &[f32], batch_rows: usize) -> Result<()> {
         let elems = batch_rows
             .checked_mul(self.dim)
             .ok_or_else(|| anyhow::anyhow!("batch size overflow"))?;
         if k_batch.len() != elems || v_batch.len() != elems {
             anyhow::bail!("batch length does not match batch_rows * dim");
         }
-
         self.ensure_room(batch_rows)?;
-        let dest_off = self
-            .seq_len
-            .checked_mul(self.dim)
-            .ok_or_else(|| anyhow::anyhow!("destination offset overflow"))?;
-
+        let dest_off = self.seq_len * self.dim;
         unsafe {
             std::ptr::copy_nonoverlapping(k_batch.as_ptr(), self.keys.ptr.add(dest_off), elems);
             std::ptr::copy_nonoverlapping(v_batch.as_ptr(), self.values.ptr.add(dest_off), elems);
         }
-
-        self.seq_len = self
-            .seq_len
-            .checked_add(batch_rows)
-            .ok_or_else(|| anyhow::anyhow!("sequence length overflow"))?;
+        self.seq_len += batch_rows;
         self.keys.used = dest_off + elems;
         self.values.used = dest_off + elems;
         Ok(())
@@ -173,9 +182,7 @@ impl KvLayer {
         if row >= self.seq_len {
             anyhow::bail!("key row out of bounds");
         }
-        let start = row
-            .checked_mul(self.dim)
-            .ok_or_else(|| anyhow::anyhow!("row offset overflow"))?;
+        let start = row * self.dim;
         Ok(&self.keys.as_slice()[start..start + self.dim])
     }
 
@@ -183,9 +190,7 @@ impl KvLayer {
         if row >= self.seq_len {
             anyhow::bail!("value row out of bounds");
         }
-        let start = row
-            .checked_mul(self.dim)
-            .ok_or_else(|| anyhow::anyhow!("row offset overflow"))?;
+        let start = row * self.dim;
         Ok(&self.values.as_slice()[start..start + self.dim])
     }
 
@@ -205,15 +210,14 @@ fn stable_softmax_row_inplace(row: &mut [f32]) {
         *x = (*x - maxv).exp();
         sum += *x;
     }
-
     if sum > 0.0 && sum.is_finite() {
         for x in row.iter_mut() {
             *x /= sum;
         }
-    } else if !row.is_empty() {
-        let uniform = 1.0 / row.len() as f32;
+    } else {
+        let n = row.len() as f32;
         for x in row.iter_mut() {
-            *x = uniform;
+            *x = 1.0 / n;
         }
     }
 }
@@ -236,9 +240,7 @@ unsafe fn sgemm_row_major(
     rsc: isize,
     csc: isize,
 ) {
-    matrixmultiply::sgemm(
-        m, k, n, 1.0, a, rsa, csa, b, rsb, csb, 0.0, c, rsc, csc,
-    );
+    matrixmultiply::sgemm(m, k, n, 1.0, a, rsa, csa, b, rsb, csb, 0.0, c, rsc, csc);
 }
 
 pub struct BatchEngine {
@@ -259,39 +261,30 @@ impl BatchEngine {
         total_rows: usize,
         past_len: usize,
     ) -> Result<Vec<f32>> {
+        if k_flat.is_null() || v_flat.is_null() {
+            anyhow::bail!("KV pointers must not be null");
+        }
         let b = batch_size;
         let s = total_rows;
         let d = self.dim;
-
         let expected_q = b
             .checked_mul(d)
             .ok_or_else(|| anyhow::anyhow!("query size overflow"))?;
         if q_batch.len() != expected_q {
             anyhow::bail!("q_batch length does not match batch_size * dim");
         }
-
-        let expected_rows = past_len
+        let visible_end = past_len
             .checked_add(b)
             .ok_or_else(|| anyhow::anyhow!("position overflow"))?;
-        if expected_rows != s {
-            anyhow::bail!("total_rows must equal past_len + batch_size");
+        if visible_end > s {
+            anyhow::bail!("past_len + batch_size exceeds total_rows");
         }
-
         if b == 0 || s == 0 || d == 0 {
-            return Ok(vec![0.0; expected_q]);
-        }
-        if k_flat.is_null() || v_flat.is_null() {
-            anyhow::bail!("KV pointers must not be null");
+            return Ok(vec![0.0; b * d]);
         }
 
-        let score_len = b
-            .checked_mul(s)
-            .ok_or_else(|| anyhow::anyhow!("score size overflow"))?;
-        let mut scores = vec![0.0f32; score_len];
-
+        let mut scores = vec![0.0f32; b * s];
         unsafe {
-            // Q: [B x D] row-major. K is [S x D] row-major, but supplied as
-            // a logical [D x S] transpose using row stride 1 / column stride D.
             sgemm_row_major(
                 b,
                 d,
@@ -322,13 +315,8 @@ impl BatchEngine {
             stable_softmax_row_inplace(row);
         }
 
-        let out_len = b
-            .checked_mul(d)
-            .ok_or_else(|| anyhow::anyhow!("output size overflow"))?;
-        let mut out = vec![0.0f32; out_len];
-
+        let mut out = vec![0.0f32; b * d];
         unsafe {
-            // P: [B x S], V: [S x D], output: [B x D], all row-major.
             sgemm_row_major(
                 b,
                 s,
@@ -344,11 +332,9 @@ impl BatchEngine {
                 1,
             );
         }
-
         Ok(out)
     }
 
-    /// Safe convenience wrapper around the raw-pointer attention path.
     pub fn optimized_attention_from_kv(
         &self,
         q_batch: &[f32],
@@ -356,6 +342,16 @@ impl BatchEngine {
         batch_size: usize,
         past_len: usize,
     ) -> Result<Vec<f32>> {
+        if kv.dim != self.dim {
+            anyhow::bail!("KV dimension does not match engine dimension");
+        }
+        if past_len
+            .checked_add(batch_size)
+            .ok_or_else(|| anyhow::anyhow!("position overflow"))?
+            != kv.seq_len
+        {
+            anyhow::bail!("past_len + batch_size must equal KV sequence length");
+        }
         self.optimized_attention_batch(
             q_batch,
             kv.keys_ptr(),
@@ -366,16 +362,11 @@ impl BatchEngine {
         )
     }
 
-    pub fn reference_attention_batch(
-        &self,
-        q_batch: &[Vec<f32>],
-        kv: &KvLayer,
-    ) -> Result<Vec<Vec<f32>>> {
+    pub fn reference_attention_batch(&self, q_batch: &[Vec<f32>], kv: &KvLayer) -> Result<Vec<Vec<f32>>> {
         let batch_size = q_batch.len();
         if batch_size > kv.seq_len {
             anyhow::bail!("batch larger than KV sequence");
         }
-
         let past_len = kv.seq_len - batch_size;
         let dim = self.dim;
         let mut outputs = Vec::with_capacity(batch_size);
@@ -384,13 +375,11 @@ impl BatchEngine {
             if query.len() != dim {
                 anyhow::bail!("query dimension mismatch");
             }
-
             let current_pos = past_len + i;
             let mut scores = Vec::with_capacity(current_pos + 1);
             for j in 0..=current_pos {
                 scores.push(dot(kv.get_key_row(j)?, query));
             }
-
             let scale = 1.0f32 / (dim as f32).sqrt();
             for x in scores.iter_mut() {
                 *x *= scale;
@@ -406,7 +395,6 @@ impl BatchEngine {
             }
             outputs.push(out);
         }
-
         Ok(outputs)
     }
 }
