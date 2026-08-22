@@ -2,12 +2,32 @@
 name = "wpc-runtime"
 version = "0.1.0"
 edition = "2021"
+description = "Dense (uncompressed) transformer inference engine for Qwen2-architecture models. Phase A: proves the forward-pass architecture is correct before wiring in WPC-compressed weights."
 
 [dependencies]
+safetensors = "0.4"
+memmap2 = "0.9"
+half = "2.4"
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokenizers = "0.20"
+rayon = "1.8"
 anyhow = "1.0"
+wpc-format = { path = "../wpc-format" }
+wpc-core = { path = "../wpc-core" }
+wpc-eval = { path = "../wpc-eval" }
 matrixmultiply = "0.3"
 libc = "0.2"
-rand = "0.8"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }
+rand = "0.8"
+
+[lib]
+name = "wpc_runtime"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wpc-runtime"
+path = "src/main.rs"
