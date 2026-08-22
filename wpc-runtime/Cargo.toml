@@ -31,3 +31,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "wpc-runtime"
 path = "src/main.rs"
+
+[[bench]]
+name = "attention_bench"
+harness = false
