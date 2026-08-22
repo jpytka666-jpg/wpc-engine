@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "integration/**"]
   pull_request:
 
 jobs:
@@ -18,4 +18,9 @@ jobs:
         run: cargo test --workspace --release
       - name: Formatting
         run: cargo fmt --all --check
-        continue-on-error: true
+      - name: Clippy runtime
+        run: cargo clippy -p wpc-runtime --all-targets --release -- -D warnings
+      - name: Benchmark compile
+        run: cargo bench -p wpc-runtime --bench attention_bench --no-run
+      - name: Benchmark smoke
+        run: cargo bench -p wpc-runtime --bench attention_bench -- --noplot --sample-size 10 --measurement-time 0.2
