@@ -19,3 +19,9 @@ jobs:
       - name: Formatting
         run: cargo fmt --all --check
         continue-on-error: true
+      - name: Clippy runtime
+        run: cargo clippy -p wpc-runtime --all-targets --release
+      - name: Benchmark compile
+        run: cargo bench -p wpc-runtime --bench attention_bench --no-run
+      - name: Benchmark smoke
+        run: cargo bench -p wpc-runtime --bench attention_bench -- --noplot --sample-size 10 --measurement-time 0.2
