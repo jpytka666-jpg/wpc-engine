@@ -4,6 +4,12 @@ members = [
     "wpc-format",
     "wpc-eval", "wpc-core", "wpc-compiler",
     "wpc-runtime",
+    "modules/memory-kv",
+    "modules/memory-graph",
+    "modules/studio",
+    "modules/aions-kernel",
+    "modules/ghost-gate",
+    "modules/os-integration",
 ]
 exclude = [
     "wpc-engine",  # C++ lives here, not a Rust crate
