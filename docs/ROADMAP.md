@@ -3,11 +3,11 @@
 ## Phase 1 — deterministic runner
 - [x] Contract and safety model
 - [x] Parallel GitHub Actions gate structure
-- [ ] Capture exit code/stdout/stderr
-- [ ] Machine-readable diagnostic schema
+- [x] Capture exit code/stdout/stderr
+- [x] Machine-readable diagnostic schema
 
 ## Phase 2 — diagnosis
-- [ ] Classify formatting, compile, test, lint and benchmark failures
+- [x] Classify formatting, compile, test, lint and benchmark failures
 - [ ] Select minimal source context
 - [ ] Produce bounded repair request
 
