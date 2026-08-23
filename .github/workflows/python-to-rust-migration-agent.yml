@@ -44,13 +44,12 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
+          # wpc-eval: collapse duplicate compatibility-kernel allowances and
+          # fix the two fixture builders that Clippy cannot safely autofix.
           kernel_path = Path("wpc-eval/src/fused_kernel.rs")
           text = kernel_path.read_text()
-
-          # Collapse repeated dead_code attributes globally. This is idempotent
-          # and works even when target_feature/doc attributes separate them from
-          # the function signature.
           duplicate = "#[allow(dead_code)]\n#[allow(dead_code)]"
           while duplicate in text:
               text = text.replace(duplicate, "#[allow(dead_code)]")
@@ -65,6 +64,45 @@ jobs:
           )
           kernel_path.write_text(text)
 
+          # wpc-core: normalize every test fixture loop that only exists to
+          # fill a codes/weights array. These are Clippy's exact twelve-step
+          # residuals after the runtime fixes and do not alter quantization.
+          core_path = Path("wpc-core/src/quant_encoder.rs")
+          core = core_path.read_text()
+
+          def rewrite_assign_loops(text, width):
+              pattern = rf"(?m)^(?P<indent>[ ]*)for i in 0\.\.{width} \{{\r?\n(?P=indent)    (?P<array>codes|weights)\[i\] = (?P<expr>[^\n]+);\r?\n(?P=indent)\}}"
+
+              def repl(match):
+                  indent = match.group("indent")
+                  array = match.group("array")
+                  expr = match.group("expr")
+                  return (
+                      f"{indent}for (i, item) in {array}.iter_mut().enumerate().take({width}) {{\n"
+                      f"{indent}    *item = {expr};\n"
+                      f"{indent}}}"
+                  )
+
+              return re.sub(pattern, repl, text)
+
+          before = core
+          core = rewrite_assign_loops(core, "BLOCK_SIZE_V2")
+          core = rewrite_assign_loops(core, "BLOCK_SIZE_V4")
+          if core == before:
+              raise SystemExit("No wpc-core indexed fixture loops matched; refusing silent no-op.")
+          core_path.write_text(core)
+
+          # wpc-format: the three remaining code-table fixture builders.
+          format_path = Path("wpc-format/src/lib.rs")
+          fmt = format_path.read_text()
+          before = fmt
+          fmt = rewrite_assign_loops(fmt, "128")
+          fmt = rewrite_assign_loops(fmt, "BLOCK_SIZE_V4")
+          if fmt == before:
+              raise SystemExit("No wpc-format indexed fixture loops matched; refusing silent no-op.")
+          format_path.write_text(fmt)
+
+          # Keep the binary-eval main free of stale imports discovered by Clippy.
           main_path = Path("wpc-eval/src/main.rs")
           main = main_path.read_text()
           main = main.replace(
@@ -85,6 +123,11 @@ jobs:
           from pathlib import Path
           text = Path("wpc-eval/src/fused_kernel.rs").read_text()
           assert "#[allow(dead_code)]\n#[allow(dead_code)]" not in text
+
+          for path in ("wpc-core/src/quant_encoder.rs", "wpc-format/src/lib.rs"):
+              text = Path(path).read_text()
+              assert "for i in 0..BLOCK_SIZE_V2 {" not in text or "codes[i] =" not in text
+              assert "for i in 0..BLOCK_SIZE_V4 {" not in text or "codes[i] =" not in text
           PY
 
       - name: Format
