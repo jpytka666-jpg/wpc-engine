@@ -95,7 +95,11 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --release -- -D warnings
           Do not pipe it through grep/head or otherwise hide its exit status.
 
+          IMPORTANT: before final validation, run `cargo fmt --all` (not just --check), then
+          run the exact checks below. Do not leave formatting-only failures behind.
+
           Required validation before declaring success:
+          cargo fmt --all
           cargo fmt --all --check
           cargo build --workspace --release
           cargo test --workspace --release
@@ -112,6 +116,7 @@ jobs:
       - name: Final Rust validation
         run: |
           set -euo pipefail
+          cargo fmt --all
           cargo fmt --all --check
           cargo build --workspace --release
           cargo test --workspace --release
