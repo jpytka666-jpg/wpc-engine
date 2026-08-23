@@ -1,17 +1,66 @@
-name: AIONS Python to Rust Migration Agent
+name: AIONS CI Repair Agent
 
 on:
+  push:
+    branches: ["integration/full-organism-v2"]
   workflow_dispatch:
 
-# Copilot automation is intentionally disconnected. CI repairs are now
-# performed and validated explicitly rather than consuming Copilot quota
-# on every push to the integration branch.
+concurrency:
+  group: aions-ci-repair-integration
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
 jobs:
-  migrate-and-debug:
-    if: ${{ false }}
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[ai-repair]') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
-      - run: echo "Copilot migration agent disabled; repairs are performed explicitly."
+      - name: Checkout integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integration/full-organism-v2
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply Clippy autofixes
+        run: |
+          set -euo pipefail
+          cargo clippy --fix \
+            --workspace \
+            --all-targets \
+            --all-features \
+            --release \
+            --allow-dirty \
+            --allow-staged
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Validate build
+        run: cargo build --workspace --release
+
+      - name: Validate tests
+        run: cargo test --workspace --release
+
+      - name: Validate full Clippy gate
+        run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+      - name: Commit validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No repair changes needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "[ai-repair] apply deterministic Clippy fixes"
+          git push origin HEAD:integration/full-organism-v2
