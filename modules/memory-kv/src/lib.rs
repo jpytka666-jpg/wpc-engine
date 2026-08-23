@@ -28,9 +28,17 @@ pub enum SequenceError {
     InvalidRange { start: usize, end: usize },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResidencyMetrics {
+    pub entries: usize,
+    pub sequence_length: usize,
+    pub payload_bytes: usize,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HotKvBuffer {
     next_sequence: usize,
+    payload_bytes: usize,
     entries: Vec<Vec<u8>>,
 }
 
@@ -41,6 +49,15 @@ impl HotKvBuffer {
 
     pub fn next_sequence(&self) -> usize {
         self.next_sequence
+    }
+
+    /// Return deterministic, allocation-free residency counters for the hot layer.
+    pub fn residency_metrics(&self) -> ResidencyMetrics {
+        ResidencyMetrics {
+            entries: self.entries.len(),
+            sequence_length: self.next_sequence,
+            payload_bytes: self.payload_bytes,
+        }
     }
 
     /// Append an owned contiguous sequence range. The caller must start exactly
@@ -71,6 +88,7 @@ impl HotKvBuffer {
             });
         }
 
+        self.payload_bytes += entries.iter().map(Vec::len).sum::<usize>();
         self.next_sequence += entries.len();
         self.entries.extend(entries);
         Ok(())
@@ -116,7 +134,7 @@ pub fn snapshot_round_trip(snapshot: &Value) -> Value {
 mod tests {
     use super::{
         envelope_is_compatible, is_compatible, snapshot_round_trip, HotKvBuffer, KvEncoding,
-        KvEnvelope, SequenceError,
+        KvEnvelope, ResidencyMetrics, SequenceError,
     };
     use serde_json::json;
 
@@ -220,6 +238,31 @@ mod tests {
         assert_eq!(
             buffer.read(0, 2),
             Err(SequenceError::InvalidRange { start: 0, end: 2 })
+        );
+    }
+
+    #[test]
+    fn residency_metrics_match_hot_payload() {
+        let mut buffer = HotKvBuffer::new();
+        assert_eq!(
+            buffer.residency_metrics(),
+            ResidencyMetrics {
+                entries: 0,
+                sequence_length: 0,
+                payload_bytes: 0
+            }
+        );
+
+        buffer
+            .append(0, vec![vec![1, 2], vec![3, 4, 5]])
+            .expect("append payload");
+        assert_eq!(
+            buffer.residency_metrics(),
+            ResidencyMetrics {
+                entries: 2,
+                sequence_length: 2,
+                payload_bytes: 5
+            }
         );
     }
 }
