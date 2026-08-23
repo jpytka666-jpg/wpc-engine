@@ -1,29 +1,15 @@
 import json
 from pathlib import Path
 
+from diagnostic import classify_failure
+
 
 def test_compile_failure_is_repairable():
     data = json.loads(Path(__file__).with_name("diagnostic_fixture.json").read_text(encoding="utf-8"))
-    assert data["stage"] == "compile"
-    assert data["classification"] == "compile"
-    assert data["exit_code"] != 0
-    assert data["repair_allowed"] is True
+    result = classify_failure(data["exit_code"], data["stage"], data["summary"])
+    assert result == ("compile", True)
 
 
 def test_contract_failure_stays_contract_classified():
-    data = {
-        "run_id": "contract-001",
-        "stage": "contract",
-        "exit_code": 1,
-        "classification": "contract",
-        "summary": "schema mismatch",
-        "repair_allowed": False,
-    }
-    assert data["stage"] == data["classification"]
-    assert data["repair_allowed"] is False
-
-
-if __name__ == "__main__":
-    test_compile_failure_is_repairable()
-    test_contract_failure_stays_contract_classified()
-    print("AGENTS-CI DIAGNOSTIC TESTS GREEN")
+    result = classify_failure(1, "contract", "schema mismatch")
+    assert result == ("contract", False)
