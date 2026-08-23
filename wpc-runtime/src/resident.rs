@@ -89,4 +89,28 @@ impl ResidentEngine {
             .map_err(|e| anyhow::anyhow!("tokenizer decode failed: {e}"))?;
         Ok((text, generated.len()))
     }
+
+    pub fn start_session(&self) -> ResidentSession<'_> {
+        ResidentSession { engine: self, cache: self.model.new_cache(), prompt_ids: Vec::new(), prompt_logits: Vec::new() }
+    }
+}
+
+
+pub struct ResidentSession<'a> { engine: &'a ResidentEngine, cache: crate::qwen3_moe_model::MoeKvCache, prompt_ids: Vec<u32>, prompt_logits: Vec<f32> }
+impl<'a> ResidentSession<'a> {
+    fn reset(&mut self) -> Result<()> { self.cache.truncate(0)?; self.prompt_ids.clear(); self.prompt_logits.clear(); Ok(()) }
+    pub fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<(String,usize)> {
+        let enc=self.engine.tokenizer.encode(prompt,true).map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
+        let mut ids=enc.get_ids().to_vec();
+        if let Some(bos)=self.engine.bos { if ids.first().copied()!=Some(bos) { ids.insert(0,bos); } }
+        let reusable=ids.len()>=self.prompt_ids.len() && ids[..self.prompt_ids.len()]==self.prompt_ids[..];
+        if !reusable { self.reset()?; }
+        let start=self.prompt_ids.len();
+        for &tok in &ids[start..] { self.prompt_logits=self.engine.model.forward_token(tok,&mut self.cache); }
+        self.prompt_ids=ids; if self.prompt_logits.is_empty(){ anyhow::bail!("session prompt produced no logits"); }
+        let prompt_len=self.prompt_ids.len(); let saved=self.prompt_logits.clone(); let mut next=saved.clone(); let mut generated=Vec::with_capacity(max_tokens);
+        for _ in 0..max_tokens { let id=argmax_banned(&next,&self.engine.banned); generated.push(id); if self.engine.eos.contains(&id){break;} next=self.engine.model.forward_token(id,&mut self.cache); }
+        self.cache.truncate(prompt_len)?; self.prompt_logits=saved;
+        let text=self.engine.tokenizer.decode(&generated,true).map_err(|e| anyhow::anyhow!("tokenizer decode failed: {e}"))?; Ok((text,generated.len()))
+    }
 }

@@ -224,11 +224,12 @@ fn main() -> Result<()> {
         a.max_turns
     );
     let engine = ResidentEngine::load(&a.model, &a.wpc, &a.scheme)?;
-    eprintln!("resident WPC runtime ready");
+    let mut session = engine.start_session();
+    eprintln!("resident WPC runtime ready with reusable prompt/KV session");
 
     for turn in 1..=a.max_turns {
         eprintln!("=== AIONS AGENT TURN {turn}/{} ===", a.max_turns);
-        let r = engine
+        let r = session
             .generate(&prompt(&tools, &transcript), a.max_tokens)?
             .0;
         eprintln!("MODEL: {r}");

@@ -61,12 +61,13 @@ struct LayerCache {
 
 pub struct MoeKvCache {
     layers: Vec<LayerCache>,
+    head_dim: usize,
     /// Number of positions appended so far.
     pub len: usize,
 }
 
 impl MoeKvCache {
-    fn new(num_layers: usize, num_kv_heads: usize) -> Self {
+    fn new(num_layers: usize, num_kv_heads: usize, head_dim: usize) -> Self {
         MoeKvCache {
             layers: (0..num_layers)
                 .map(|_| LayerCache {
@@ -74,8 +75,20 @@ impl MoeKvCache {
                     v: vec![Vec::new(); num_kv_heads],
                 })
                 .collect(),
+            head_dim,
             len: 0,
         }
+    }
+
+    pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
+        if len > self.len { anyhow::bail!("cannot extend KV cache with truncate"); }
+        let elems = len.checked_mul(self.head_dim).ok_or_else(|| anyhow::anyhow!("KV truncate size overflow"))?;
+        for layer in &mut self.layers {
+            for head in &mut layer.k { head.truncate(elems); }
+            for head in &mut layer.v { head.truncate(elems); }
+        }
+        self.len = len;
+        Ok(())
     }
 }
 
@@ -373,6 +386,7 @@ impl Qwen3MoeModel {
         MoeKvCache::new(
             self.config.num_hidden_layers,
             self.config.num_key_value_heads,
+            self.config.head_dim(),
         )
     }
 
@@ -594,6 +608,19 @@ mod tests {
             norm_topk,
             moe_inter,
         }
+    }
+
+    #[test]
+    fn cache_truncate_preserves_requested_prefix() {
+        let mut c = MoeKvCache::new(1, 1, 2);
+        c.layers[0].k[0] = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        c.layers[0].v[0] = vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+        c.len = 3;
+        c.truncate(2).unwrap();
+        assert_eq!(c.len, 2);
+        assert_eq!(c.layers[0].k[0], vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(c.layers[0].v[0], vec![6.0, 5.0, 4.0, 3.0]);
+        assert!(c.truncate(3).is_err());
     }
 
     #[test]
