@@ -19,7 +19,7 @@ fn bench_wpc_kv(c: &mut Criterion) {
     for &(tokens, width) in &[(64usize, 32usize), (128, 64), (256, 64)] {
         let (keys, values) = synthetic_kv(tokens, width);
         group.bench_with_input(
-            BenchmarkId::new(format!("{}x{}", tokens, width), "WPC-KV"),
+            BenchmarkId::new("WPC-KV", format!("{}x{}", tokens, width)),
             &(keys, values),
             |b, (keys, values)| {
                 b.iter(|| {
@@ -28,7 +28,7 @@ fn bench_wpc_kv(c: &mut Criterion) {
                             session_id: "bench".into(),
                             keys: keys.clone(),
                             values: values.clone(),
-                            vector_width: width_for_bench(*width()),
+                            vector_width: width,
                             pattern_count: 16,
                             residual_count: 256,
                             train_iters: 5,
@@ -40,10 +40,6 @@ fn bench_wpc_kv(c: &mut Criterion) {
         );
     }
     group.finish();
-}
-
-fn width_for_bench(width: usize) -> usize {
-    width
 }
 
 criterion_group!(benches, bench_wpc_kv);
