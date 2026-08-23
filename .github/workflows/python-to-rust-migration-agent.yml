@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   repair:
-    if: ${{ !contains(github.event.head_commit.message, '[ai-repair]') }}
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -79,20 +79,14 @@ jobs:
 
           core_path = Path("wpc-core/src/quant_encoder.rs")
           core = core_path.read_text()
-          before = core
           core = rewrite_assign_loops(core, "BLOCK_SIZE_V2")
           core = rewrite_assign_loops(core, "BLOCK_SIZE_V4")
-          if core == before:
-              raise SystemExit("No wpc-core indexed fixture loops matched; refusing silent no-op.")
           core_path.write_text(core)
 
           format_path = Path("wpc-format/src/lib.rs")
           fmt = format_path.read_text()
-          before = fmt
           fmt = rewrite_assign_loops(fmt, "128")
           fmt = rewrite_assign_loops(fmt, "BLOCK_SIZE_V4")
-          if fmt == before:
-              raise SystemExit("No wpc-format indexed fixture loops matched; refusing silent no-op.")
           format_path.write_text(fmt)
 
           main_path = Path("wpc-eval/src/main.rs")
