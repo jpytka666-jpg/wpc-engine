@@ -1,3 +1,6 @@
+mod classifier;
+
+use classifier::classify;
 use std::process::{Command, Stdio};
 
 #[derive(Clone, Copy)]
@@ -19,15 +22,25 @@ fn main() {
     println!("AIONS Local CI — deterministic verification runner");
     for gate in GATES {
         println!("\n== {} ==", gate.name);
-        let status = Command::new(gate.command)
+        let output = Command::new(gate.command)
             .args(gate.args)
             .stdin(Stdio::null())
-            .status()
+            .output()
             .unwrap_or_else(|e| panic!("failed to start {}: {e}", gate.name));
-        if !status.success() {
+
+        if !output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let combined = format!("{stdout}\n{stderr}");
+            let diagnostic = classify(gate.name, &combined);
             eprintln!("FAIL: {}", gate.name);
-            std::process::exit(status.code().unwrap_or(1));
+            eprintln!("  kind: {:?}", diagnostic.kind);
+            eprintln!("  message: {}", diagnostic.message);
+            if let Some(file) = diagnostic.file { eprintln!("  file: {file}"); }
+            if let Some(line) = diagnostic.line { eprintln!("  line: {line}"); }
+            std::process::exit(output.status.code().unwrap_or(1));
         }
+        print!("{}", String::from_utf8_lossy(&output.stdout));
         println!("PASS: {}", gate.name);
     }
     println!("\nGREEN: all local CI gates passed");
