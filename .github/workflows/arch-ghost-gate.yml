@@ -1,0 +1,21 @@
+name: AIONS Architecture - Ghost Gate
+on:
+  push:
+    branches: ["arch/ghost-gate"]
+  pull_request:
+    branches: [main]
+    paths: ["CLAUDE.md", "docs/**", ".github/workflows/arch-ghost-gate.yml"]
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify contract
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          test -f docs/IMPLEMENTATION-STAGE-1.md
+          grep -q "Ghost Gate" docs/MODULE-CONTRACT.md
+          grep -q "fail-closed" docs/IMPLEMENTATION-STAGE-1.md
