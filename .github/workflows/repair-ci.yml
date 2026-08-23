@@ -1,0 +1,52 @@
+name: One-shot repair
+
+on:
+  push:
+    branches: [feature/forward-batch-gemm-bench]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, 'automated repair') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+      - name: Fix raw-pointer API
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('wpc-runtime/src/forward_batch.rs')
+          s = p.read_text()
+          old = '''    pub fn optimized_attention_batch(\n        &self,\n        q_batch: &[f32],'''
+          new = '''    pub unsafe fn optimized_attention_batch(\n        &self,\n        q_batch: &[f32],'''
+          if old not in s:
+              raise SystemExit('optimized_attention_batch signature not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('wpc-runtime/tests/attention_correctness.rs')
+          s = p.read_text()
+          old = '''    assert!(engine\n        .optimized_attention_batch(&vec![0.0; 8], kv.keys_ptr(), kv.vals_ptr(), 1, 3, 3)\n        .is_err());'''
+          new = '''    assert!(unsafe {\n        engine.optimized_attention_batch(\n            &vec![0.0; 8],\n            kv.keys_ptr(),\n            kv.vals_ptr(),\n            1,\n            3,\n            3,\n        )\n    }\n    .is_err());'''
+          if old not in s:
+              raise SystemExit('test call not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify
+        run: |
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Commit repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: repair CI formatting and raw pointer safety (automated repair)' || exit 0
+          git push
