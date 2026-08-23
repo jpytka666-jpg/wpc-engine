@@ -32,7 +32,7 @@ pub struct WpcKvMetrics {
     pub generation_critical: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct EncodedTensor {
     blocks: Vec<CompressedBlock>,
     pattern_dict: PatternDict,
