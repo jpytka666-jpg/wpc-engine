@@ -1,19 +1,34 @@
-# WPC Runtime module contract
+# WPC Runtime Module Contract
 
-## Role
-Resident model execution layer for AIONS. Owns WPC compilation/runtime, batch GEMM/attention, and resident model state.
+## Mission
+The WPC runtime is the execution layer for compressed model weights and resident model state used by AIONS.
 
-## Inputs
-WPC model artifacts, tensor metadata, runtime requests, KV handles.
+## Owns
+- WPC model loading and validation
+- Resident model lifecycle
+- Batch execution, attention and GEMM runtime primitives
+- Runtime-facing KV interfaces
+- Performance benchmarks and correctness tests
 
-## Outputs
-Verified inference/runtime operations and measurable latency/memory metrics.
+## Does not own
+- AIONS kernel or device drivers
+- Network access or Ghost Gate policy
+- AIONS Studio UI
+- Long-term CBMS policy
+- GitHub automation or coding-agent policy
 
-## Boundaries
-Do not own UI, network policy, kernel code, or persistent knowledge policy.
+## Required boundaries
+Cross-module behavior uses explicit Rust APIs. Other modules must not reach into private runtime implementation details.
 
-## Integration
-Expose stable Rust APIs. Memory/KV integration must remain behind explicit interfaces.
+## Acceptance gates
+1. Supported Rust toolchain builds successfully.
+2. Workspace tests pass.
+3. `cargo fmt --all --check` passes.
+4. Runtime Clippy with warnings denied passes.
+5. Benchmark target compiles and smoke benchmark completes.
+6. Resident load/use/release lifecycle is deterministic.
+7. Benchmark code cannot silently change production semantics.
+8. Public APIs needed by Memory/KV and Agents/CI are documented.
 
-## Rule
-No local implementation changes to existing repositories from this branch; this branch is the GitHub design/implementation laboratory.
+## Promotion protocol
+GitHub branch is the design and verification laboratory. CI-green changes are promoted to the isolated local workspace only after review. Existing AIONS local workspaces remain read-only until explicit integration.
