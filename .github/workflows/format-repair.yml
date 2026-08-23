@@ -1,0 +1,31 @@
+name: Format repair
+
+on:
+  push:
+    branches: ["integration/full-organism-v2"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Format workspace
+        run: cargo fmt --all
+      - name: Commit formatting changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Formatting already clean"
+            exit 0
+          fi
+          git add -A
+          git commit -m "style: apply rustfmt workspace formatting"
+          git push origin HEAD:${GITHUB_REF_NAME}
