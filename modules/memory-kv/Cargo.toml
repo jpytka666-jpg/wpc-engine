@@ -16,3 +16,7 @@ criterion = "0.5"
 [[bench]]
 name = "hot_kv"
 harness = false
+
+[[bench]]
+name = "compression_experiment"
+harness = false
