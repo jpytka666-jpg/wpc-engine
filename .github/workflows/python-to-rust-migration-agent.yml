@@ -44,41 +44,25 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           kernel_path = Path("wpc-eval/src/fused_kernel.rs")
           text = kernel_path.read_text()
 
-          # Normalize the six intentionally-unreferenced compatibility kernels
-          # to exactly one dead_code allowance. This is deliberately idempotent.
-          for name in (
-              "matvec_v2_fused",
-              "matvec_v2_scalar",
-              "matvec_v3_fused",
-              "matvec_v3_scalar",
-              "matvec_v4_fused",
-              "matvec_v4_scalar",
-          ):
-              signature = (
-                  f"pub unsafe fn {name}"
-                  if name.endswith("fused")
-                  else f"pub fn {name}"
-              )
-              pattern = rf"(?m)^(?:#\[(?:allow|expect)\(dead_code\)\]\r?\n)+(?={re.escape(signature)})"
-              text = re.sub(pattern, "", text)
-              text = text.replace(signature, f"#[allow(dead_code)]\n{signature}", 1)
+          # Collapse repeated dead_code attributes globally. This is idempotent
+          # and works even when target_feature/doc attributes separate them from
+          # the function signature.
+          duplicate = "#[allow(dead_code)]\n#[allow(dead_code)]"
+          while duplicate in text:
+              text = text.replace(duplicate, "#[allow(dead_code)]")
 
-          # Clippy's suggested iterator rewrite does not fire reliably on these
-          # two fixture builders, so make the mechanical transformation explicit.
           text = text.replace(
               "            for i in 0..BLOCK_SIZE_V2 {\n                codes[i] = ((i + bi * 13) % 64) as u8;\n            }",
-              "            for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {\n                *code = ((i + bi * 13) % 64) as u8;\n            }",
+              "            for (i, code) in codes.iter_mut().enumerate() {\n                *code = ((i + bi * 13) % 64) as u8;\n            }",
           )
           text = text.replace(
               "            for i in 0..BLOCK_SIZE_V4 {\n                codes[i] = ((i * 3 + bi * 5) % 16) as u8;\n            }",
-              "            for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V4) {\n                *code = ((i * 3 + bi * 5) % 16) as u8;\n            }",
+              "            for (i, code) in codes.iter_mut().enumerate() {\n                *code = ((i * 3 + bi * 5) % 16) as u8;\n            }",
           )
-
           kernel_path.write_text(text)
 
           main_path = Path("wpc-eval/src/main.rs")
@@ -92,6 +76,15 @@ jobs:
               "",
           )
           main_path.write_text(main)
+          PY
+
+      - name: Assert cleanup invariants
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("wpc-eval/src/fused_kernel.rs").read_text()
+          assert "#[allow(dead_code)]\n#[allow(dead_code)]" not in text
           PY
 
       - name: Format
