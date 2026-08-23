@@ -14,6 +14,7 @@ use wpc_format::{QuantBlockV2, BLOCK_SIZE_V2};
 struct LayerMetaV2 {
     name: String,
     #[allow(dead_code)]
+    #[allow(dead_code)]]
     shape: Vec<usize>,
     offset_bytes: usize,
     size_bytes: usize,
