@@ -1,4 +1,7 @@
-use aions_memory_kv::{envelope_is_compatible, is_compatible, snapshot_round_trip, KvEncoding, KvEnvelope};
+use aions_memory_kv::{
+    envelope_is_compatible, is_compatible, snapshot_round_trip, HotKvBuffer, KvEncoding,
+    KvEnvelope, SequenceError,
+};
 use serde_json::json;
 
 #[test]
@@ -59,4 +62,44 @@ fn incompatible_model_fingerprint_is_rejected() {
     });
 
     assert!(!is_compatible(&snapshot, "model-b", "config-a"));
+}
+
+#[test]
+fn sequence_batches_are_owned_contiguously() {
+    let mut buffer = HotKvBuffer::new();
+    buffer
+        .append(0, vec![vec![1], vec![2]])
+        .expect("first batch");
+    buffer
+        .append(2, vec![vec![3], vec![4]])
+        .expect("second batch");
+
+    assert_eq!(buffer.next_sequence(), 4);
+    assert_eq!(
+        buffer.read(1, 4).expect("read owned range"),
+        vec![vec![2], vec![3], vec![4]]
+    );
+}
+
+#[test]
+fn sequence_gaps_and_overlaps_are_rejected() {
+    let mut buffer = HotKvBuffer::new();
+    buffer
+        .append(0, vec![vec![1], vec![2]])
+        .expect("initial batch");
+
+    assert_eq!(
+        buffer.append(4, vec![vec![5]]),
+        Err(SequenceError::Gap {
+            expected: 2,
+            actual: 4,
+        })
+    );
+    assert_eq!(
+        buffer.append(1, vec![vec![9]]),
+        Err(SequenceError::Overlap {
+            expected: 2,
+            actual: 1,
+        })
+    );
 }
