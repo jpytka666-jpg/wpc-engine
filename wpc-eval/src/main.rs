@@ -8,10 +8,7 @@ use std::time::Instant;
 use wpc_core::codebook::{PatternDict, BLOCK_DIM};
 use wpc_core::encoder::{normalize_block, two_pass_encode, INPUT_SCALE};
 use wpc_core::safetensors::extract_layers;
-use wpc_format::{CompressedBlock, BLOCK_SIZE};
-
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use wpc_format::BLOCK_SIZE;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -170,8 +167,7 @@ fn main() {
 
     // Calculate RMSE of weights
     let mut w_err_sq = 0.0;
-    for i in 0..n_blocks {
-        let b = &blocks[i];
+    for (i, b) in blocks.iter().enumerate().take(n_blocks) {
         let p = &pattern_dict.centroids[b.pattern_id as usize];
         let r = &residual_dict.centroids_f16[b.residual_id as usize];
         let base = b.base_value.to_f32();
