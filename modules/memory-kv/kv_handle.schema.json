@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIONS KV Handle",
+  "type": "object",
+  "required": ["session_id", "layer", "sequence_start", "sequence_end", "residency", "generation_critical"],
+  "properties": {
+    "session_id": {"type": "string", "minLength": 1},
+    "layer": {"type": "integer", "minimum": 0},
+    "sequence_start": {"type": "integer", "minimum": 0},
+    "sequence_end": {"type": "integer", "minimum": 0},
+    "residency": {"type": "string", "enum": ["hot", "warm", "persistent"]},
+    "dtype": {"type": "string"},
+    "generation_critical": {"type": "boolean"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"residency": {"const": "persistent"}}},
+      "then": {"properties": {"generation_critical": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"residency": {"const": "hot"}}},
+      "then": {"properties": {"generation_critical": {"const": true}}}
+    }
+  ],
+  "additionalProperties": false
+}

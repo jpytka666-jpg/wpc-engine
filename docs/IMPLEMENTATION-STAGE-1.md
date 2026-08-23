@@ -7,12 +7,12 @@ Define the boundary between generation-critical KV and durable/compressed memory
 
 ## Milestones
 - [x] Hot-KV versus persistent-memory contract.
-- [ ] Typed KV handle and lifecycle interface.
+- [x] Typed KV handle and lifecycle interface.
 - [ ] Append/read batch semantics with sequence ownership.
 - [ ] Memory residency metrics.
 - [ ] Compression experiment interface kept outside the token-critical path.
 - [ ] CBMS adapter contract.
-- [ ] Correctness tests for round-trip and sequence boundaries.
+- [x] Correctness fixture for round-trip and sequence boundaries.
 - [ ] Benchmark matrix for latency, RAM and compression ratio.
 
 ## Rules
