@@ -1,6 +1,36 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Check whether a persisted or warm KV snapshot belongs to the expected model and configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KvEncoding {
+    F32,
+    F16,
+    Bf16,
+    Wpc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvEnvelope {
+    pub model_fingerprint: String,
+    pub session_id: String,
+    pub dimension: usize,
+    pub sequence_length: usize,
+    pub encoding: KvEncoding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_ref: Option<String>,
+}
+
+/// Check whether an envelope belongs to the expected model and active session.
+pub fn envelope_is_compatible(
+    envelope: &KvEnvelope,
+    model_fingerprint: &str,
+    session_id: &str,
+) -> bool {
+    envelope.model_fingerprint == model_fingerprint && envelope.session_id == session_id
+}
+
+/// Backward-compatible compatibility check for JSON snapshots.
 pub fn is_compatible(snapshot: &Value, model_fingerprint: &str, config_fingerprint: &str) -> bool {
     snapshot
         .get("model_fingerprint")
@@ -20,8 +50,38 @@ pub fn snapshot_round_trip(snapshot: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_compatible, snapshot_round_trip};
+    use super::{envelope_is_compatible, is_compatible, snapshot_round_trip, KvEncoding, KvEnvelope};
     use serde_json::json;
+
+    #[test]
+    fn typed_envelope_round_trips() {
+        let envelope = KvEnvelope {
+            model_fingerprint: "model-12345678".into(),
+            session_id: "session-1".into(),
+            dimension: 4096,
+            sequence_length: 128,
+            encoding: KvEncoding::F16,
+            payload_ref: Some("hot:session-1:layer-0".into()),
+        };
+        let encoded = serde_json::to_vec(&envelope).expect("encode envelope");
+        let decoded: KvEnvelope = serde_json::from_slice(&encoded).expect("decode envelope");
+        assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn typed_envelope_rejects_wrong_model_or_session() {
+        let envelope = KvEnvelope {
+            model_fingerprint: "model-12345678".into(),
+            session_id: "session-1".into(),
+            dimension: 4096,
+            sequence_length: 128,
+            encoding: KvEncoding::F16,
+            payload_ref: None,
+        };
+        assert!(envelope_is_compatible(&envelope, "model-12345678", "session-1"));
+        assert!(!envelope_is_compatible(&envelope, "model-87654321", "session-1"));
+        assert!(!envelope_is_compatible(&envelope, "model-12345678", "session-2"));
+    }
 
     #[test]
     fn compatible_hot_snapshot_round_trips() {
