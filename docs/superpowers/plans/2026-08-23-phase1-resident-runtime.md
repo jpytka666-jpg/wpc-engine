@@ -2,116 +2,89 @@
 
 > **For agentic workers:** Execute this plan task-by-task with verification after every step.
 
-**Goal:** Close the remaining Phase 1 WPC Runtime gaps by making one resident runtime/session hold model state, reusing working buffers, and proving the behaviour with correctness and performance gates.
+**Goal:** Close the remaining Phase 1 WPC Runtime gates by proving and documenting the resident runtime, load-once weights, reusable KV/mmap storage, and agent-session persistence already present in Rust.
 
-**Architecture:** Keep Rust as the reference/system-of-record implementation. Extend the existing `ResidentEngine`, `ResidentSession`, `MoeKvCache`, and `BatchEngine` rather than creating a second memory/runtime subsystem. CBMS remains outside the real-time token path.
+**Architecture:** Keep Rust as the system-of-record and correctness reference. Reuse the existing `ResidentEngine`, `ResidentSession`, `MoeKvCache`, mmap-backed WPC v4 model data, and `BatchEngine`; do not introduce a second workspace/memory subsystem unless profiling later proves a hot-path allocation problem.
 
-**Tech Stack:** Rust, existing WPC runtime, existing KV cache, existing batch attention code, GitHub Actions.
+**Tech Stack:** Rust, existing WPC runtime, `memmap2`, `Arc`, existing KV/cache code, GitHub Actions.
 
 **Spec:** `docs/AIONS-INTEGRATION-MAP.md` Phase 1; `docs/UNIFIED_STACK.md` runtime/performance sections.
 
 ## Global Constraints
 
-- Work only on `feature/phase1-resident-runtime` and integrate later through PR.
+- Work only on `feature/phase1-resident-runtime` and integrate through PR #23.
 - Keep existing Rust implementation as the correctness reference.
 - Do not introduce Mojo/CUDA/ASM in Phase 1.
 - Do not use CBMS as hot-path KV storage.
 - Preserve numerical behaviour within existing documented tolerances.
-- Every task ends with a focused test or CI verification before the next task.
+- Do not add a new allocation/workspace subsystem without profiler evidence.
 
 ---
 
-### Task 1: Establish resident-session correctness baseline
+### Task 1: Verify resident agent/session lifetime
 
 **Files:**
-- Test: `wpc-runtime/tests/resident_runtime.rs` (create)
-- Modify: `wpc-runtime/src/resident.rs` only if required by the tests
+- Inspect: `wpc-runtime/src/bin/aions-agent.rs`
+- Inspect: `wpc-runtime/src/resident.rs`
 
 **Interfaces:**
-- Consume `ResidentEngine::load`, `start_session`, `ResidentSession::generate`.
-- Produce regression tests proving repeated session calls reuse prompt state and reset safely on a changed prefix.
+- `ResidentEngine::load` creates the model once.
+- `ResidentEngine::start_session` creates one session before the agent turn loop.
+- `ResidentSession::generate` reuses the shared prompt prefix and KV cache.
 
-- [ ] **Step 1: Write failing tests** for repeated generation with the same prompt prefix and for reset after prefix divergence.
-- [ ] **Step 2: Run the focused resident tests and record the current result.**
-- [ ] **Step 3: Make the smallest Rust change required for correctness.**
-- [ ] **Step 4: Re-run the focused tests until green.**
-- [ ] **Step 5: Commit** with `test: establish resident runtime session baseline`.
+- [x] Confirm `ResidentEngine::load` happens before the agent turn loop.
+- [x] Confirm one `ResidentSession` is retained across turns.
+- [x] Confirm prefix reuse and cache truncation semantics.
 
-### Task 2: Introduce `ResidentWorkspace`
+### Task 2: Verify load-once WPC weight storage
 
 **Files:**
-- Create: `wpc-runtime/src/resident_workspace.rs`
-- Modify: `wpc-runtime/src/lib.rs`
-- Test: `wpc-runtime/tests/resident_workspace.rs`
+- Inspect: `wpc-runtime/src/wpc_weights_v4.rs`
+- Test: `wpc-runtime/tests/resident_weight_sharing.rs`
 
 **Interfaces:**
-- `ResidentWorkspace::new(hidden, heads, kv_heads, head_dim, moe_intermediate, vocab, experts)`
-- Reusable buffers exposed through mutable accessors needed by `forward_token`.
-- `reset_for_token()` clears logical lengths without dropping capacity.
+- `WpcModelDataV4::open` returns `Arc<WpcModelDataV4>` over an mmap of the packed model.
+- `WpcLinearV4` clones the same `Arc` for each tensor layer.
 
-- [ ] **Step 1: Write failing capacity-reuse tests.**
-- [ ] **Step 2: Implement workspace with reusable `Vec<f32>` buffers and logical-length reset.**
-- [ ] **Step 3: Run focused workspace tests.**
-- [ ] **Step 4: Wire the workspace into `ResidentSession` construction.**
-- [ ] **Step 5: Commit** with `feat: add resident workspace buffers`.
+- [x] Add a regression test proving multiple linear layers share the same `Arc` backing model data.
+- [x] Keep mmap-backed model storage as the load-once mechanism.
 
-### Task 3: Reuse hot-path buffers in Qwen3-MoE forward
+### Task 3: Verify reusable KV/mmap allocation behaviour
 
 **Files:**
-- Modify: `wpc-runtime/src/qwen3_moe_model.rs`
-- Modify: `wpc-runtime/src/resident.rs`
-- Test: `wpc-runtime/tests/resident_workspace.rs`
+- Inspect: `wpc-runtime/src/forward_batch.rs`
+- Test: `wpc-runtime/tests/resident_memory.rs`
 
 **Interfaces:**
-- `Qwen3MoeModel::forward_token_with_workspace(token_id, cache, workspace)`.
-- Existing `forward_token` remains available as the reference path.
+- `MmapF32::ensure_capacity` retains existing allocation when capacity is sufficient.
+- `KvLayer` grows capacity when required and preserves existing rows/data.
+- Rust `Vec` truncation in the resident KV cache retains allocated capacity.
 
-- [ ] **Step 1: Add a correctness test comparing reference `forward_token` and workspace-backed execution on the same deterministic fixture.**
-- [ ] **Step 2: Implement workspace-backed temporary buffers without changing model math.**
-- [ ] **Step 3: Run correctness tests.**
-- [ ] **Step 4: Update `ResidentSession` to use the workspace-backed path.**
-- [ ] **Step 5: Run full Rust runtime tests and Clippy.**
-- [ ] **Step 6: Commit** with `perf: reuse resident forward buffers`.
+- [x] Add regression tests for mmap capacity reuse.
+- [x] Add regression tests for KV growth/preservation and reuse after growth.
 
-### Task 4: Verify KV residency and session state
+### Task 4: CI verification
 
 **Files:**
-- Test: `wpc-runtime/tests/resident_runtime.rs`
-- Modify: `wpc-runtime/src/resident.rs` only if required
-- Modify: `wpc-runtime/src/qwen3_moe_model.rs` only if required
+- No runtime source changes required.
 
-**Interfaces:**
-- Existing `ResidentSession` owns cache lifetime.
-- Cache truncation returns to the prompt boundary after generation.
+- [ ] Full workspace build passes.
+- [ ] Full workspace tests pass.
+- [ ] Formatting passes.
+- [ ] Runtime Clippy passes with `-D warnings`.
+- [ ] Existing benchmark compile/smoke gates pass.
 
-- [ ] **Step 1: Add tests for KV length before generation, during generation, and after truncation.**
-- [ ] **Step 2: Add a test that repeated generation with the same prompt prefix does not re-run the prefix tokens.**
-- [ ] **Step 3: Run the focused tests.**
-- [ ] **Step 4: Commit** with `test: verify resident kv lifecycle`.
-
-### Task 5: Add allocation/reuse benchmark
-
-**Files:**
-- Create: `wpc-runtime/benches/resident_runtime.rs`
-- Modify: `wpc-runtime/Cargo.toml` only if benchmark registration is needed
-
-**Interfaces:**
-- Benchmark cold load vs resident repeated session calls.
-- Benchmark reference forward path vs workspace-backed path on the same synthetic fixture.
-
-- [ ] **Step 1: Add benchmark cases.**
-- [ ] **Step 2: Run benchmarks and capture baseline numbers.**
-- [ ] **Step 3: Verify the workspace-backed path is not slower beyond measurement noise; if it regresses, profile before proceeding.**
-- [ ] **Step 4: Commit** with `bench: measure resident workspace reuse`.
-
-### Task 6: Close Phase 1 roadmap gates
+### Task 5: Close Phase 1 roadmap gates
 
 **Files:**
 - Modify: `docs/AIONS-INTEGRATION-MAP.md`
-- Modify: `docs/UNIFIED_STACK.md` if the implementation changes the documented runtime boundary
+- Modify: `docs/UNIFIED_STACK.md` only if the documented runtime boundary needs correction.
 
-- [ ] **Step 1: Require full workspace build, test, fmt and Clippy to pass on the feature branch.**
-- [ ] **Step 2: Require resident runtime and benchmark verification to pass.**
-- [ ] **Step 3: Change Phase 1 resident-runtime and allocation-reuse checkboxes to `[x]` only after evidence is green.**
-- [ ] **Step 4: Commit** with `docs: close Phase 1 resident runtime roadmap gates`.
-- [ ] **Step 5: Open a PR from `feature/phase1-resident-runtime` to `integration/full-organism-v2` with the verification evidence.**
+- [ ] Mark resident runtime complete only after CI confirms the implementation.
+- [ ] Mark load-once/reuse complete only after CI confirms the new regression tests.
+- [ ] Record that CBMS remains outside the real-time token path.
+- [ ] Merge PR #23 into `integration/full-organism-v2` once all required checks are green.
+
+## Design decision
+
+A separate `ResidentWorkspace` is intentionally **not** being introduced in this phase. The current implementation already provides resident session state, mmap-backed load-once weights, and reusable KV/mmap storage. Allocation reuse inside individual forward-token scratch vectors is a separate performance investigation and should be driven by profiling after Phase 1, not assumed to be a blocker without measurements.
