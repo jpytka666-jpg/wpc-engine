@@ -1,6 +1,8 @@
 pub mod compression;
+pub mod wpc;
 
 pub use compression::{CompressionExperiment, CompressionInput, CompressionResult};
+pub use wpc::{run_wpc_kv, WpcKvInput, WpcKvMetrics};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
