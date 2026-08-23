@@ -46,6 +46,11 @@ jobs:
           from pathlib import Path
           import re
 
+          def replace_exact(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f"Expected cleanup pattern not found: {label}")
+              return text.replace(old, new, 1)
+
           kernel_path = Path("wpc-eval/src/fused_kernel.rs")
           text = kernel_path.read_text()
           duplicate = "#[allow(dead_code)]\n#[allow(dead_code)]"
@@ -81,6 +86,34 @@ jobs:
           core = core_path.read_text()
           core = rewrite_assign_loops(core, "BLOCK_SIZE_V2")
           core = rewrite_assign_loops(core, "BLOCK_SIZE_V4")
+
+          core = replace_exact(
+              core,
+              """        for i in 0..BLOCK_SIZE_V2 {\n            let a = zp + v2_codes[i] as f32 * sc;\n            let b = zp + unpacked[i] as f32 * sc;\n            assert_eq!(a.to_bits(), b.to_bits(), \"value {i} differs\");\n        }""",
+              """        for (i, (&v2_code, &unpacked_code)) in v2_codes.iter().zip(unpacked.iter()).enumerate() {\n            let a = zp + v2_code as f32 * sc;\n            let b = zp + unpacked_code as f32 * sc;\n            assert_eq!(a.to_bits(), b.to_bits(), \"value {i} differs\");\n        }""",
+              "v3 decoded-value comparison",
+          )
+
+          core = replace_exact(
+              core,
+              """        for i in 0..BLOCK_SIZE_V2 {\n            let decoded = zp + block.codes[i] as f32 * scale;\n            reconstructed[i] = decoded;\n            let error = (decoded - weights[i]).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weights[i].abs().max(1e-6) * weights[i].abs().max(1e-6);\n        }""",
+              """        for (i, (&code, &weight)) in block.codes.iter().zip(weights.iter()).enumerate() {\n            let decoded = zp + code as f32 * scale;\n            reconstructed[i] = decoded;\n            let error = (decoded - weight).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weight.abs().max(1e-6) * weight.abs().max(1e-6);\n        }""",
+              "affine reconstruction check",
+          )
+
+          core = replace_exact(
+              core,
+              """        for i in 0..BLOCK_SIZE_V4 {\n            let decoded = zp + codes[i] as f32 * sc;\n            let err = (decoded - weights[i]).abs();\n            // Half a step, plus slack for zero_point/scale themselves being f16.\n            assert!(\n                err <= sc * 0.5 + sc * 0.05 + 1e-6,\n                \"value {i}: |{decoded} - {}| = {err} exceeds half a step ({})\",\n                weights[i],\n                sc * 0.5\n            );\n        }""",
+              """        for (i, (&code, &weight)) in codes.iter().zip(weights.iter()).enumerate() {\n            let decoded = zp + code as f32 * sc;\n            let err = (decoded - weight).abs();\n            // Half a step, plus slack for zero_point/scale themselves being f16.\n            assert!(\n                err <= sc * 0.5 + sc * 0.05 + 1e-6,\n                \"value {i}: |{decoded} - {weight}| = {err} exceeds half a step ({})\",\n                sc * 0.5\n            );\n        }""",
+              "v4 bounded reconstruction check",
+          )
+
+          core = replace_exact(
+              core,
+              """        for i in 0..BLOCK_SIZE_V4 {\n            let d3 = v3_zp.to_f32() + v3_codes[i] as f32 * v3_sc.to_f32() - weights[i];\n            let d4 = v4_zp.to_f32() + v4_codes[i] as f32 * v4_sc.to_f32() - weights[i];\n            e3 += d3 * d3;\n            e4 += d4 * d4;\n        }""",
+              """        for ((&v3_code, &v4_code), &weight) in v3_codes\n            .iter()\n            .zip(v4_codes.iter())\n            .zip(weights.iter())\n        {\n            let d3 = v3_zp.to_f32() + v3_code as f32 * v3_sc.to_f32() - weight;\n            let d4 = v4_zp.to_f32() + v4_code as f32 * v4_sc.to_f32() - weight;\n            e3 += d3 * d3;\n            e4 += d4 * d4;\n        }""",
+              "v3/v4 RMSE comparison",
+          )
           core_path.write_text(core)
 
           format_path = Path("wpc-format/src/lib.rs")
