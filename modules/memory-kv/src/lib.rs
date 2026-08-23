@@ -1,3 +1,7 @@
+pub mod compression;
+
+pub use compression::{CompressionExperiment, CompressionInput, CompressionResult};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,7 +55,6 @@ impl HotKvBuffer {
         self.next_sequence
     }
 
-    /// Return deterministic, allocation-free residency counters for the hot layer.
     pub fn residency_metrics(&self) -> ResidencyMetrics {
         ResidencyMetrics {
             entries: self.entries.len(),
@@ -60,8 +63,6 @@ impl HotKvBuffer {
         }
     }
 
-    /// Append an owned contiguous sequence range. The caller must start exactly
-    /// at the next unowned sequence position; gaps and overlaps are rejected.
     pub fn append(
         &mut self,
         sequence_start: usize,
@@ -94,7 +95,6 @@ impl HotKvBuffer {
         Ok(())
     }
 
-    /// Read an owned half-open sequence range [start, end).
     pub fn read(&self, start: usize, end: usize) -> Result<Vec<Vec<u8>>, SequenceError> {
         if start > end || end > self.next_sequence {
             return Err(SequenceError::InvalidRange { start, end });
@@ -103,7 +103,6 @@ impl HotKvBuffer {
     }
 }
 
-/// Check whether an envelope belongs to the expected model and active session.
 pub fn envelope_is_compatible(
     envelope: &KvEnvelope,
     model_fingerprint: &str,
@@ -112,19 +111,11 @@ pub fn envelope_is_compatible(
     envelope.model_fingerprint == model_fingerprint && envelope.session_id == session_id
 }
 
-/// Backward-compatible compatibility check for JSON snapshots.
 pub fn is_compatible(snapshot: &Value, model_fingerprint: &str, config_fingerprint: &str) -> bool {
-    snapshot
-        .get("model_fingerprint")
-        .and_then(Value::as_str)
-        == Some(model_fingerprint)
-        && snapshot
-            .get("config_fingerprint")
-            .and_then(Value::as_str)
-            == Some(config_fingerprint)
+    snapshot.get("model_fingerprint").and_then(Value::as_str) == Some(model_fingerprint)
+        && snapshot.get("config_fingerprint").and_then(Value::as_str) == Some(config_fingerprint)
 }
 
-/// Serialize and deserialize a snapshot deterministically through the module boundary.
 pub fn snapshot_round_trip(snapshot: &Value) -> Value {
     let encoded = serde_json::to_vec(snapshot).expect("snapshot must be serializable JSON");
     serde_json::from_slice(&encoded).expect("module must decode its own snapshot format")
