@@ -4,6 +4,7 @@ on:
   push:
     branches: [main, "integration/**"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -25,4 +26,4 @@ jobs:
       - name: Benchmark smoke
         run: cargo bench -p wpc-runtime --bench attention_bench -- --noplot --sample-size 10 --measurement-time 0.2
 
-# CI intentionally retriggers after the formatter's bot commit so the next run validates the formatted tree.
+# Bot-written repairs explicitly dispatch verification because GITHUB_TOKEN pushes do not trigger push workflows.
