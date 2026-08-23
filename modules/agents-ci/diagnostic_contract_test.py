@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def test_compile_failure_is_repairable():
-    data = json.loads(Path(__file__).with_name("diagnostic_fixture.json").read_text())
+    data = json.loads(Path(__file__).with_name("diagnostic_fixture.json").read_text(encoding="utf-8"))
     assert data["stage"] == "compile"
     assert data["classification"] == "compile"
     assert data["exit_code"] != 0
@@ -21,3 +21,9 @@ def test_contract_failure_stays_contract_classified():
     }
     assert data["stage"] == data["classification"]
     assert data["repair_allowed"] is False
+
+
+if __name__ == "__main__":
+    test_compile_failure_is_repairable()
+    test_contract_failure_stays_contract_classified()
+    print("AGENTS-CI DIAGNOSTIC TESTS GREEN")
