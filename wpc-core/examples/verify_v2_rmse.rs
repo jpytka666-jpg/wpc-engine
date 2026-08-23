@@ -15,7 +15,9 @@ use wpc_format::BLOCK_SIZE_V2;
 
 fn read_tensor_f32(mmap: &Mmap, name: &str) -> (Vec<usize>, Vec<f32>) {
     let st = SafeTensors::deserialize(mmap).expect("invalid safetensors file");
-    let view = st.tensor(name).unwrap_or_else(|_| panic!("tensor {name} not found"));
+    let view = st
+        .tensor(name)
+        .unwrap_or_else(|_| panic!("tensor {name} not found"));
     let shape = view.shape().to_vec();
     let data = match view.dtype() {
         safetensors::Dtype::F32 => view

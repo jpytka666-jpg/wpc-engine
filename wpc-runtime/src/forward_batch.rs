@@ -7,7 +7,14 @@ const MADV_HUGEPAGE: c_int = 14;
 
 extern "C" {
     fn madvise(addr: *mut c_void, length: usize, advice: c_int) -> c_int;
-    fn mmap(addr: *mut c_void, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut c_void;
+    fn mmap(
+        addr: *mut c_void,
+        length: usize,
+        prot: i32,
+        flags: i32,
+        fd: i32,
+        offset: i64,
+    ) -> *mut c_void;
     fn munmap(addr: *mut c_void, length: usize) -> i32;
 }
 
@@ -159,7 +166,12 @@ impl KvLayer {
         Ok(())
     }
 
-    pub fn append_batch(&mut self, k_batch: &[f32], v_batch: &[f32], batch_rows: usize) -> Result<()> {
+    pub fn append_batch(
+        &mut self,
+        k_batch: &[f32],
+        v_batch: &[f32],
+        batch_rows: usize,
+    ) -> Result<()> {
         let elems = batch_rows
             .checked_mul(self.dim)
             .ok_or_else(|| anyhow::anyhow!("batch size overflow"))?;
@@ -362,7 +374,11 @@ impl BatchEngine {
         )
     }
 
-    pub fn reference_attention_batch(&self, q_batch: &[Vec<f32>], kv: &KvLayer) -> Result<Vec<Vec<f32>>> {
+    pub fn reference_attention_batch(
+        &self,
+        q_batch: &[Vec<f32>],
+        kv: &KvLayer,
+    ) -> Result<Vec<Vec<f32>>> {
         let batch_size = q_batch.len();
         if batch_size > kv.seq_len {
             anyhow::bail!("batch larger than KV sequence");

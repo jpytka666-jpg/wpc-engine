@@ -79,7 +79,8 @@ impl Model {
         for l in 0..config.num_hidden_layers {
             let p = format!("model.layers.{l}");
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
 
             let q_w = st.read_f32(&format!("{p}.self_attn.q_proj.weight"));
             let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
@@ -100,10 +101,20 @@ impl Model {
                 post_attention_layernorm,
                 q_norm: None,
                 k_norm: None,
-                q_proj: Box::new(DenseLinear::new(config.num_attention_heads * head_dim, h, q_w, Some(q_b))),
+                q_proj: Box::new(DenseLinear::new(
+                    config.num_attention_heads * head_dim,
+                    h,
+                    q_w,
+                    Some(q_b),
+                )),
                 k_proj: Box::new(DenseLinear::new(kv_dim, h, k_w, Some(k_b))),
                 v_proj: Box::new(DenseLinear::new(kv_dim, h, v_w, Some(v_b))),
-                o_proj: Box::new(DenseLinear::new(h, config.num_attention_heads * head_dim, o_w, None)),
+                o_proj: Box::new(DenseLinear::new(
+                    h,
+                    config.num_attention_heads * head_dim,
+                    o_w,
+                    None,
+                )),
                 gate_proj: Box::new(DenseLinear::new(intermediate, h, gate_w, None)),
                 up_proj: Box::new(DenseLinear::new(intermediate, h, up_w, None)),
                 down_proj: Box::new(DenseLinear::new(h, intermediate, down_w, None)),
@@ -113,7 +124,12 @@ impl Model {
 
         let final_norm = st.read_f32("model.norm.weight");
 
-        Ok(Model { config, embed, layers, final_norm })
+        Ok(Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     /// Load using the WPC-compressed weight backend for every Linear layer
@@ -145,7 +161,8 @@ impl Model {
         for l in 0..config.num_hidden_layers {
             let p = format!("model.layers.{l}");
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
 
             let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
             let k_b = st.read_f32(&format!("{p}.self_attn.k_proj.bias"));
@@ -214,7 +231,12 @@ impl Model {
 
         let final_norm = st.read_f32("model.norm.weight");
 
-        Ok(Model { config, embed, layers, final_norm })
+        Ok(Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     /// Load using the WPC v2-compressed weight backend for every Linear layer
@@ -242,7 +264,8 @@ impl Model {
         for l in 0..config.num_hidden_layers {
             let p = format!("model.layers.{l}");
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
 
             let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
             let k_b = st.read_f32(&format!("{p}.self_attn.k_proj.bias"));
@@ -311,7 +334,12 @@ impl Model {
 
         let final_norm = st.read_f32("model.norm.weight");
 
-        Ok(Model { config, embed, layers, final_norm })
+        Ok(Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     /// Load using the WPC v3 backend: v2's quantization with the 6-bit codes
@@ -338,7 +366,8 @@ impl Model {
         for l in 0..config.num_hidden_layers {
             let p = format!("model.layers.{l}");
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
 
             let q_b = st.read_f32(&format!("{p}.self_attn.q_proj.bias"));
             let k_b = st.read_f32(&format!("{p}.self_attn.k_proj.bias"));
@@ -407,11 +436,19 @@ impl Model {
 
         let final_norm = st.read_f32("model.norm.weight");
 
-        Ok(Model { config, embed, layers, final_norm })
+        Ok(Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     pub fn new_cache(&self) -> KvCache {
-        KvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)
+        KvCache::new(
+            self.config.num_hidden_layers,
+            self.config.num_key_value_heads,
+        )
     }
 
     /// Run one token through the full stack, updating `cache` in place, and
@@ -462,10 +499,18 @@ impl Model {
             }
 
             for hd in 0..num_heads {
-                apply_rope(&mut q[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
+                apply_rope(
+                    &mut q[hd * head_dim..(hd + 1) * head_dim],
+                    pos,
+                    cfg.rope_theta,
+                );
             }
             for hd in 0..num_kv_heads {
-                apply_rope(&mut k[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
+                apply_rope(
+                    &mut k[hd * head_dim..(hd + 1) * head_dim],
+                    pos,
+                    cfg.rope_theta,
+                );
             }
 
             let lc = &mut cache.layers[li];
@@ -517,7 +562,12 @@ impl Model {
 
             // --- MLP block (SwiGLU) ---
             let mut normed2 = vec![0.0f32; h];
-            rms_norm(&residual, &layer.post_attention_layernorm, eps, &mut normed2);
+            rms_norm(
+                &residual,
+                &layer.post_attention_layernorm,
+                eps,
+                &mut normed2,
+            );
 
             let inter = cfg.intermediate_size;
             let mut gate = vec![0.0f32; inter];

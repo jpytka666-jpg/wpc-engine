@@ -44,7 +44,7 @@ struct ModelMeta {
 /// `Arc`); `WpcLinear`/`WpcEmbedding` each hold a reference into it.
 pub struct WpcModelData {
     dicts: HashMap<String, (Vec<f32>, Vec<f16>)>, // class -> (patterns, residuals)
-    mmap: Mmap,           // model.wpc: all tensors' CompressedBlock runs, concatenated
+    mmap: Mmap, // model.wpc: all tensors' CompressedBlock runs, concatenated
     offsets: HashMap<String, (usize, usize, String)>, // name -> (offset_bytes, size_bytes, dict_class)
     has_avx2_fma_f16c: bool,
 }
@@ -93,7 +93,10 @@ impl WpcModelData {
 
         let mut offsets = HashMap::with_capacity(meta.layers.len());
         for l in &meta.layers {
-            offsets.insert(l.name.clone(), (l.offset_bytes, l.size_bytes, l.dict_class.clone()));
+            offsets.insert(
+                l.name.clone(),
+                (l.offset_bytes, l.size_bytes, l.dict_class.clone()),
+            );
         }
 
         let has_avx2_fma_f16c = is_x86_feature_detected!("avx2")
@@ -113,8 +116,7 @@ impl WpcModelData {
 
     /// Get dictionary class for tensor `name`.
     fn class_for(&self, name: &str) -> &str {
-        self
-            .offsets
+        self.offsets
             .get(name)
             .map(|(_, _, class)| class.as_str())
             .unwrap_or_else(|| panic!("tensor {name} not found in model.meta"))
@@ -122,14 +124,16 @@ impl WpcModelData {
 
     /// Get (patterns, residuals) slices for a given class.
     fn dict_for(&self, class: &str) -> (&[f32], &[f16]) {
-        let (p, r) = self.dicts.get(class).unwrap_or_else(|| panic!("no dictionary for class '{class}'"));
+        let (p, r) = self
+            .dicts
+            .get(class)
+            .unwrap_or_else(|| panic!("no dictionary for class '{class}'"));
         (p.as_slice(), r.as_slice())
     }
 
     /// Byte range within `model.wpc` for tensor `name`.
     fn tensor_range(&self, name: &str) -> (usize, usize) {
-        self
-            .offsets
+        self.offsets
             .get(name)
             .map(|(offset, size, _)| (*offset, *size))
             .unwrap_or_else(|| panic!("tensor {name} not found in model.meta"))
@@ -141,7 +145,11 @@ impl WpcModelData {
     fn blocks_for(&self, name: &str) -> &[CompressedBlock] {
         let (offset, size) = self.tensor_range(name);
         let bytes = &self.mmap[offset..offset + size];
-        assert_eq!(bytes.len() % CompressedBlock::SIZE, 0, "misaligned block range");
+        assert_eq!(
+            bytes.len() % CompressedBlock::SIZE,
+            0,
+            "misaligned block range"
+        );
         let n_blocks = bytes.len() / CompressedBlock::SIZE;
         unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const CompressedBlock, n_blocks) }
     }
@@ -174,13 +182,20 @@ fn row_dot(
     }
 }
 
-fn row_dot_scalar(blocks: &[CompressedBlock], patterns: &[f32], residuals: &[f16], x: &[f32]) -> f32 {
+fn row_dot_scalar(
+    blocks: &[CompressedBlock],
+    patterns: &[f32],
+    residuals: &[f16],
+    x: &[f32],
+) -> f32 {
     let mut acc = 0.0f32;
     for (bi, b) in blocks.iter().enumerate() {
         let base = b.base_value.to_f32();
         let scale = b.scale as f32;
-        let p = &patterns[b.pattern_id as usize * BLOCK_SIZE..(b.pattern_id as usize + 1) * BLOCK_SIZE];
-        let r = &residuals[b.residual_id as usize * BLOCK_SIZE..(b.residual_id as usize + 1) * BLOCK_SIZE];
+        let p =
+            &patterns[b.pattern_id as usize * BLOCK_SIZE..(b.pattern_id as usize + 1) * BLOCK_SIZE];
+        let r = &residuals
+            [b.residual_id as usize * BLOCK_SIZE..(b.residual_id as usize + 1) * BLOCK_SIZE];
         let xb = &x[bi * BLOCK_SIZE..(bi + 1) * BLOCK_SIZE];
         for k in 0..BLOCK_SIZE {
             let w = p[k] * scale + base + r[k].to_f32() / INPUT_SCALE;
@@ -192,12 +207,19 @@ fn row_dot_scalar(blocks: &[CompressedBlock], patterns: &[f32], residuals: &[f16
 
 /// Decode one row's blocks into `out` (plain weights, not a dot product).
 /// Used by `WpcEmbedding::embed` for random-row-access token lookups.
-fn row_decode_into(blocks: &[CompressedBlock], patterns: &[f32], residuals: &[f16], out: &mut [f32]) {
+fn row_decode_into(
+    blocks: &[CompressedBlock],
+    patterns: &[f32],
+    residuals: &[f16],
+    out: &mut [f32],
+) {
     for (bi, b) in blocks.iter().enumerate() {
         let base = b.base_value.to_f32();
         let scale = b.scale as f32;
-        let p = &patterns[b.pattern_id as usize * BLOCK_SIZE..(b.pattern_id as usize + 1) * BLOCK_SIZE];
-        let r = &residuals[b.residual_id as usize * BLOCK_SIZE..(b.residual_id as usize + 1) * BLOCK_SIZE];
+        let p =
+            &patterns[b.pattern_id as usize * BLOCK_SIZE..(b.pattern_id as usize + 1) * BLOCK_SIZE];
+        let r = &residuals
+            [b.residual_id as usize * BLOCK_SIZE..(b.residual_id as usize + 1) * BLOCK_SIZE];
         let out_b = &mut out[bi * BLOCK_SIZE..(bi + 1) * BLOCK_SIZE];
         for k in 0..BLOCK_SIZE {
             out_b[k] = p[k] * scale + base + r[k].to_f32() / INPUT_SCALE;
@@ -217,7 +239,13 @@ pub struct WpcLinear {
 }
 
 impl WpcLinear {
-    pub fn new(data: Arc<WpcModelData>, tensor_name: &str, out_features: usize, in_features: usize, bias: Option<Vec<f32>>) -> Self {
+    pub fn new(
+        data: Arc<WpcModelData>,
+        tensor_name: &str,
+        out_features: usize,
+        in_features: usize,
+        bias: Option<Vec<f32>>,
+    ) -> Self {
         assert_eq!(
             in_features % BLOCK_SIZE,
             0,
@@ -284,7 +312,12 @@ pub struct WpcEmbedding {
 }
 
 impl WpcEmbedding {
-    pub fn new(data: Arc<WpcModelData>, tensor_name: &str, vocab_size: usize, hidden_size: usize) -> Self {
+    pub fn new(
+        data: Arc<WpcModelData>,
+        tensor_name: &str,
+        vocab_size: usize,
+        hidden_size: usize,
+    ) -> Self {
         assert_eq!(
             hidden_size % BLOCK_SIZE,
             0,

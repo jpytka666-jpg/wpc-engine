@@ -19,7 +19,7 @@ impl PatternDict {
     pub fn nearest(&self, v: &[f32; BLOCK_DIM]) -> (u8, [f32; BLOCK_DIM]) {
         let mut best_dist = f32::MAX;
         let mut best_id = 0;
-        
+
         for (i, c) in self.centroids.iter().enumerate() {
             let dist = sq_dist(v, c);
             if dist < best_dist {
@@ -68,14 +68,17 @@ impl ResidualDict {
             centroids_f32.push(c32);
         }
 
-        Self { centroids_f16, centroids_f32 }
+        Self {
+            centroids_f16,
+            centroids_f32,
+        }
     }
 
     pub fn nearest(&self, v: &[f32; BLOCK_DIM]) -> (u16, [f32; BLOCK_DIM]) {
         let mut best_dist = f32::MAX;
         let mut best_id = 0;
         let mut best_vec = [0.0; BLOCK_DIM];
-        
+
         for (i, c) in self.centroids_f32.iter().enumerate() {
             let dist = sq_dist(v, c);
             if dist < best_dist {
@@ -92,7 +95,10 @@ impl ResidualDict {
 pub fn dummy_residual_dict() -> ResidualDict {
     let centroids_f16 = vec![[f16::ZERO; BLOCK_DIM]; 1]; // Only 1 to save lookup time
     let centroids_f32 = vec![[0.0; BLOCK_DIM]; 1];
-    ResidualDict { centroids_f16, centroids_f32 }
+    ResidualDict {
+        centroids_f16,
+        centroids_f32,
+    }
 }
 
 fn sq_dist(a: &[f32; BLOCK_DIM], b: &[f32; BLOCK_DIM]) -> f32 {
@@ -106,14 +112,19 @@ fn sq_dist(a: &[f32; BLOCK_DIM], b: &[f32; BLOCK_DIM]) -> f32 {
 
 use rayon::prelude::*;
 
-fn kmeans(data: &[[f32; BLOCK_DIM]], k: usize, max_iters: usize, seed: u64) -> Vec<[f32; BLOCK_DIM]> {
+fn kmeans(
+    data: &[[f32; BLOCK_DIM]],
+    k: usize,
+    max_iters: usize,
+    seed: u64,
+) -> Vec<[f32; BLOCK_DIM]> {
     let n = data.len();
     if n == 0 {
         return vec![[0.0; BLOCK_DIM]; k];
     }
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
     let mut centroids = Vec::with_capacity(k);
-    
+
     // Fast random initialization
     if n <= k {
         centroids.extend_from_slice(data);
@@ -133,15 +144,21 @@ fn kmeans(data: &[[f32; BLOCK_DIM]], k: usize, max_iters: usize, seed: u64) -> V
     let mut assignments = vec![0; n];
     for _ in 0..max_iters {
         // Parallel assignment step
-        let new_assignments: Vec<usize> = data.par_iter().map(|p| {
-            let (mut best_d, mut best_c) = (f32::MAX, 0);
-            for (j, c) in centroids.iter().enumerate() {
-                let d = sq_dist(p, c);
-                if d < best_d { best_d = d; best_c = j; }
-            }
-            best_c
-        }).collect();
-        
+        let new_assignments: Vec<usize> = data
+            .par_iter()
+            .map(|p| {
+                let (mut best_d, mut best_c) = (f32::MAX, 0);
+                for (j, c) in centroids.iter().enumerate() {
+                    let d = sq_dist(p, c);
+                    if d < best_d {
+                        best_d = d;
+                        best_c = j;
+                    }
+                }
+                best_c
+            })
+            .collect();
+
         let mut changed = false;
         for i in 0..n {
             if assignments[i] != new_assignments[i] {
@@ -149,15 +166,19 @@ fn kmeans(data: &[[f32; BLOCK_DIM]], k: usize, max_iters: usize, seed: u64) -> V
                 changed = true;
             }
         }
-        if !changed { break; }
-        
+        if !changed {
+            break;
+        }
+
         // Update
         let mut counts = vec![0; k];
         let mut sums = vec![[0.0; BLOCK_DIM]; k];
         for (i, p) in data.iter().enumerate() {
             let c = assignments[i];
             counts[c] += 1;
-            for j in 0..BLOCK_DIM { sums[c][j] += p[j]; }
+            for j in 0..BLOCK_DIM {
+                sums[c][j] += p[j];
+            }
         }
         for j in 0..k {
             if counts[j] > 0 {
@@ -170,6 +191,6 @@ fn kmeans(data: &[[f32; BLOCK_DIM]], k: usize, max_iters: usize, seed: u64) -> V
             }
         }
     }
-    
+
     centroids
 }

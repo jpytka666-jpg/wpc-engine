@@ -40,12 +40,22 @@ pub struct DenseLinear {
 }
 
 impl DenseLinear {
-    pub fn new(out_features: usize, in_features: usize, weight: Vec<f32>, bias: Option<Vec<f32>>) -> Self {
+    pub fn new(
+        out_features: usize,
+        in_features: usize,
+        weight: Vec<f32>,
+        bias: Option<Vec<f32>>,
+    ) -> Self {
         assert_eq!(weight.len(), out_features * in_features);
         if let Some(b) = &bias {
             assert_eq!(b.len(), out_features);
         }
-        DenseLinear { out_features, in_features, weight, bias }
+        DenseLinear {
+            out_features,
+            in_features,
+            weight,
+            bias,
+        }
     }
 }
 
@@ -87,7 +97,11 @@ pub struct DenseEmbedding {
 impl DenseEmbedding {
     pub fn new(vocab_size: usize, hidden_size: usize, table: Vec<f32>) -> Self {
         assert_eq!(table.len(), vocab_size * hidden_size);
-        DenseEmbedding { vocab_size, hidden_size, table }
+        DenseEmbedding {
+            vocab_size,
+            hidden_size,
+            table,
+        }
     }
 }
 
@@ -138,17 +152,27 @@ impl SafetensorsFile {
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.view().names().into_iter().map(|s| s.to_string()).collect()
+        self.view()
+            .names()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     pub fn shape(&self, name: &str) -> Vec<usize> {
-        self.view().tensor(name).unwrap_or_else(|_| panic!("missing tensor {name}")).shape().to_vec()
+        self.view()
+            .tensor(name)
+            .unwrap_or_else(|_| panic!("missing tensor {name}"))
+            .shape()
+            .to_vec()
     }
 
     /// Decode a tensor (F32/F16/BF16) to a flat row-major `Vec<f32>`.
     pub fn read_f32(&self, name: &str) -> Vec<f32> {
         let st = self.view();
-        let t = st.tensor(name).unwrap_or_else(|_| panic!("missing tensor {name}"));
+        let t = st
+            .tensor(name)
+            .unwrap_or_else(|_| panic!("missing tensor {name}"));
         match t.dtype() {
             Dtype::F32 => {
                 let raw = t.data();

@@ -31,9 +31,21 @@ fn typed_envelope_rejects_wrong_model_or_session() {
         payload_ref: None,
     };
 
-    assert!(envelope_is_compatible(&envelope, "model-12345678", "session-1"));
-    assert!(!envelope_is_compatible(&envelope, "model-87654321", "session-1"));
-    assert!(!envelope_is_compatible(&envelope, "model-12345678", "session-2"));
+    assert!(envelope_is_compatible(
+        &envelope,
+        "model-12345678",
+        "session-1"
+    ));
+    assert!(!envelope_is_compatible(
+        &envelope,
+        "model-87654321",
+        "session-1"
+    ));
+    assert!(!envelope_is_compatible(
+        &envelope,
+        "model-12345678",
+        "session-2"
+    ));
 }
 
 #[test]

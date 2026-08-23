@@ -125,7 +125,9 @@ mod tests {
     fn graph_rejects_duplicate_or_orphaned_relationships() {
         let mut graph = Graph::new();
         graph.upsert_node(node("agent:a", NodeType::Agent)).unwrap();
-        graph.upsert_node(node("module:m", NodeType::Module)).unwrap();
+        graph
+            .upsert_node(node("module:m", NodeType::Module))
+            .unwrap();
 
         let edge = Edge {
             id: "edge:1".into(),
@@ -152,14 +154,28 @@ mod tests {
     #[test]
     fn neighborhood_query_is_deterministic() {
         let mut graph = Graph::new();
-        for (id, kind) in [("a", NodeType::Agent), ("b", NodeType::Module), ("c", NodeType::Memory)] {
+        for (id, kind) in [
+            ("a", NodeType::Agent),
+            ("b", NodeType::Module),
+            ("c", NodeType::Memory),
+        ] {
             graph.upsert_node(node(id, kind)).unwrap();
         }
         graph
-            .add_edge(Edge { id: "2".into(), from: "a".into(), to: "c".into(), kind: "reads".into() })
+            .add_edge(Edge {
+                id: "2".into(),
+                from: "a".into(),
+                to: "c".into(),
+                kind: "reads".into(),
+            })
             .unwrap();
         graph
-            .add_edge(Edge { id: "1".into(), from: "a".into(), to: "b".into(), kind: "uses".into() })
+            .add_edge(Edge {
+                id: "1".into(),
+                from: "a".into(),
+                to: "b".into(),
+                kind: "uses".into(),
+            })
             .unwrap();
         assert_eq!(graph.neighbors("a"), vec!["b".to_string(), "c".to_string()]);
     }

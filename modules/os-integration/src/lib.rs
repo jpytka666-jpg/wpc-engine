@@ -28,7 +28,10 @@ pub enum ManifestError {
 }
 
 impl ModuleManifest {
-    pub fn validate(&self, dependency_health: impl Fn(&str) -> Health) -> Result<(), ManifestError> {
+    pub fn validate(
+        &self,
+        dependency_health: impl Fn(&str) -> Health,
+    ) -> Result<(), ManifestError> {
         if self.name.is_empty() {
             return Err(ManifestError::EmptyName);
         }
@@ -87,6 +90,9 @@ mod tests {
             detail: "headless API green".into(),
         };
         let bytes = serde_json::to_vec(&envelope).unwrap();
-        assert_eq!(serde_json::from_slice::<HealthEnvelope>(&bytes).unwrap(), envelope);
+        assert_eq!(
+            serde_json::from_slice::<HealthEnvelope>(&bytes).unwrap(),
+            envelope
+        );
     }
 }

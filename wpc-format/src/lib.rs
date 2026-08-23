@@ -164,7 +164,11 @@ impl QuantBlockV2 {
         let scale = f16::from_le_bytes([b[2], b[3]]);
         let mut codes = [0u8; 128];
         codes.copy_from_slice(&b[4..132]);
-        QuantBlockV2 { zero_point, scale, codes }
+        QuantBlockV2 {
+            zero_point,
+            scale,
+            codes,
+        }
     }
 }
 
@@ -273,7 +277,11 @@ impl QuantBlockV3 {
         let scale = f16::from_le_bytes([b[2], b[3]]);
         let mut packed = [0u8; PACKED_BYTES_V3];
         packed.copy_from_slice(&b[4..Self::SIZE]);
-        QuantBlockV3 { zero_point, scale, packed }
+        QuantBlockV3 {
+            zero_point,
+            scale,
+            packed,
+        }
     }
 
     /// Rebuild a v3 block from a v2 one. The arithmetic is identical, so this
@@ -383,7 +391,11 @@ impl QuantBlockV4 {
         let scale = f16::from_le_bytes([b[2], b[3]]);
         let mut packed = [0u8; PACKED_BYTES_V4];
         packed.copy_from_slice(&b[4..Self::SIZE]);
-        QuantBlockV4 { zero_point, scale, packed }
+        QuantBlockV4 {
+            zero_point,
+            scale,
+            packed,
+        }
     }
 }
 
@@ -417,7 +429,10 @@ mod tests {
                 base_value: f16::from_f32(0.0),
                 scale,
             };
-            assert_eq!(CompressedBlock::from_le_bytes(&block.to_le_bytes()).scale, scale);
+            assert_eq!(
+                CompressedBlock::from_le_bytes(&block.to_le_bytes()).scale,
+                scale
+            );
         }
     }
 
@@ -466,7 +481,11 @@ mod tests {
         for v in 0u8..=MAX_CODE_V4 {
             let uniform = [v; BLOCK_SIZE_V4];
             let p = QuantBlockV4::pack_codes(&uniform);
-            assert_eq!(QuantBlockV4::unpack_codes(&p), uniform, "code value {v} failed");
+            assert_eq!(
+                QuantBlockV4::unpack_codes(&p),
+                uniform,
+                "code value {v} failed"
+            );
         }
 
         // And a pattern where the low half and the high half differ, so the

@@ -95,12 +95,19 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) -> anyhow::Result<()> {
+fn run_qwen2(
+    args: &Args,
+    config_path: &std::path::Path,
+    tokenizer: &Tokenizer,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     eprintln!(
         "config: hidden={} layers={} heads={} kv_heads={} vocab={}",
-        config.hidden_size, config.num_hidden_layers, config.num_attention_heads,
-        config.num_key_value_heads, config.vocab_size
+        config.hidden_size,
+        config.num_hidden_layers,
+        config.num_attention_heads,
+        config.num_key_value_heads,
+        config.vocab_size
     );
 
     let t0 = Instant::now();
@@ -128,7 +135,10 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
             Model::load_wpc(&args.model, wpc_dir, config)?
         }
     } else {
-        eprintln!("loading model weights (dense) from {} ...", args.model.display());
+        eprintln!(
+            "loading model weights (dense) from {} ...",
+            args.model.display()
+        );
         Model::load(&args.model, config)?
     };
     eprintln!("model loaded in {:?}", t0.elapsed());
@@ -140,12 +150,20 @@ fn run_qwen2(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
 /// (`Model`/`forward_token`); only weight loading differs — explicit `head_dim`
 /// from config.json, no q/k/v biases, and per-head q_norm/k_norm before RoPE.
 /// See `qwen3_model.rs`.
-fn run_qwen3(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) -> anyhow::Result<()> {
+fn run_qwen3(
+    args: &Args,
+    config_path: &std::path::Path,
+    tokenizer: &Tokenizer,
+) -> anyhow::Result<()> {
     let config = Config::load(config_path)?;
     eprintln!(
         "config: hidden={} layers={} heads={} kv_heads={} head_dim={} vocab={}",
-        config.hidden_size, config.num_hidden_layers, config.num_attention_heads,
-        config.num_key_value_heads, config.head_dim(), config.vocab_size
+        config.hidden_size,
+        config.num_hidden_layers,
+        config.num_attention_heads,
+        config.num_key_value_heads,
+        config.head_dim(),
+        config.vocab_size
     );
 
     let t0 = Instant::now();
@@ -180,7 +198,10 @@ fn run_qwen3(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
             qwen3_model::load_wpc(&args.model, wpc_dir, config)?
         }
     } else {
-        eprintln!("loading model weights (dense) from {} ...", args.model.display());
+        eprintln!(
+            "loading model weights (dense) from {} ...",
+            args.model.display()
+        );
         qwen3_model::load(&args.model, config)?
     };
     eprintln!("model loaded in {:?}", t0.elapsed());
@@ -259,7 +280,11 @@ fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> an
     for &tok in &prompt_ids {
         next_logits = model.forward_token(tok, &mut cache);
     }
-    eprintln!("prefill ({} tokens) in {:?}", prompt_ids.len(), t1.elapsed());
+    eprintln!(
+        "prefill ({} tokens) in {:?}",
+        prompt_ids.len(),
+        t1.elapsed()
+    );
 
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
@@ -291,7 +316,11 @@ fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result
     for &tok in &prompt_ids {
         next_logits = model.forward_token(tok, &mut cache);
     }
-    eprintln!("prefill ({} tokens) in {:?}", prompt_ids.len(), t1.elapsed());
+    eprintln!(
+        "prefill ({} tokens) in {:?}",
+        prompt_ids.len(),
+        t1.elapsed()
+    );
 
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
@@ -311,13 +340,23 @@ fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result
     print_result(tokenizer, &args.prompt, &generated)
 }
 
-fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) -> anyhow::Result<()> {
-    let config = Gemma4Config::try_load(config_path)?
-        .ok_or_else(|| anyhow::anyhow!("config.json has no `text_config` key; not a Gemma4 config"))?;
+fn run_gemma4(
+    args: &Args,
+    config_path: &std::path::Path,
+    tokenizer: &Tokenizer,
+) -> anyhow::Result<()> {
+    let config = Gemma4Config::try_load(config_path)?.ok_or_else(|| {
+        anyhow::anyhow!("config.json has no `text_config` key; not a Gemma4 config")
+    })?;
     eprintln!(
         "config: hidden={} layers={} heads={} kv_heads={} head_dim={} global_head_dim={} vocab={}",
-        config.hidden_size, config.num_hidden_layers, config.num_attention_heads,
-        config.num_key_value_heads, config.head_dim, config.global_head_dim, config.vocab_size
+        config.hidden_size,
+        config.num_hidden_layers,
+        config.num_attention_heads,
+        config.num_key_value_heads,
+        config.head_dim,
+        config.global_head_dim,
+        config.vocab_size
     );
 
     let wpc_dir = args
@@ -359,7 +398,11 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     for &tok in &prompt_ids {
         next_logits = model.forward_token(tok, &mut cache);
     }
-    eprintln!("prefill ({} tokens) in {:?}", prompt_ids.len(), t1.elapsed());
+    eprintln!(
+        "prefill ({} tokens) in {:?}",
+        prompt_ids.len(),
+        t1.elapsed()
+    );
 
     let mut eos = config_eos_ids(&args.model);
     if let Some(e) = model.config.eos_token_id {
@@ -408,7 +451,11 @@ fn config_bos(model_dir: &std::path::Path) -> Option<u32> {
 /// So the caller states what BOS is (from config.json) and this adds it only
 /// when it is genuinely missing. Passing `None`, or a prompt that already
 /// starts with BOS, leaves the token stream byte-identical to before.
-fn encode_prompt(tokenizer: &Tokenizer, prompt: &str, bos: Option<u32>) -> anyhow::Result<Vec<u32>> {
+fn encode_prompt(
+    tokenizer: &Tokenizer,
+    prompt: &str,
+    bos: Option<u32>,
+) -> anyhow::Result<Vec<u32>> {
     let encoding = tokenizer
         .encode(prompt, true)
         .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;

@@ -114,14 +114,8 @@ pub fn envelope_is_compatible(
 
 /// Backward-compatible compatibility check for JSON snapshots.
 pub fn is_compatible(snapshot: &Value, model_fingerprint: &str, config_fingerprint: &str) -> bool {
-    snapshot
-        .get("model_fingerprint")
-        .and_then(Value::as_str)
-        == Some(model_fingerprint)
-        && snapshot
-            .get("config_fingerprint")
-            .and_then(Value::as_str)
-            == Some(config_fingerprint)
+    snapshot.get("model_fingerprint").and_then(Value::as_str) == Some(model_fingerprint)
+        && snapshot.get("config_fingerprint").and_then(Value::as_str) == Some(config_fingerprint)
 }
 
 /// Serialize and deserialize a snapshot deterministically through the module boundary.
@@ -163,9 +157,21 @@ mod tests {
             encoding: KvEncoding::F16,
             payload_ref: None,
         };
-        assert!(envelope_is_compatible(&envelope, "model-12345678", "session-1"));
-        assert!(!envelope_is_compatible(&envelope, "model-87654321", "session-1"));
-        assert!(!envelope_is_compatible(&envelope, "model-12345678", "session-2"));
+        assert!(envelope_is_compatible(
+            &envelope,
+            "model-12345678",
+            "session-1"
+        ));
+        assert!(!envelope_is_compatible(
+            &envelope,
+            "model-87654321",
+            "session-1"
+        ));
+        assert!(!envelope_is_compatible(
+            &envelope,
+            "model-12345678",
+            "session-2"
+        ));
     }
 
     #[test]
@@ -199,8 +205,12 @@ mod tests {
     #[test]
     fn append_assigns_contiguous_sequence_ownership() {
         let mut buffer = HotKvBuffer::new();
-        buffer.append(0, vec![vec![1], vec![2]]).expect("first batch");
-        buffer.append(2, vec![vec![3], vec![4]]).expect("second batch");
+        buffer
+            .append(0, vec![vec![1], vec![2]])
+            .expect("first batch");
+        buffer
+            .append(2, vec![vec![3], vec![4]])
+            .expect("second batch");
         assert_eq!(buffer.next_sequence(), 4);
         assert_eq!(
             buffer.read(1, 4).expect("read owned range"),

@@ -119,9 +119,9 @@ pub struct Qwen3MoeModel {
 /// Pull the four MoE knobs out of the config, failing loudly rather than
 /// silently guessing: a wrong expert count would load garbage weights.
 fn moe_dims(config: &Config) -> anyhow::Result<(usize, usize, usize, bool)> {
-    let n_exp = config
-        .num_experts
-        .ok_or_else(|| anyhow::anyhow!("config.json has no `num_experts`; not a Qwen3-MoE model"))?;
+    let n_exp = config.num_experts.ok_or_else(|| {
+        anyhow::anyhow!("config.json has no `num_experts`; not a Qwen3-MoE model")
+    })?;
     let top_k = config
         .num_experts_per_tok
         .ok_or_else(|| anyhow::anyhow!("config.json has no `num_experts_per_tok`; cannot route"))?;
@@ -131,7 +131,12 @@ fn moe_dims(config: &Config) -> anyhow::Result<(usize, usize, usize, bool)> {
     if top_k == 0 || top_k > n_exp {
         anyhow::bail!("num_experts_per_tok = {top_k} is not in 1..={n_exp}");
     }
-    Ok((n_exp, top_k, moe_inter, config.norm_topk_prob.unwrap_or(true)))
+    Ok((
+        n_exp,
+        top_k,
+        moe_inter,
+        config.norm_topk_prob.unwrap_or(true),
+    ))
 }
 
 /// Build the decoder stack. `make_linear(tensor_name, out_features, in_features)`
@@ -365,7 +370,10 @@ impl Qwen3MoeModel {
     }
 
     pub fn new_cache(&self) -> MoeKvCache {
-        MoeKvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)
+        MoeKvCache::new(
+            self.config.num_hidden_layers,
+            self.config.num_key_value_heads,
+        )
     }
 
     /// Pick the `top_k` highest-scoring experts and their routing weights.
@@ -444,10 +452,18 @@ impl Qwen3MoeModel {
             }
 
             for hd in 0..num_heads {
-                apply_rope(&mut q[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
+                apply_rope(
+                    &mut q[hd * head_dim..(hd + 1) * head_dim],
+                    pos,
+                    cfg.rope_theta,
+                );
             }
             for hd in 0..num_kv_heads {
-                apply_rope(&mut k[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
+                apply_rope(
+                    &mut k[hd * head_dim..(hd + 1) * head_dim],
+                    pos,
+                    cfg.rope_theta,
+                );
             }
 
             let lc = &mut cache.layers[li];
@@ -499,7 +515,12 @@ impl Qwen3MoeModel {
 
             // --- sparse MLP block: route, then run only the chosen experts ---
             let mut normed2 = vec![0.0f32; h];
-            rms_norm(&residual, &layer.post_attention_layernorm, eps, &mut normed2);
+            rms_norm(
+                &residual,
+                &layer.post_attention_layernorm,
+                eps,
+                &mut normed2,
+            );
 
             let mut router_scores = vec![0.0f32; layer.experts.len()];
             layer.router.matvec(&normed2, &mut router_scores);
@@ -615,7 +636,10 @@ mod tests {
         let mut chosen = Vec::new();
         m.route(&[0.1, 0.5, 0.2, 0.9, 0.05], &mut chosen);
         let sum: f32 = chosen.iter().map(|&(_, w)| w).sum();
-        assert!((sum - 1.0).abs() < 1e-6, "top-k weights sum to 1, got {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "top-k weights sum to 1, got {sum}"
+        );
         // 0.9 / (0.9 + 0.5) = 0.642857...
         assert!((chosen[0].1 - 0.642_857).abs() < 1e-4);
     }

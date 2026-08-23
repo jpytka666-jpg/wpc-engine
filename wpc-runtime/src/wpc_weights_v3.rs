@@ -66,7 +66,9 @@ impl WpcModelDataV3 {
 
         let has_avx2_fma = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
         if !has_avx2_fma {
-            eprintln!("[wpc_weights_v3] CPU lacks AVX2+FMA; falling back to scalar v3 decode (slower).");
+            eprintln!(
+                "[wpc_weights_v3] CPU lacks AVX2+FMA; falling back to scalar v3 decode (slower)."
+            );
         }
 
         Ok(Arc::new(WpcModelDataV3 {
@@ -92,7 +94,11 @@ impl WpcModelDataV3 {
     fn blocks_for(&self, name: &str) -> &[QuantBlockV3] {
         let (offset, size) = self.tensor_range(name);
         let bytes = &self.mmap[offset..offset + size];
-        assert_eq!(bytes.len() % QuantBlockV3::SIZE, 0, "misaligned v3 block range");
+        assert_eq!(
+            bytes.len() % QuantBlockV3::SIZE,
+            0,
+            "misaligned v3 block range"
+        );
         let n_blocks = bytes.len() / QuantBlockV3::SIZE;
         unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const QuantBlockV3, n_blocks) }
     }

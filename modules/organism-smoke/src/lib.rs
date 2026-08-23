@@ -7,7 +7,7 @@ mod tests {
     use aions_os_integration_contract::{Health, ModuleManifest};
     use aions_studio::{Approval, CommandSource, StudioCommand};
     use serde_json::json;
-    use std::collections::{BTreeSet, BTreeMap};
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn all_subsystems_link_and_pass_a_single_health_path() {
@@ -21,11 +21,26 @@ mod tests {
             encoding: KvEncoding::Wpc,
             payload_ref: None,
         };
-        assert_eq!(envelope.sequence_length, kv.residency_metrics().sequence_length);
+        assert_eq!(
+            envelope.sequence_length,
+            kv.residency_metrics().sequence_length
+        );
 
         let mut graph = Graph::new();
-        graph.upsert_node(Node { id: "runtime:wpc".into(), node_type: NodeType::Module, version: 1 }).unwrap();
-        graph.upsert_node(Node { id: "memory:kv".into(), node_type: NodeType::Memory, version: 1 }).unwrap();
+        graph
+            .upsert_node(Node {
+                id: "runtime:wpc".into(),
+                node_type: NodeType::Module,
+                version: 1,
+            })
+            .unwrap();
+        graph
+            .upsert_node(Node {
+                id: "memory:kv".into(),
+                node_type: NodeType::Memory,
+                version: 1,
+            })
+            .unwrap();
         graph.snapshot_round_trip("organism:1");
 
         let mut command = StudioCommand {
@@ -59,7 +74,8 @@ mod tests {
         };
         ipc.validate().unwrap();
 
-        let egress = EgressRequest::fail_closed_offline("egress:health", "health.invalid", "organism smoke");
+        let egress =
+            EgressRequest::fail_closed_offline("egress:health", "health.invalid", "organism smoke");
         egress.validate().unwrap();
         assert_eq!(egress.decision, Decision::Deny);
         assert_eq!(egress.dns_policy, DnsPolicy::Blocked);
@@ -68,13 +84,19 @@ mod tests {
             name: "aions-organism".into(),
             version: "0.1.0".into(),
             health: Health::Ready,
-            capabilities: BTreeSet::from(["inference.resident".into(), "kv.hot".into(), "health".into()]),
+            capabilities: BTreeSet::from([
+                "inference.resident".into(),
+                "kv.hot".into(),
+                "health".into(),
+            ]),
             dependencies: BTreeSet::from(["memory-kv".into(), "wpc-runtime".into()]),
         };
-        manifest.validate(|name| match name {
-            "memory-kv" | "wpc-runtime" => Health::Ready,
-            _ => Health::Ready,
-        }).unwrap();
+        manifest
+            .validate(|name| match name {
+                "memory-kv" | "wpc-runtime" => Health::Ready,
+                _ => Health::Ready,
+            })
+            .unwrap();
 
         let _runtime_type_check: Option<wpc_runtime::config::Config> = None;
         let _ = BTreeMap::<String, String>::new();

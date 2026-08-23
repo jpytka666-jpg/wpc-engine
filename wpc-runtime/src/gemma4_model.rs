@@ -105,7 +105,11 @@ impl Gemma4Model {
     /// `global_residuals.bin`); multimodal tensors
     /// (`embed_vision`/`embed_audio`/`vision_embedder`) present in the same
     /// `model.meta` are simply never referenced.
-    pub fn load_wpc(model_dir: &Path, wpc_dir: &Path, config: Gemma4Config) -> anyhow::Result<Gemma4Model> {
+    pub fn load_wpc(
+        model_dir: &Path,
+        wpc_dir: &Path,
+        config: Gemma4Config,
+    ) -> anyhow::Result<Gemma4Model> {
         let st_path = model_dir.join("model.safetensors");
         let st = SafetensorsFile::open(&st_path)?;
         let wpc = WpcModelData::open(wpc_dir)?;
@@ -124,9 +128,12 @@ impl Gemma4Model {
             let p = format!("{LANG_PREFIX}.layers.{l}");
 
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
-            let pre_feedforward_layernorm = st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
-            let post_feedforward_layernorm = st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let pre_feedforward_layernorm =
+                st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
+            let post_feedforward_layernorm =
+                st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
             let q_norm = st.read_f32(&format!("{p}.self_attn.q_norm.weight"));
             let k_norm = st.read_f32(&format!("{p}.self_attn.k_norm.weight"));
             let layer_scalar = st.read_f32(&format!("{p}.layer_scalar"))[0];
@@ -168,9 +175,27 @@ impl Gemma4Model {
             ));
 
             let inter = config.intermediate_size;
-            let gate_proj = Box::new(WpcLinear::new(wpc.clone(), &format!("{p}.mlp.gate_proj.weight"), inter, h, None));
-            let up_proj = Box::new(WpcLinear::new(wpc.clone(), &format!("{p}.mlp.up_proj.weight"), inter, h, None));
-            let down_proj = Box::new(WpcLinear::new(wpc.clone(), &format!("{p}.mlp.down_proj.weight"), h, inter, None));
+            let gate_proj = Box::new(WpcLinear::new(
+                wpc.clone(),
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
+                None,
+            ));
+            let up_proj = Box::new(WpcLinear::new(
+                wpc.clone(),
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
+                None,
+            ));
+            let down_proj = Box::new(WpcLinear::new(
+                wpc.clone(),
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
+                None,
+            ));
 
             layers.push(Gemma4Layer {
                 input_layernorm,
@@ -192,17 +217,30 @@ impl Gemma4Model {
             eprintln!(
                 "loaded layer {l}/{} (Gemma4 WPC, {})",
                 config.num_hidden_layers,
-                if layers.last().unwrap().spec.is_full { "full_attention" } else { "sliding_attention" }
+                if layers.last().unwrap().spec.is_full {
+                    "full_attention"
+                } else {
+                    "sliding_attention"
+                }
             );
         }
 
         let final_norm = st.read_f32(&format!("{LANG_PREFIX}.norm.weight"));
 
-        Ok(Gemma4Model { config, embed, layers, final_norm })
+        Ok(Gemma4Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     /// Load using WPC v2 (affine 6-bit) compressed weights.
-    pub fn load_wpc_v2(model_dir: &Path, wpc_dir: &Path, config: Gemma4Config) -> anyhow::Result<Gemma4Model> {
+    pub fn load_wpc_v2(
+        model_dir: &Path,
+        wpc_dir: &Path,
+        config: Gemma4Config,
+    ) -> anyhow::Result<Gemma4Model> {
         let st_path = model_dir.join("model.safetensors");
         let st = SafetensorsFile::open(&st_path)?;
         let wpc = WpcModelDataV2::open(wpc_dir)?;
@@ -221,9 +259,12 @@ impl Gemma4Model {
             let p = format!("{LANG_PREFIX}.layers.{l}");
 
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
-            let pre_feedforward_layernorm = st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
-            let post_feedforward_layernorm = st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let pre_feedforward_layernorm =
+                st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
+            let post_feedforward_layernorm =
+                st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
             let q_norm = st.read_f32(&format!("{p}.self_attn.q_norm.weight"));
             let k_norm = st.read_f32(&format!("{p}.self_attn.k_norm.weight"));
             let layer_scalar = st.read_f32(&format!("{p}.layer_scalar"))[0];
@@ -265,9 +306,27 @@ impl Gemma4Model {
             ));
 
             let inter = config.intermediate_size;
-            let gate_proj = Box::new(WpcLinearV2::new(wpc.clone(), &format!("{p}.mlp.gate_proj.weight"), inter, h, None));
-            let up_proj = Box::new(WpcLinearV2::new(wpc.clone(), &format!("{p}.mlp.up_proj.weight"), inter, h, None));
-            let down_proj = Box::new(WpcLinearV2::new(wpc.clone(), &format!("{p}.mlp.down_proj.weight"), h, inter, None));
+            let gate_proj = Box::new(WpcLinearV2::new(
+                wpc.clone(),
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
+                None,
+            ));
+            let up_proj = Box::new(WpcLinearV2::new(
+                wpc.clone(),
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
+                None,
+            ));
+            let down_proj = Box::new(WpcLinearV2::new(
+                wpc.clone(),
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
+                None,
+            ));
 
             layers.push(Gemma4Layer {
                 input_layernorm,
@@ -289,13 +348,22 @@ impl Gemma4Model {
             eprintln!(
                 "loaded layer {l}/{} (Gemma4 WPC v2, {})",
                 config.num_hidden_layers,
-                if layers.last().unwrap().spec.is_full { "full_attention" } else { "sliding_attention" }
+                if layers.last().unwrap().spec.is_full {
+                    "full_attention"
+                } else {
+                    "sliding_attention"
+                }
             );
         }
 
         let final_norm = st.read_f32(&format!("{LANG_PREFIX}.norm.weight"));
 
-        Ok(Gemma4Model { config, embed, layers, final_norm })
+        Ok(Gemma4Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     /// Load using WPC v3: v2's affine quantization with the 6-bit codes
@@ -306,7 +374,11 @@ impl Gemma4Model {
     /// `load_wpc_v2` only in which backend reads the bytes. The file is 24%
     /// smaller, and since a token costs one full pass over the weights and the
     /// cores idle waiting for memory, most of that is off the clock too.
-    pub fn load_wpc_v3(model_dir: &Path, wpc_dir: &Path, config: Gemma4Config) -> anyhow::Result<Gemma4Model> {
+    pub fn load_wpc_v3(
+        model_dir: &Path,
+        wpc_dir: &Path,
+        config: Gemma4Config,
+    ) -> anyhow::Result<Gemma4Model> {
         let st_path = model_dir.join("model.safetensors");
         let st = SafetensorsFile::open(&st_path)?;
         let wpc = WpcModelDataV3::open(wpc_dir)?;
@@ -325,9 +397,12 @@ impl Gemma4Model {
             let p = format!("{LANG_PREFIX}.layers.{l}");
 
             let input_layernorm = st.read_f32(&format!("{p}.input_layernorm.weight"));
-            let post_attention_layernorm = st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
-            let pre_feedforward_layernorm = st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
-            let post_feedforward_layernorm = st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
+            let post_attention_layernorm =
+                st.read_f32(&format!("{p}.post_attention_layernorm.weight"));
+            let pre_feedforward_layernorm =
+                st.read_f32(&format!("{p}.pre_feedforward_layernorm.weight"));
+            let post_feedforward_layernorm =
+                st.read_f32(&format!("{p}.post_feedforward_layernorm.weight"));
             let q_norm = st.read_f32(&format!("{p}.self_attn.q_norm.weight"));
             let k_norm = st.read_f32(&format!("{p}.self_attn.k_norm.weight"));
             let layer_scalar = st.read_f32(&format!("{p}.layer_scalar"))[0];
@@ -369,9 +444,27 @@ impl Gemma4Model {
             ));
 
             let inter = config.intermediate_size;
-            let gate_proj = Box::new(WpcLinearV3::new(wpc.clone(), &format!("{p}.mlp.gate_proj.weight"), inter, h, None));
-            let up_proj = Box::new(WpcLinearV3::new(wpc.clone(), &format!("{p}.mlp.up_proj.weight"), inter, h, None));
-            let down_proj = Box::new(WpcLinearV3::new(wpc.clone(), &format!("{p}.mlp.down_proj.weight"), h, inter, None));
+            let gate_proj = Box::new(WpcLinearV3::new(
+                wpc.clone(),
+                &format!("{p}.mlp.gate_proj.weight"),
+                inter,
+                h,
+                None,
+            ));
+            let up_proj = Box::new(WpcLinearV3::new(
+                wpc.clone(),
+                &format!("{p}.mlp.up_proj.weight"),
+                inter,
+                h,
+                None,
+            ));
+            let down_proj = Box::new(WpcLinearV3::new(
+                wpc.clone(),
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                inter,
+                None,
+            ));
 
             layers.push(Gemma4Layer {
                 input_layernorm,
@@ -393,17 +486,28 @@ impl Gemma4Model {
             eprintln!(
                 "loaded layer {l}/{} (Gemma4 WPC v3, {})",
                 config.num_hidden_layers,
-                if layers.last().unwrap().spec.is_full { "full_attention" } else { "sliding_attention" }
+                if layers.last().unwrap().spec.is_full {
+                    "full_attention"
+                } else {
+                    "sliding_attention"
+                }
             );
         }
 
         let final_norm = st.read_f32(&format!("{LANG_PREFIX}.norm.weight"));
 
-        Ok(Gemma4Model { config, embed, layers, final_norm })
+        Ok(Gemma4Model {
+            config,
+            embed,
+            layers,
+            final_norm,
+        })
     }
 
     pub fn new_cache(&self) -> Gemma4KvCache {
-        let specs: Vec<LayerSpec> = (0..self.config.num_hidden_layers).map(|l| self.config.layer_spec(l)).collect();
+        let specs: Vec<LayerSpec> = (0..self.config.num_hidden_layers)
+            .map(|l| self.config.layer_spec(l))
+            .collect();
         Gemma4KvCache::new(&specs)
     }
 
@@ -529,14 +633,24 @@ impl Gemma4Model {
             let mut attn_proj = vec![0.0f32; h];
             layer.o_proj.matvec(&attn_out, &mut attn_proj);
             let mut attn_normed = vec![0.0f32; h];
-            rms_norm(&attn_proj, &layer.post_attention_layernorm, eps, &mut attn_normed);
+            rms_norm(
+                &attn_proj,
+                &layer.post_attention_layernorm,
+                eps,
+                &mut attn_normed,
+            );
             for i in 0..h {
                 residual[i] += attn_normed[i];
             }
 
             // --- MLP block (GeGLU-tanh sandwich) ---
             let mut normed2 = vec![0.0f32; h];
-            rms_norm(&residual, &layer.pre_feedforward_layernorm, eps, &mut normed2);
+            rms_norm(
+                &residual,
+                &layer.pre_feedforward_layernorm,
+                eps,
+                &mut normed2,
+            );
 
             let inter = cfg.intermediate_size;
             let mut gate = vec![0.0f32; inter];
@@ -546,13 +660,19 @@ impl Gemma4Model {
             const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
             for i in 0..inter {
                 let g = gate[i];
-                let gelu_tanh = 0.5 * g * (1.0 + (SQRT_2_OVER_PI * (g + 0.044715 * g * g * g)).tanh());
+                let gelu_tanh =
+                    0.5 * g * (1.0 + (SQRT_2_OVER_PI * (g + 0.044715 * g * g * g)).tanh());
                 gate[i] = gelu_tanh * up[i];
             }
             let mut mlp_out = vec![0.0f32; h];
             layer.down_proj.matvec(&gate, &mut mlp_out);
             let mut mlp_normed = vec![0.0f32; h];
-            rms_norm(&mlp_out, &layer.post_feedforward_layernorm, eps, &mut mlp_normed);
+            rms_norm(
+                &mlp_out,
+                &layer.post_feedforward_layernorm,
+                eps,
+                &mut mlp_normed,
+            );
             for i in 0..h {
                 residual[i] += mlp_normed[i];
             }

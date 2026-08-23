@@ -74,7 +74,11 @@ impl EgressRequest {
         Ok(())
     }
 
-    pub fn fail_closed_offline(request_id: impl Into<String>, destination: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn fail_closed_offline(
+        request_id: impl Into<String>,
+        destination: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
         Self {
             request_id: request_id.into(),
             mode: Mode::Offline,
@@ -94,7 +98,8 @@ mod tests {
 
     #[test]
     fn offline_mode_is_structurally_fail_closed() {
-        let request = EgressRequest::fail_closed_offline("req:1", "example.com", "gateway unavailable");
+        let request =
+            EgressRequest::fail_closed_offline("req:1", "example.com", "gateway unavailable");
         assert!(request.validate().is_ok());
         assert_eq!(request.decision, Decision::Deny);
         assert_eq!(request.dns_policy, DnsPolicy::Blocked);

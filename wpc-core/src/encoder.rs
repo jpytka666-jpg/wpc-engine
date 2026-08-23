@@ -1,7 +1,7 @@
-use wpc_format::{CompressedBlock, RESIDUAL_COUNT};
+use crate::codebook::{PatternDict, ResidualDict, BLOCK_DIM};
 use half::f16;
 use rayon::prelude::*;
-use crate::codebook::{PatternDict, ResidualDict, BLOCK_DIM};
+use wpc_format::{CompressedBlock, RESIDUAL_COUNT};
 
 pub const INPUT_SCALE: f32 = 127.0;
 
@@ -28,7 +28,9 @@ pub fn normalize_block(weights: &[f32; BLOCK_DIM]) -> BlockNorm {
     for i in 0..BLOCK_DIM {
         centered[i] = weights[i] - base;
         let abs_c = centered[i].abs();
-        if abs_c > max_abs_centered { max_abs_centered = abs_c; }
+        if abs_c > max_abs_centered {
+            max_abs_centered = abs_c;
+        }
     }
 
     let scale_f32 = (max_abs_centered * INPUT_SCALE).round();
@@ -42,7 +44,11 @@ pub fn normalize_block(weights: &[f32; BLOCK_DIM]) -> BlockNorm {
         }
     }
 
-    BlockNorm { base, scale_i8, norm }
+    BlockNorm {
+        base,
+        scale_i8,
+        norm,
+    }
 }
 
 pub fn encode_block(
@@ -51,7 +57,11 @@ pub fn encode_block(
     residual_dict: &ResidualDict,
 ) -> (CompressedBlock, [f32; BLOCK_DIM]) {
     // 1 & 2. Base, scale, and normalized vector for pattern matching.
-    let BlockNorm { base, scale_i8, norm } = normalize_block(weights);
+    let BlockNorm {
+        base,
+        scale_i8,
+        norm,
+    } = normalize_block(weights);
 
     let (pattern_id, _p_vec) = pattern_dict.nearest(&norm);
     let p_vec = pattern_dict.centroids[pattern_id as usize];
@@ -60,7 +70,7 @@ pub fn encode_block(
     let mut approx = [0.0; BLOCK_DIM];
     let s_decode = scale_i8 as f32 / INPUT_SCALE;
     let mut block_residual = [0.0; BLOCK_DIM];
-    
+
     for i in 0..BLOCK_DIM {
         approx[i] = p_vec[i] * s_decode + base;
         // The residual is expected to be scaled by INPUT_SCALE before dictionary lookup
@@ -99,25 +109,31 @@ pub fn two_pass_encode(
     let dummy_rd = crate::codebook::dummy_residual_dict();
 
     // Pass 1: harvest residuals (parallel; matches wpc-compiler's rayon path)
-    let residuals_f32: Vec<[f32; BLOCK_DIM]> = (0..num_blocks).into_par_iter().map(|i| {
-        let mut block = [0.0; BLOCK_DIM];
-        block.copy_from_slice(&data[i * BLOCK_DIM..(i + 1) * BLOCK_DIM]);
-        let (_, r) = encode_block(&block, pattern_dict, &dummy_rd);
-        r
-    }).collect();
+    let residuals_f32: Vec<[f32; BLOCK_DIM]> = (0..num_blocks)
+        .into_par_iter()
+        .map(|i| {
+            let mut block = [0.0; BLOCK_DIM];
+            block.copy_from_slice(&data[i * BLOCK_DIM..(i + 1) * BLOCK_DIM]);
+            let (_, r) = encode_block(&block, pattern_dict, &dummy_rd);
+            r
+        })
+        .collect();
 
     // Train residual dict
     let k_residuals = RESIDUAL_COUNT.min(num_blocks * 2); // Prevent over-allocating if tiny array
     let residual_dict = ResidualDict::train(&residuals_f32, k_residuals, train_iters);
 
     // Pass 2: encode final (parallel)
-    let blocks: Vec<CompressedBlock> = (0..num_blocks).into_par_iter().map(|i| {
-        let mut block = [0.0; BLOCK_DIM];
-        block.copy_from_slice(&data[i * BLOCK_DIM..(i + 1) * BLOCK_DIM]);
-        let (cb, _) = encode_block(&block, pattern_dict, &residual_dict);
-        cb
-    }).collect();
-    
+    let blocks: Vec<CompressedBlock> = (0..num_blocks)
+        .into_par_iter()
+        .map(|i| {
+            let mut block = [0.0; BLOCK_DIM];
+            block.copy_from_slice(&data[i * BLOCK_DIM..(i + 1) * BLOCK_DIM]);
+            let (cb, _) = encode_block(&block, pattern_dict, &residual_dict);
+            cb
+        })
+        .collect();
+
     (blocks, residual_dict)
 }
 

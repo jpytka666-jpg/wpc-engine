@@ -72,7 +72,11 @@ pub struct IpcEnvelope {
 
 impl IpcEnvelope {
     pub fn validate(&self) -> Result<(), CapabilityError> {
-        if self.version == 0 || self.source.is_empty() || self.destination.is_empty() || self.message_type.is_empty() {
+        if self.version == 0
+            || self.source.is_empty()
+            || self.destination.is_empty()
+            || self.message_type.is_empty()
+        {
             return Err(CapabilityError::InvalidId);
         }
         Ok(())

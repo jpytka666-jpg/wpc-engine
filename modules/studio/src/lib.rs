@@ -113,7 +113,7 @@ impl CapabilityCatalogue {
 
 #[cfg(test)]
 mod tests {
-    use super::{Approval, CapabilityCatalogue, CommandSource, StudioCommand, CommandError};
+    use super::{Approval, CapabilityCatalogue, CommandError, CommandSource, StudioCommand};
     use serde_json::json;
 
     fn command() -> StudioCommand {

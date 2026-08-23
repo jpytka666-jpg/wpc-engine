@@ -27,7 +27,7 @@ struct ModelMetaV2 {
 /// Shared, load-once WPC v2 model data: mmap'd concatenated compressed blocks
 /// for every tensor. No dictionaries needed.
 pub struct WpcModelDataV2 {
-    mmap: Mmap,           // model_v2.wpc: all tensors' QuantBlockV2 runs, concatenated
+    mmap: Mmap, // model_v2.wpc: all tensors' QuantBlockV2 runs, concatenated
     offsets: HashMap<String, (usize, usize)>, // name -> (offset_bytes, size_bytes)
     has_avx2_fma: bool,
 }
@@ -56,7 +56,9 @@ impl WpcModelDataV2 {
 
         let has_avx2_fma = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
         if !has_avx2_fma {
-            eprintln!("[wpc_weights_v2] CPU lacks AVX2+FMA; falling back to scalar v2 decode (slower).");
+            eprintln!(
+                "[wpc_weights_v2] CPU lacks AVX2+FMA; falling back to scalar v2 decode (slower)."
+            );
         }
 
         Ok(Arc::new(WpcModelDataV2 {
@@ -68,8 +70,7 @@ impl WpcModelDataV2 {
 
     /// Byte range within `model_v2.wpc` for tensor `name`.
     fn tensor_range(&self, name: &str) -> (usize, usize) {
-        self
-            .offsets
+        self.offsets
             .get(name)
             .map(|(offset, size)| (*offset, *size))
             .unwrap_or_else(|| panic!("tensor {name} not found in model_v2.meta"))
@@ -79,7 +80,11 @@ impl WpcModelDataV2 {
     fn blocks_for(&self, name: &str) -> &[QuantBlockV2] {
         let (offset, size) = self.tensor_range(name);
         let bytes = &self.mmap[offset..offset + size];
-        assert_eq!(bytes.len() % QuantBlockV2::SIZE, 0, "misaligned v2 block range");
+        assert_eq!(
+            bytes.len() % QuantBlockV2::SIZE,
+            0,
+            "misaligned v2 block range"
+        );
         let n_blocks = bytes.len() / QuantBlockV2::SIZE;
         unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const QuantBlockV2, n_blocks) }
     }
@@ -109,7 +114,13 @@ pub struct WpcLinearV2 {
 }
 
 impl WpcLinearV2 {
-    pub fn new(data: Arc<WpcModelDataV2>, tensor_name: &str, out_features: usize, in_features: usize, bias: Option<Vec<f32>>) -> Self {
+    pub fn new(
+        data: Arc<WpcModelDataV2>,
+        tensor_name: &str,
+        out_features: usize,
+        in_features: usize,
+        bias: Option<Vec<f32>>,
+    ) -> Self {
         assert_eq!(
             in_features % BLOCK_SIZE_V2,
             0,
@@ -155,7 +166,11 @@ impl Linear for WpcLinearV2 {
             .for_each(|(o, row_blocks)| {
                 if has_avx2 {
                     *o = unsafe {
-                        wpc_eval::fused_kernel::matvec_v2_fused(row_blocks, x.as_ptr(), row_blocks.len())
+                        wpc_eval::fused_kernel::matvec_v2_fused(
+                            row_blocks,
+                            x.as_ptr(),
+                            row_blocks.len(),
+                        )
                     }
                 } else {
                     *o = wpc_eval::fused_kernel::matvec_v2_scalar(row_blocks, x);
@@ -178,7 +193,12 @@ pub struct WpcEmbeddingV2 {
 }
 
 impl WpcEmbeddingV2 {
-    pub fn new(data: Arc<WpcModelDataV2>, tensor_name: &str, vocab_size: usize, hidden_size: usize) -> Self {
+    pub fn new(
+        data: Arc<WpcModelDataV2>,
+        tensor_name: &str,
+        vocab_size: usize,
+        hidden_size: usize,
+    ) -> Self {
         assert_eq!(
             hidden_size % BLOCK_SIZE_V2,
             0,
@@ -231,7 +251,11 @@ impl EmbeddingTable for WpcEmbeddingV2 {
             .for_each(|(o, row_blocks)| {
                 if has_avx2 {
                     *o = unsafe {
-                        wpc_eval::fused_kernel::matvec_v2_fused(row_blocks, x.as_ptr(), row_blocks.len())
+                        wpc_eval::fused_kernel::matvec_v2_fused(
+                            row_blocks,
+                            x.as_ptr(),
+                            row_blocks.len(),
+                        )
                     }
                 } else {
                     *o = wpc_eval::fused_kernel::matvec_v2_scalar(row_blocks, x);
