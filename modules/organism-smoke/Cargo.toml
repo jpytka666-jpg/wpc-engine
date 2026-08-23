@@ -1,0 +1,14 @@
+[package]
+name = "aions-organism-smoke"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aions-memory-kv = { path = "../memory-kv" }
+aions-memory-graph = { path = "../memory-graph" }
+aions-studio = { path = "../studio" }
+aions-kernel-contract = { path = "../aions-kernel" }
+aions-ghost-gate-contract = { path = "../ghost-gate" }
+aions-os-integration-contract = { path = "../os-integration" }
+wpc-runtime = { path = "../../wpc-runtime" }
+serde_json = "1"
