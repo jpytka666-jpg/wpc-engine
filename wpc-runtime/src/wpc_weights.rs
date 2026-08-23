@@ -67,7 +67,7 @@ impl WpcModelData {
                 patterns_bytes.len()
             );
             let patterns: Vec<f32> = patterns_bytes
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
 
@@ -80,7 +80,7 @@ impl WpcModelData {
                 residuals_bytes.len()
             );
             let residuals: Vec<f16> = residuals_bytes
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|c| f16::from_le_bytes([c[0], c[1]]))
                 .collect();
 
