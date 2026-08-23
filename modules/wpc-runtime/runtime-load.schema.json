@@ -1,1 +1,26 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"WPC Runtime Load Contract","type":"object","required":["model_id","scheme","weights_source","resident"],"properties":{"model_id":{"type":"string"},"scheme":{"enum":["v1","v2","v3","v4"]},"weights_source":{"enum":["wpc_mmap","dense_fallback"]},"resident":{"type":"boolean"},"max_context":{"type":"integer","minimum":1},"kv_policy":{"enum":["hot_only","hot_plus_persistent"]}},"additionalProperties":false}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WPC Runtime Load Contract",
+  "type": "object",
+  "required": ["model_id", "scheme", "weights_source", "resident", "lifecycle"],
+  "properties": {
+    "model_id": {"type": "string", "minLength": 1},
+    "scheme": {"type": "string", "enum": ["v1", "v2", "v3", "v4"]},
+    "weights_source": {"type": "string", "enum": ["wpc_mmap", "dense_fallback"]},
+    "resident": {"type": "boolean"},
+    "lifecycle": {"type": "string", "enum": ["cold", "loading", "resident", "evicting", "failed"]},
+    "max_context": {"type": "integer", "minimum": 1},
+    "kv_policy": {"type": "string", "enum": ["hot_only", "hot_plus_persistent"]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"lifecycle": {"const": "resident"}}},
+      "then": {"properties": {"resident": {"const": true}}}
+    },
+    {
+      "if": {"properties": {"lifecycle": {"const": "cold"}}},
+      "then": {"properties": {"resident": {"const": false}}}
+    }
+  ],
+  "additionalProperties": false
+}
