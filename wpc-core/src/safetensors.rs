@@ -30,19 +30,25 @@ pub fn extract_layers(path: &str) -> Result<Vec<LayerInfo>, String> {
         let f32_data: Vec<f32> = match view.dtype() {
             safetensors::Dtype::F32 => {
                 let raw = view.data();
-                raw.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect()
             }
             safetensors::Dtype::F16 => {
                 let raw = view.data();
-                raw.chunks_exact(2)
-                    .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                raw.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| f16::from_le_bytes(*c).to_f32())
                     .collect()
             }
             safetensors::Dtype::BF16 => {
                 let raw = view.data();
-                raw.chunks_exact(2)
+                raw.as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
                         f32::from_bits(bits << 16)
