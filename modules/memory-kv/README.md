@@ -17,6 +17,6 @@ It does not implement model-specific attention kernels.
 
 ## Current implementation gate
 
-The module now provides a typed KV envelope plus a hot in-memory batch buffer. Appends must begin at the next unowned sequence position; gaps and overlaps are rejected. Reads are restricted to already-owned half-open ranges.
+The module provides a typed KV envelope plus a hot in-memory batch buffer. Appends must begin at the next unowned sequence position; gaps and overlaps are rejected. Reads are restricted to already-owned half-open ranges.
 
 Persistent storage, CBMS integration, compressed KV, and WPC runtime wiring remain outside this gate.
