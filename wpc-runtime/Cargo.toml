@@ -17,6 +17,12 @@ anyhow = "1.0"
 wpc-format = { path = "../wpc-format" }
 wpc-core = { path = "../wpc-core" }
 wpc-eval = { path = "../wpc-eval" }
+matrixmultiply = "0.3"
+libc = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports"] }
+rand = "0.8"
 
 [lib]
 name = "wpc_runtime"
@@ -25,3 +31,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "wpc-runtime"
 path = "src/main.rs"
+
+[[bench]]
+name = "attention_bench"
+harness = false
