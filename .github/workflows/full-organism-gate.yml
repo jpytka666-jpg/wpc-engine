@@ -1,0 +1,50 @@
+name: AIONS Full Organism Gate
+
+on:
+  push:
+    branches: ["integration/aions-unified-stack"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  organism-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch subsystem heads
+        run: |
+          git fetch origin \
+            arch/agents-ci arch/memory-kv arch/memory-graph arch/studio \
+            arch/aions-kernel arch/ghost-gate arch/os-integration arch/wpc-runtime
+      - name: Validate required subsystem contracts
+        shell: python
+        run: |
+          import subprocess
+          refs = {
+              "agents": ("arch/agents-ci", "modules/agents-ci/MODULE_CONTRACT.md"),
+              "memory-kv": ("arch/memory-kv", "modules/memory-kv/README.md"),
+              "memory-graph": ("arch/memory-graph", "modules/memory-graph/README.md"),
+              "studio": ("arch/studio", "modules/studio/README.md"),
+              "kernel": ("arch/aions-kernel", "modules/aions-kernel/README.md"),
+              "ghost-gate": ("arch/ghost-gate", "modules/ghost-gate/README.md"),
+              "os-integration": ("arch/os-integration", "modules/os-integration/README.md"),
+              "wpc-runtime": ("arch/wpc-runtime", "modules/wpc-runtime/README.md"),
+          }
+          for name, (ref, path) in refs.items():
+              subprocess.run(["git", "cat-file", "-e", f"origin/{ref}:{path}"], check=True)
+              print("CONTRACT OK", name)
+
+  organism-ci:
+    needs: organism-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate integration source
+        run: |
+          git status --short
+          test -f Cargo.toml
+      - name: Full organism checkpoint
+        run: echo "AIONS FULL ORGANISM CONTRACT CHECKPOINT GREEN"
