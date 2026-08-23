@@ -92,10 +92,26 @@ jobs:
             - remove the Python implementation only after the Rust replacement has
               demonstrated parity and there is no remaining caller that requires it.
 
-          Investigate and fix current CI blockers. Build, tests, and formatting must
-          remain green. Then run the full workspace Clippy command yourself and fix
-          every real lint that is actionable; do not suppress warnings merely to get
-          green CI. Continue into the migration work after the baseline passes.
+          CURRENT KNOWN CI BLOCKERS TO FIX, NOT SUPPRESS:
+            - wpc-runtime/src/gemma4_model.rs: needless_range_loop in attention output initialization,
+              excessive_precision for SQRT_2_OVER_PI, and needless_range_loop for layer_scalar.
+            - wpc-runtime/src/model.rs: needless_range_loop in attention output initialization.
+            - wpc-runtime/src/qwen3_moe_model.rs: needless_range_loop in attention output initialization.
+            - wpc-runtime/src/weights.rs: chunks_exact_to_as_chunks in F32/F16/BF16 decoding.
+            - wpc-runtime/src/wpc_weights.rs: chunks_exact_to_as_chunks for pattern/residual tables.
+            - wpc-runtime/src/wpc_weights_v2.rs: intentionally retained deserialized shape metadata,
+              which may use a narrowly scoped dead_code justification.
+            - wpc-runtime/src/forward_batch.rs: too_many_arguments on the low-level sgemm wrapper and
+              raw-pointer API safety lint on optimized_attention_batch. Prefer real API safety fixes;
+              do not blanket-disable Clippy.
+            - modules/memory-kv/benches/hot_kv.rs: unit_arg benchmark lint.
+
+          Do not stop after fixing only one category. After every batch of fixes, run the exact full
+          workspace Clippy command and keep working until it exits 0. Do NOT pipe Clippy through grep,
+          head, or any command that can hide its exit status. Treat the command's exit code as mandatory.
+
+          Build, tests, and formatting must remain green. Then continue useful migration work after
+          the baseline passes.
 
           Validation required before declaring success:
             cargo fmt --all --check
@@ -120,6 +136,7 @@ jobs:
 
       - name: Final Rust validation
         run: |
+          set -euo pipefail
           cargo fmt --all --check
           cargo build --workspace --release
           cargo test --workspace --release
