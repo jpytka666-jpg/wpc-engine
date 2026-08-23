@@ -1,0 +1,50 @@
+name: AIONS Full Organism Build
+
+on:
+  push:
+    branches: ["integration/full-organism-v2"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  unified-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify subsystem crates are present
+        run: |
+          test -f modules/memory-kv/Cargo.toml
+          test -f modules/memory-graph/Cargo.toml
+          test -f modules/studio/Cargo.toml
+          test -f modules/aions-kernel/Cargo.toml
+          test -f modules/ghost-gate/Cargo.toml
+          test -f modules/os-integration/Cargo.toml
+      - name: Build unified workspace
+        run: cargo build --workspace --release
+      - name: Test unified workspace
+        run: cargo test --workspace --release
+      - name: Format
+        run: cargo fmt --all --check
+      - name: WPC runtime clippy
+        run: cargo clippy -p wpc-runtime --all-targets --release -- -D warnings
+
+  agents-diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Agents diagnostics
+        working-directory: modules/agents-ci
+        run: python diagnostic_contract_test.py
+
+  integration-checkpoint:
+    needs: [unified-rust, agents-diagnostic]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "AIONS FULL ORGANISM BUILD GREEN"
