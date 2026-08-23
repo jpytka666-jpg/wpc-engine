@@ -1,0 +1,19 @@
+name: WPC Resident TDD
+
+on:
+  push:
+    branches: ["stage2/wpc-runtime-contracts"]
+  pull_request:
+    branches: ["arch/wpc-runtime"]
+
+permissions:
+  contents: read
+
+jobs:
+  resident-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run resident tests
+        run: cargo test -p wpc-runtime --test resident_runtime

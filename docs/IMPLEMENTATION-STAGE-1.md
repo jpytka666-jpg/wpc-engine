@@ -8,9 +8,9 @@ Promote the design contract into a small, testable runtime-facing API without ch
 ## Milestones
 - [x] Module contract and interface sketch.
 - [x] Dedicated CI gate.
-- [ ] Typed runtime request/response boundary.
-- [ ] Deterministic resident lifecycle test.
-- [ ] KV adapter trait consumed without owning KV storage.
+- [x] Typed runtime request/response boundary.
+- [x] Deterministic resident lifecycle test.
+- [x] KV adapter trait consumed without owning KV storage.
 - [ ] Benchmark smoke test for the public boundary.
 - [ ] Cross-module integration test with Agents/CI diagnostics.
 

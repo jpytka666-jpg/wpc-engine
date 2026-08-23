@@ -1,0 +1,28 @@
+name: Stage 2 Contract Gate
+on:
+  push:
+    branches: ["stage2/wpc-runtime-contracts"]
+  pull_request:
+    branches: ["arch/wpc-runtime"]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate contract files
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          test -f docs/IMPLEMENTATION-STAGE-1.md
+      - name: Validate JSON
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          files = list(Path('modules/wpc-runtime').glob('*.json'))
+          assert files
+          for p in files:
+              json.loads(p.read_text(encoding='utf-8'))
+              print('VALID', p)

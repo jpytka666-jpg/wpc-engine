@@ -1,0 +1,18 @@
+name: WPC Runtime Contract Gate
+
+on:
+  push:
+    branches: ["stage2/wpc-runtime-contracts"]
+  pull_request:
+    branches: ["arch/wpc-runtime"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test resident runtime contract
+        run: cargo test -p aions-wpc-runtime-contract
