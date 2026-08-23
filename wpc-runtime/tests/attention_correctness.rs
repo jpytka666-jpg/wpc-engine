@@ -127,10 +127,10 @@ fn invalid_attention_inputs_are_rejected() {
     let kv = KvLayer::with_capacity(8, 3).unwrap();
 
     assert!(engine
-        .optimized_attention_from_kv(&vec![0.0; 7], &kv, 1, 2)
+        .optimized_attention_from_kv(&[0.0; 7], &kv, 1, 2)
         .is_err());
     assert!(engine
-        .optimized_attention_batch(&vec![0.0; 8], kv.keys_ptr(), kv.vals_ptr(), 1, 3, 3)
+        .optimized_attention_batch(&[0.0; 8], kv.keys_ptr(), kv.vals_ptr(), 1, 3, 3)
         .is_err());
 }
 
