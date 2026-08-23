@@ -176,19 +176,25 @@ impl SafetensorsFile {
         match t.dtype() {
             Dtype::F32 => {
                 let raw = t.data();
-                raw.as_chunks::<4>().0.iter()
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect()
             }
             Dtype::F16 => {
                 let raw = t.data();
-                raw.as_chunks::<2>().0.iter()
+                raw.as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
                     .collect()
             }
             Dtype::BF16 => {
                 let raw = t.data();
-                raw.as_chunks::<2>().0.iter()
+                raw.as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
                         f32::from_bits(bits << 16)

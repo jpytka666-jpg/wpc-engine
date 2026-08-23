@@ -31,7 +31,10 @@ fn optimized_attention_matches_reference_across_shapes() {
             .optimized_attention_from_kv(&q, &kv, batch, past)
             .unwrap();
         let max_diff = max_abs_diff(&reference, &optimized);
-        assert!(max_diff < 1e-4, "dim={dim} batch={batch} past={past}, max diff={max_diff}");
+        assert!(
+            max_diff < 1e-4,
+            "dim={dim} batch={batch} past={past}, max diff={max_diff}"
+        );
     }
 }
 
@@ -52,8 +55,12 @@ fn earlier_query_does_not_see_future_batch_token() {
     kv_a.append_batch(&k, &v_a, total).unwrap();
     kv_b.append_batch(&k, &v_b, total).unwrap();
     let engine = BatchEngine::new(dim);
-    let out_a = engine.optimized_attention_from_kv(&q, &kv_a, batch, past).unwrap();
-    let out_b = engine.optimized_attention_from_kv(&q, &kv_b, batch, past).unwrap();
+    let out_a = engine
+        .optimized_attention_from_kv(&q, &kv_a, batch, past)
+        .unwrap();
+    let out_b = engine
+        .optimized_attention_from_kv(&q, &kv_b, batch, past)
+        .unwrap();
     let first_a = &out_a[..dim];
     let first_b = &out_b[..dim];
     assert!(max_abs_diff(first_a, first_b) < 1e-6);
@@ -75,7 +82,10 @@ fn mmap_and_kv_reallocation_preserve_all_rows() {
     assert_eq!(kv.seq_len, 10);
     for row in 0..10 {
         assert_eq!(kv.get_key_row(row).unwrap(), expected_keys[row].as_slice());
-        assert_eq!(kv.get_value_row(row).unwrap(), expected_values[row].as_slice());
+        assert_eq!(
+            kv.get_value_row(row).unwrap(),
+            expected_values[row].as_slice()
+        );
     }
 }
 
@@ -89,7 +99,10 @@ fn mmap_direct_reallocation_preserves_data() {
     map.as_mut_slice()[4..8].copy_from_slice(&[5.0, 6.0, 7.0, 8.0]);
     map.mark_used(8).unwrap();
     map.ensure_capacity(32).unwrap();
-    assert_eq!(&map.as_slice()[..8], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    assert_eq!(
+        &map.as_slice()[..8],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    );
 }
 
 #[test]
@@ -102,8 +115,12 @@ fn mmap_mark_used_rejects_over_capacity() {
 fn invalid_attention_inputs_are_rejected() {
     let engine = BatchEngine::new(8);
     let kv = KvLayer::with_capacity(8, 3).unwrap();
-    assert!(engine.optimized_attention_from_kv(&[0.0; 7], &kv, 1, 2).is_err());
-    assert!(engine.optimized_attention_batch(&[0.0; 8], kv.keys_ptr(), kv.vals_ptr(), 1, 3, 3).is_err());
+    assert!(engine
+        .optimized_attention_from_kv(&[0.0; 7], &kv, 1, 2)
+        .is_err());
+    assert!(engine
+        .optimized_attention_batch(&[0.0; 8], kv.keys_ptr(), kv.vals_ptr(), 1, 3, 3)
+        .is_err());
 }
 
 #[test]
@@ -119,7 +136,9 @@ fn medium_stress_case_produces_finite_outputs() {
     let mut kv = KvLayer::with_capacity(dim, total).unwrap();
     kv.append_batch(&k, &v, total).unwrap();
     let engine = BatchEngine::new(dim);
-    let out = engine.optimized_attention_from_kv(&q, &kv, batch, past).unwrap();
+    let out = engine
+        .optimized_attention_from_kv(&q, &kv, batch, past)
+        .unwrap();
     assert_eq!(out.len(), batch * dim);
     assert!(out.iter().all(|x| x.is_finite()));
 }
