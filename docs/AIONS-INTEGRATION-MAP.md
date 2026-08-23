@@ -1,27 +1,27 @@
 # AIONS Integration Map
 
-This document is the **top-level AIONS implementation roadmap**. `docs/UNIFIED_STACK.md` contains the detailed canonical runtime architecture; this file defines the module boundaries, build order and promotion gates.
+This document is the **top-level AIONS implementation roadmap**. `docs/UNIFIED_STACK.md` contains the detailed runtime architecture; this file defines the module boundaries, development order, milestones, and promotion gates.
 
-The project is intentionally polyglot. Existing Rust components remain the stable reference implementation. New languages are added as acceleration or interface layers only where they improve measured speed, quality, stability, precision or hardware coverage without creating duplicate ownership.
+The project is intentionally polyglot. Existing Rust components remain the stable reference implementation. New languages are added only as interface or acceleration layers when they provide measured gains in speed, quality, stability, precision, or hardware coverage without creating duplicate ownership.
 
 ## 1. Eight AIONS architectural modules
 
-1. **WPC Runtime** — compressed model compilation and inference, resident runtime, batching, attention, MoE and sampling.
-2. **Agents / Local CI** — deterministic diagnostics, repair loop, coding agent and verification orchestration.
-3. **Memory / KV** — resident KV cache, memory management, compressed-KV research, CBMS persistence and retrieval outside the real-time token path.
-4. **AIONS Studio** — desktop developer/system environment: editor, terminal, graph views, compiler, debugger, AI controls and observability.
-5. **Memory / System Graph** — graph of code, memory, processes, agents, sessions and dependencies.
-6. **AIONS Kernel** — Rust system layer: IPC, capabilities, scheduling, memory primitives and userspace-first drivers/services.
-7. **Ghost Gate** — isolated network boundary for firewall, VPN, DNS and optional Tor routing.
-8. **OS Integration** — packaging, boot, supervision, permissions, observability, deployment and release integration.
+1. **WPC Runtime** — compressed model compilation and inference, resident runtime, batching, attention, MoE, and sampling.
+2. **Agents / Local CI** — deterministic diagnostics, repair loop, coding agent, and verification orchestration.
+3. **Memory / KV** — resident KV cache, memory management, compressed-KV research, CBMS persistence, and retrieval outside the real-time token path.
+4. **AIONS Studio** — desktop developer/system environment: editor, terminal, graph views, compiler, debugger, AI controls, and observability.
+5. **Memory / System Graph** — graph of code, memory, processes, agents, sessions, and dependencies.
+6. **AIONS Kernel** — Rust system layer: IPC, capabilities, scheduling, memory primitives, and userspace-first drivers/services.
+7. **Ghost Gate** — isolated network boundary for firewall, VPN, DNS, and optional Tor routing.
+8. **OS Integration** — packaging, boot, supervision, permissions, observability, deployment, and release integration.
 
 ## 2. Historical repository mapping
 
 Historical repositories are **source material until promoted through current interfaces and CI**.
 
 - `wpc-engine` → active WPC/runtime and AIONS system centre.
-- `aions-mcp-server` → MCP tools, CBMS access and automation capability layer.
-- `aions-server-wiedzy` → knowledge, memory and historical AIONS consolidation.
+- `aions-mcp-server` → MCP tools, CBMS access, and automation capability layer.
+- `aions-server-wiedzy` → knowledge, memory, and historical AIONS consolidation.
 - `mcp-integration-system` → integration/reference patterns; not a second production MCP authority.
 - `fresh-start` → historical Studio/developer-environment source material.
 - `polip-agi` → historical agent architecture and experiments.
@@ -35,48 +35,49 @@ AIONS is deliberately **multi-language** because different layers have different
 
 | Layer | Preferred technology | Responsibility |
 |---|---|---|
-| AIONS Studio UI | TypeScript + React/Svelte | editor, dashboards, graph UI, terminal and developer tooling |
-| Desktop/native shell | Tauri + Rust | windows, filesystem, process control, IPC and OS integration |
-| Core/runtime | Rust | lifecycle, ownership, sessions, scheduler, security, stable APIs, runtime state and KV orchestration |
-| WPC compiler/format | Rust | safetensors, quantisation, packing, validation and deterministic artifact generation |
+| AIONS Studio UI | TypeScript + React/Svelte | editor, dashboards, graph UI, terminal, and developer tooling |
+| Desktop/native shell | Tauri + Rust | windows, filesystem, process control, IPC, and OS integration |
+| Core/runtime | Rust | lifecycle, ownership, sessions, scheduler, security, stable APIs, runtime state, and KV orchestration |
+| WPC compiler/format | Rust | safetensors, quantisation, packing, validation, and deterministic artifact generation |
 | Reference compute path | Rust | correctness baseline and fallback implementation |
-| Portable AI acceleration | Mojo | candidate batched GEMM, attention, dequantisation and SIMD-heavy kernels |
-| NVIDIA production backend | CUDA C++ | CUDA kernels, Tensor Cores and CUDA libraries |
+| Portable AI acceleration | Mojo | candidate batched GEMM, attention, dequantisation, and SIMD-heavy kernels |
+| NVIDIA production backend | CUDA C++ | CUDA kernels, Tensor Cores, and CUDA libraries |
 | GPU micro-optimisation | PTX | only measured bottlenecks that justify lower-level control |
 | CPU micro-optimisation | C/C++ intrinsics + assembly | only measured hot paths where higher-level code is insufficient |
-| Research/offline tooling | Python | experiments, analysis and benchmarks; not production hot path |
+| Research/offline tooling | Python | experiments, analysis, and benchmarks; not the production hot path |
 
-### Rule
+### Core rule
+
 **Do not rewrite working Rust merely to change language.** Rust remains the system-of-record and reference implementation. Acceleration layers sit behind explicit backend interfaces and are promoted only after benchmark and correctness evidence.
 
 ## 4. Development order
 
-The roadmap is staged so that every stage leaves the previous layer usable and testable.
+Every phase must leave the previous phase usable and testable.
 
 ### Phase 0 — Foundation / CI
 
 - [x] Unified Rust workspace exists.
 - [x] Full-organism module layout exists.
-- [x] CI verifies build, tests, formatting and Clippy.
+- [x] CI verifies build, tests, formatting, and Clippy.
 - [x] Repair Agent verifies changes before persisting them.
 - [x] Repair Agent explicitly dispatches post-repair verification workflows.
 - [ ] Historical Git secret scan before declaring public repositories clean.
 
 ### Phase 1 — WPC Runtime
 
-**Status: substantially implemented; now move from correctness baseline to production runtime.**
+**Status: substantially implemented; move from the correctness baseline toward a production resident runtime.**
 
 - [x] WPC compiler and on-disk formats.
 - [x] v3/v4 quantisation and reconstruction paths.
 - [x] Qwen/Gemma runtime support.
-- [x] Attention, RoPE, norms, MoE routing and sampling.
+- [x] Attention, RoPE, norms, MoE routing, and sampling.
 - [x] Fused/reference kernel correctness tests.
 - [ ] Long-lived resident runtime per agent task/session.
 - [ ] Load compressed weights once and reuse allocations.
 
 ### Phase 2 — Agents / Local CI
 
-**Status: implementation present; verification loop is being hardened.**
+**Status: implementation present; verification loop is now the protected path.**
 
 - [x] AIONS agent executable.
 - [x] Dynamic MCP `initialize` + `tools/list` discovery.
@@ -88,7 +89,7 @@ The roadmap is staged so that every stage leaves the previous layer usable and t
 
 ### Phase 3 — Memory / KV
 
-**Status: existing crates/tests; next major architectural milestone.**
+**Status: existing crates and tests; next major architectural milestone.**
 
 - [x] Memory/KV crates and contract tests.
 - [x] KV persistence and lifecycle contracts.
@@ -96,7 +97,7 @@ The roadmap is staged so that every stage leaves the previous layer usable and t
 - [ ] Resident KV cache across model turns.
 - [ ] Reusable model state across MCP tool calls.
 - [ ] Explicit hot-path versus CBMS persistence boundary.
-- [ ] Measure memory growth, reuse and eviction behaviour.
+- [ ] Measure memory growth, reuse, eviction, and cache locality.
 
 ### Phase 4 — Batched execution
 
@@ -105,7 +106,7 @@ The roadmap is staged so that every stage leaves the previous layer usable and t
 - [ ] BatchEngine as the primary prefill/forward path.
 - [ ] Batched prompt prefill.
 - [ ] Batched GEMM/attention.
-- [ ] Benchmark single-token reference versus batch path.
+- [ ] Benchmark the single-token reference against the batch path.
 - [ ] Preserve reference numerical results within documented tolerances.
 - [ ] Add scheduling for variable batch sizes and sequence lengths.
 
@@ -118,7 +119,7 @@ Only after the Rust/reference path is correct and benchmarked:
 3. **AVX2/AVX-512 / C++ intrinsics** — CPU specialisations.
 4. **PTX / assembly** — surgical optimisation only where profiling proves it necessary.
 
-All acceleration layers must satisfy the same correctness, precision, determinism, stability and performance gates.
+All acceleration layers must satisfy the same correctness, precision, determinism, stability, and performance gates.
 
 ### Phase 6 — AIONS Studio
 
@@ -131,8 +132,8 @@ All acceleration layers must satisfy the same correctness, precision, determinis
 
 ### Phase 7 — Memory / System Graph
 
-- [ ] Unified graph model for code, memory, agents, processes and dependencies.
-- [ ] Stable graph API from Rust core.
+- [ ] Unified graph model for code, memory, agents, processes, and dependencies.
+- [ ] Stable graph API from the Rust core.
 - [ ] Interactive Studio visualisation.
 - [ ] Snapshot/restore and provenance.
 
@@ -168,12 +169,12 @@ A component is promoted into the active stack only when it has:
 3. **Automated correctness tests** or a justified smoke test.
 4. **Deterministic behaviour** where promised.
 5. **Measured performance evidence** for any acceleration claim.
-6. **Numerical/semantic equivalence** to the reference path within an explicit tolerance unless a new model/quantisation scheme is intentionally introduced.
-7. **Full CI compatibility**: build, tests, formatting and Clippy.
+6. **Numerical/semantic equivalence** to the reference path within an explicit tolerance unless a new model or quantisation scheme is intentionally introduced.
+7. **Full CI compatibility**: build, tests, formatting, and Clippy.
 8. **A practical fallback** to the reference implementation where feasible.
-9. **Observability** for backend selection, timing, failures and resource use.
+9. **Observability** for backend selection, timing, failures, and resource use.
 
-Performance is never accepted by silently sacrificing correctness, precision or stability.
+Performance is never accepted by silently sacrificing correctness, precision, or stability.
 
 ## 6. Target execution architecture
 
@@ -206,14 +207,14 @@ AIONS MCP               Compute backends
       AVX2/AVX512   CUDA / PTX
 ```
 
-Language boundaries should be **coarse-grained**. Submit batches/tensor views to compute backends; do not perform per-token Rust↔FFI chatter when a whole kernel/batch can cross the boundary.
+Language boundaries should be **coarse-grained**. Submit batches and tensor views to compute backends; do not perform per-token Rust↔FFI chatter when a whole kernel or batch can cross the boundary.
 
 ## 7. Security rule
 
-Public source is assumed observable. Secrets must never be committed. Credentials belong in environment variables, local secret stores or managed secret systems. Historical Git history requires a dedicated secret scan before a public-clean declaration.
+Public source is assumed observable. Secrets must never be committed. Credentials belong in environment variables, local secret stores, or managed secret systems. Historical Git history requires a dedicated secret scan before a public-clean declaration.
 
 ## 8. Immediate priority after CI stabilises
 
 **1. Resident WPC runtime → 2. Persistent KV across agent turns → 3. Batched prefill/forward → 4. Benchmark → 5. Mojo/CUDA/CPU acceleration → 6. Studio → 7. Graph → 8. Kernel → 9. Ghost Gate → 10. OS integration.**
 
-The goal is one coherent AIONS system with a stable Rust core and specialised acceleration/interface layers, not one language forced onto every subsystem.
+The goal is one coherent AIONS system with a stable Rust core and specialised acceleration and interface layers, not one language forced onto every subsystem.
