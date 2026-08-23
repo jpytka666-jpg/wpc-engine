@@ -1,0 +1,28 @@
+name: WPC Runtime Benchmark Gate
+
+on:
+  push:
+    branches: ["stage2/wpc-runtime-contracts"]
+  pull_request:
+    branches: ["arch/wpc-runtime"]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run resident benchmark
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo bench -p aions-wpc-runtime-contract --bench resident -- --noplot 2>&1 | tee wpc-runtime-benchmark.txt
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpc-runtime-benchmark
+          path: |
+            wpc-runtime-benchmark.txt
+            target/criterion
