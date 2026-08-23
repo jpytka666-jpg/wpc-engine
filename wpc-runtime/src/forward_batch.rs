@@ -238,6 +238,7 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn sgemm_row_major(
     m: usize,
     k: usize,
