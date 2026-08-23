@@ -45,7 +45,11 @@ impl HotKvBuffer {
 
     /// Append an owned contiguous sequence range. The caller must start exactly
     /// at the next unowned sequence position; gaps and overlaps are rejected.
-    pub fn append(&mut self, sequence_start: usize, entries: Vec<Vec<u8>>) -> Result<(), SequenceError> {
+    pub fn append(
+        &mut self,
+        sequence_start: usize,
+        entries: Vec<Vec<u8>>,
+    ) -> Result<(), SequenceError> {
         if entries.is_empty() {
             return Err(SequenceError::InvalidRange {
                 start: sequence_start,
@@ -180,21 +184,32 @@ mod tests {
         buffer.append(0, vec![vec![1], vec![2]]).expect("first batch");
         buffer.append(2, vec![vec![3], vec![4]]).expect("second batch");
         assert_eq!(buffer.next_sequence(), 4);
-        assert_eq!(buffer.read(1, 4).expect("read owned range"), vec![vec![2], vec![3], vec![4]]);
+        assert_eq!(
+            buffer.read(1, 4).expect("read owned range"),
+            vec![vec![2], vec![3], vec![4]]
+        );
     }
 
     #[test]
     fn append_rejects_gaps_and_overlaps() {
         let mut buffer = HotKvBuffer::new();
-        buffer.append(0, vec![vec![1], vec![2]]).expect("initial batch");
+        buffer
+            .append(0, vec![vec![1], vec![2]])
+            .expect("initial batch");
 
         assert_eq!(
             buffer.append(4, vec![vec![5]]),
-            Err(SequenceError::Gap { expected: 2, actual: 4 })
+            Err(SequenceError::Gap {
+                expected: 2,
+                actual: 4
+            })
         );
         assert_eq!(
             buffer.append(1, vec![vec![9]]),
-            Err(SequenceError::Overlap { expected: 2, actual: 1 })
+            Err(SequenceError::Overlap {
+                expected: 2,
+                actual: 1
+            })
         );
     }
 
