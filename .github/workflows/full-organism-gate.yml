@@ -2,7 +2,7 @@ name: AIONS Full Organism Gate
 
 on:
   push:
-    branches: ["integration/aions-unified-stack"]
+    branches: ["integration/**"]
   pull_request:
     branches: ["main"]
 
