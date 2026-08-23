@@ -1,8 +1,8 @@
 //! RMSE verification for the v2 (6-bit affine) quantization scheme, run
-//! directly against real safetensors weights using the actual production
-//! `wpc_core::quant_encoder` code -- not a reimplementation in a scripting
-//! language. Reads one named tensor at a time (never mmaps/loads the whole
-//! multi-GB file into a Vec) to stay safe on a 15GB-RAM machine.
+directly against real safetensors weights using the actual production
+`wpc_core::quant_encoder` code -- not a reimplementation in a scripting
+language. Reads one named tensor at a time (never mmaps/loads the whole
+multi-GB file into a Vec) to stay safe on a 15GB-RAM machine.
 //!
 //! Usage: verify_v2_rmse <safetensors_path> <tensor_name> [<tensor_name> ...]
 
@@ -77,12 +77,7 @@ fn main() {
             let qb = affine_quant_block(&block);
             let zp = qb.zero_point.to_f32();
             let sc = qb.scale.to_f32();
-            for (k, (&orig_code, &quant_code)) in block
-                .iter()
-                .zip(qb.codes.iter())
-                .enumerate()
-                .take(BLOCK_SIZE_V2)
-            {
+            for (&orig_code, &quant_code) in block.iter().zip(qb.codes.iter()) {
                 let orig = orig_code as f64;
                 let approx = (zp + quant_code as f32 * sc) as f64;
                 sq_err += (orig - approx).powi(2);
