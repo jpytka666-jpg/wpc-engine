@@ -111,6 +111,7 @@ pub unsafe fn matvec_fp32_baseline(w: *const f32, x: *const f32, n: usize) -> f3
 /// Requires AVX2 and FMA. `blocks` must contain at least `n_blocks` elements and `x`
 /// must point to at least `n_blocks * 128` readable `f32` values.
 #[target_feature(enable = "avx2,fma")]
+#[allow(dead_code)]
 pub unsafe fn matvec_v2_fused(blocks: &[QuantBlockV2], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
     for i in 0..n_blocks {
@@ -140,6 +141,7 @@ pub unsafe fn matvec_v2_fused(blocks: &[QuantBlockV2], x: *const f32, n_blocks: 
 }
 
 /// Scalar fallback for v2 matvec (no AVX2 available).
+#[allow(dead_code)]
 pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
     // `x` spans the whole row, so the activation index must advance with the
@@ -171,6 +173,7 @@ pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
 /// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
 /// floats.
 #[target_feature(enable = "avx2,fma")]
+#[allow(dead_code)]
 pub unsafe fn matvec_v3_fused(blocks: &[QuantBlockV3], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
     for i in 0..n_blocks {
@@ -200,6 +203,7 @@ pub unsafe fn matvec_v3_fused(blocks: &[QuantBlockV3], x: *const f32, n_blocks: 
 /// v3 stores four 6-bit codes per three bytes, so each weight costs a shift
 /// and a mask to recover. That work lands on cores which are idle waiting for
 /// memory anyway, and buys a 24% smaller read per token.
+#[allow(dead_code)]
 pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
     for (block_idx, b) in blocks.iter().enumerate() {
@@ -241,6 +245,7 @@ pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
 /// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
 /// floats.
 #[target_feature(enable = "avx2,fma")]
+#[allow(dead_code)]
 pub unsafe fn matvec_v4_fused(blocks: &[QuantBlockV4], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
     let nibble_mask = _mm256_set1_epi32(0x0F);
@@ -278,6 +283,7 @@ pub unsafe fn matvec_v4_fused(blocks: &[QuantBlockV4], x: *const f32, n_blocks: 
 /// Walks the payload in the stored order (low nibbles first, then high), which
 /// is the SIMD kernel's order too, so the two agree term by term and not merely
 /// in the final sum.
+#[allow(dead_code)]
 pub fn matvec_v4_scalar(blocks: &[QuantBlockV4], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
     for (block_idx, b) in blocks.iter().enumerate() {
