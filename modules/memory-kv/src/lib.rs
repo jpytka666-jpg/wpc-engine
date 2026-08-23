@@ -21,6 +21,66 @@ pub struct KvEnvelope {
     pub payload_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SequenceError {
+    Gap { expected: usize, actual: usize },
+    Overlap { expected: usize, actual: usize },
+    InvalidRange { start: usize, end: usize },
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HotKvBuffer {
+    next_sequence: usize,
+    entries: Vec<Vec<u8>>,
+}
+
+impl HotKvBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn next_sequence(&self) -> usize {
+        self.next_sequence
+    }
+
+    /// Append an owned contiguous sequence range. The caller must start exactly
+    /// at the next unowned sequence position; gaps and overlaps are rejected.
+    pub fn append(&mut self, sequence_start: usize, entries: Vec<Vec<u8>>) -> Result<(), SequenceError> {
+        if entries.is_empty() {
+            return Err(SequenceError::InvalidRange {
+                start: sequence_start,
+                end: sequence_start,
+            });
+        }
+
+        if sequence_start > self.next_sequence {
+            return Err(SequenceError::Gap {
+                expected: self.next_sequence,
+                actual: sequence_start,
+            });
+        }
+
+        if sequence_start < self.next_sequence {
+            return Err(SequenceError::Overlap {
+                expected: self.next_sequence,
+                actual: sequence_start,
+            });
+        }
+
+        self.next_sequence += entries.len();
+        self.entries.extend(entries);
+        Ok(())
+    }
+
+    /// Read an owned half-open sequence range [start, end).
+    pub fn read(&self, start: usize, end: usize) -> Result<Vec<Vec<u8>>, SequenceError> {
+        if start > end || end > self.next_sequence {
+            return Err(SequenceError::InvalidRange { start, end });
+        }
+        Ok(self.entries[start..end].to_vec())
+    }
+}
+
 /// Check whether an envelope belongs to the expected model and active session.
 pub fn envelope_is_compatible(
     envelope: &KvEnvelope,
@@ -50,7 +110,10 @@ pub fn snapshot_round_trip(snapshot: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{envelope_is_compatible, is_compatible, snapshot_round_trip, KvEncoding, KvEnvelope};
+    use super::{
+        envelope_is_compatible, is_compatible, snapshot_round_trip, HotKvBuffer, KvEncoding,
+        KvEnvelope, SequenceError,
+    };
     use serde_json::json;
 
     #[test]
@@ -109,5 +172,39 @@ mod tests {
         });
 
         assert!(!is_compatible(&snapshot, "model-b", "config-a"));
+    }
+
+    #[test]
+    fn append_assigns_contiguous_sequence_ownership() {
+        let mut buffer = HotKvBuffer::new();
+        buffer.append(0, vec![vec![1], vec![2]]).expect("first batch");
+        buffer.append(2, vec![vec![3], vec![4]]).expect("second batch");
+        assert_eq!(buffer.next_sequence(), 4);
+        assert_eq!(buffer.read(1, 4).expect("read owned range"), vec![vec![2], vec![3], vec![4]]);
+    }
+
+    #[test]
+    fn append_rejects_gaps_and_overlaps() {
+        let mut buffer = HotKvBuffer::new();
+        buffer.append(0, vec![vec![1], vec![2]]).expect("initial batch");
+
+        assert_eq!(
+            buffer.append(4, vec![vec![5]]),
+            Err(SequenceError::Gap { expected: 2, actual: 4 })
+        );
+        assert_eq!(
+            buffer.append(1, vec![vec![9]]),
+            Err(SequenceError::Overlap { expected: 2, actual: 1 })
+        );
+    }
+
+    #[test]
+    fn read_rejects_unowned_range() {
+        let mut buffer = HotKvBuffer::new();
+        buffer.append(0, vec![vec![1]]).expect("initial batch");
+        assert_eq!(
+            buffer.read(0, 2),
+            Err(SequenceError::InvalidRange { start: 0, end: 2 })
+        );
     }
 }
