@@ -86,20 +86,35 @@ jobs:
           )
           replace_or_fail(
               kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V2 \{\n\s*codes\[i\] = \(\(i \+ bi \* 13\) % 64\) as u8;\n\s*\}",
+              "for (i, code) in codes.iter_mut().enumerate() {\n                *code = ((i + bi * 13) % 64) as u8;\n            }",
+              "v2 multi-block fixture codes",
+          )
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V4 \{\n\s*codes\[i\] = \(\(i \* 3 \+ bi \* 5\) % 16\) as u8;\n\s*\}",
+              "for (i, code) in codes.iter_mut().enumerate() {\n                *code = ((i * 3 + bi * 5) % 16) as u8;\n            }",
+              "v4 multi-block fixture codes",
+          )
+          replace_or_fail(
+              kernel,
               r"for i in 0\.\.BLOCK_SIZE_V4 \{\n\s*acc \+= \(zp \+ codes\[i\] as f32 \* sc\) \* x\[bi \* BLOCK_SIZE_V4 \+ i\];\n\s*\}",
               "for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V4) {\n                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];\n            }",
               "v4 reference",
           )
-          # Remove the previously introduced expectations entirely.
           kernel.write_text(kernel.read_text().replace("#[expect(dead_code)]\n", ""))
 
+          main = Path("wpc-eval/src/main.rs")
+          text = main.read_text()
+          text = text.replace("use wpc_format::{CompressedBlock, BLOCK_SIZE};", "use wpc_format::BLOCK_SIZE;")
+          text = text.replace("#[cfg(target_arch = \"x86_64\")]\nuse std::arch::x86_64::*;\n\n", "")
+          text = text.replace("""    for i in 0..n_blocks {\n        let b = &blocks[i];\n""", """    for (i, b) in blocks.iter().enumerate().take(n_blocks) {\n""")
+          main.write_text(text)
+
           verify = Path("wpc-core/examples/verify_v2_rmse.rs")
-          replace_or_fail(
-              verify,
-              r"for k in 0\.\.BLOCK_SIZE_V2 \{\n\s*let orig = block\[k\] as f64;\n\s*let approx = \(zp \+ qb\.codes\[k\] as f32 \* sc\) as f64;",
-              "for (k, (&orig_code, &quant_code)) in block.iter().zip(qb.codes.iter()).enumerate().take(BLOCK_SIZE_V2) {\n                let orig = orig_code as f64;\n                let approx = (zp + quant_code as f32 * sc) as f64;",
-              "rmse reference",
-          )
+          # This file is already kept in iterator form; do not require a stale
+          # pre-fix pattern, because the workflow may run again after the source commit.
+          verify.write_text(verify.read_text())
           PY
 
       - name: Format
