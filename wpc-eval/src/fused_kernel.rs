@@ -364,8 +364,8 @@ mod tests {
 
         // Create a v2 block with varied code values (not all constant)
         let mut codes = [0u8; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            codes[i] = (i % 64) as u8; // Use varied values 0..63
+        for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {
+            *code = (i % 64) as u8;
         }
         let block = QuantBlockV2 {
             zero_point: f16::from_f32(-1.0),
@@ -375,16 +375,16 @@ mod tests {
 
         // Create varied activations
         let mut x = [0.0f32; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            x[i] = (i as f32 * 0.01 - 0.5) % 1.0; // Vary between -0.5 and 0.5
+        for (i, value) in x.iter_mut().enumerate().take(BLOCK_SIZE_V2) {
+            *value = (i as f32 * 0.01 - 0.5) % 1.0;
         }
 
         // Compute scalar reference
         let mut expected = 0.0f32;
         let zp = block.zero_point.to_f32();
         let scale = block.scale.to_f32();
-        for i in 0..BLOCK_SIZE_V2 {
-            let w = zp + block.codes[i] as f32 * scale;
+        for (i, &code) in block.codes.iter().enumerate().take(BLOCK_SIZE_V2) {
+            let w = zp + code as f32 * scale;
             expected += w * x[i];
         }
 
@@ -401,8 +401,8 @@ mod tests {
     #[test]
     fn v2_scalar_matches_reference() {
         let mut codes = [0u8; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            codes[i] = (i % 64) as u8;
+        for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {
+            *code = (i % 64) as u8;
         }
         let block = QuantBlockV2 {
             zero_point: f16::from_f32(2.5),
@@ -411,8 +411,8 @@ mod tests {
         };
 
         let mut x = [1.0f32; BLOCK_SIZE_V2];
-        for i in 0..10 {
-            x[i] = 2.0;
+        for value in x.iter_mut().take(10) {
+            *value = 2.0;
         }
 
         let y = matvec_v2_scalar(std::slice::from_ref(&block), &x);
@@ -420,8 +420,8 @@ mod tests {
         let mut expected = 0.0f32;
         let zp = block.zero_point.to_f32();
         let scale = block.scale.to_f32();
-        for i in 0..BLOCK_SIZE_V2 {
-            let w = zp + block.codes[i] as f32 * scale;
+        for (i, &code) in block.codes.iter().enumerate().take(BLOCK_SIZE_V2) {
+            let w = zp + code as f32 * scale;
             expected += w * x[i];
         }
 
@@ -459,8 +459,8 @@ mod tests {
             let zp = b.zero_point.to_f32();
             let sc = b.scale.to_f32();
             let codes = b.codes;
-            for i in 0..BLOCK_SIZE_V2 {
-                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V2 + i];
+            for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V2) {
+                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V2 + i];
             }
         }
         acc
@@ -576,8 +576,8 @@ mod tests {
             let sc = b.scale.to_f32();
             let packed = b.packed;
             let codes = QuantBlockV4::unpack_codes(&packed);
-            for i in 0..BLOCK_SIZE_V4 {
-                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];
+            for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V4) {
+                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];
             }
         }
         acc

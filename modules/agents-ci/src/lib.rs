@@ -27,10 +27,7 @@ pub fn classify_failure(exit_code: i32, stage: &str) -> Diagnostic {
         };
     }
 
-    if REPAIRABLE_STAGES
-        .iter()
-        .any(|candidate| *candidate == stage)
-    {
+    if REPAIRABLE_STAGES.contains(&stage) {
         let classification = match stage {
             "format" => Classification::Formatting,
             "compile" => Classification::Compile,

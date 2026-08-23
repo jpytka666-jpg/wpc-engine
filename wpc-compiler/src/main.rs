@@ -180,19 +180,25 @@ fn read_tensor_f32(shard_path: &Path, name: &str) -> Vec<f32> {
     match view.dtype() {
         safetensors::Dtype::F32 => {
             let raw = view.data();
-            raw.chunks_exact(4)
+            raw.as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()
         }
         safetensors::Dtype::F16 => {
             let raw = view.data();
-            raw.chunks_exact(2)
+            raw.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect()
         }
         safetensors::Dtype::BF16 => {
             let raw = view.data();
-            raw.chunks_exact(2)
+            raw.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
                     f32::from_bits(bits << 16)
@@ -396,10 +402,7 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
     let mut class_groups: HashMap<&'static str, Vec<&TensorRef>> = HashMap::new();
     for t_ref in all_tensors {
         let class = classify_tensor(&t_ref.name);
-        class_groups
-            .entry(class)
-            .or_insert_with(Vec::new)
-            .push(t_ref);
+        class_groups.entry(class).or_default().push(t_ref);
     }
 
     // Train per-class codebooks
