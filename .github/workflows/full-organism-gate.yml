@@ -24,7 +24,7 @@ jobs:
         run: |
           import subprocess
           refs = {
-              "agents": ("arch/agents-ci", "modules/agents-ci/MODULE_CONTRACT.md"),
+              "agents": ("arch/agents-ci", "docs/MODULE-CONTRACT.md"),
               "memory-kv": ("arch/memory-kv", "modules/memory-kv/README.md"),
               "memory-graph": ("arch/memory-graph", "modules/memory-graph/README.md"),
               "studio": ("arch/studio", "modules/studio/README.md"),
