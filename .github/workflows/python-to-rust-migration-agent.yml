@@ -1,0 +1,143 @@
+name: AIONS Python to Rust Migration Agent
+
+on:
+  push:
+    branches: ["integration/full-organism-v2"]
+  workflow_dispatch:
+
+# Safety: this workflow is intentionally limited to the integration branch.
+# The agent must never rewrite main, delete Python merely to make CI green,
+# or weaken tests to hide failures.
+permissions:
+  contents: write
+  copilot-requests: write
+
+jobs:
+  migrate-and-debug:
+    # Avoid self-trigger loops from the agent's own commits.
+    if: ${{ !contains(github.event.head_commit.message, '[ai-migration]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integration/full-organism-v2
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python for parity checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Inventory Python code
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Python files ==="
+          find . -type f -name '*.py' -not -path './.git/*' -print | sort
+          echo "=== Python line counts ==="
+          find . -type f -name '*.py' -not -path './.git/*' -print0 \
+            | xargs -0 -r wc -l | sort -n
+
+      - name: Baseline Rust validation
+        run: |
+          cargo build --workspace --release
+          cargo test --workspace --release
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Run Copilot migration/debug agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          copilot --yolo -p '
+          You are the senior migration engineer for jpytka666-jpg/wpc-engine.
+
+          Work ONLY on branch integration/full-organism-v2. Never touch main.
+          Your mission is to move appropriate executable/runtime Python logic to
+          Rust, while fixing existing Rust issues and preserving behavior.
+
+          First inspect the entire repository and inventory every *.py file.
+          Classify each Python file as one of:
+            1) runtime/application logic that should be migrated to Rust,
+            2) test/diagnostic logic that can sensibly be ported or duplicated in Rust,
+            3) build/download/CI/dev tooling that should remain Python unless there is
+               a compelling technical reason to replace it.
+
+          IMPORTANT SAFETY RULES:
+          - Do NOT blindly translate every Python line into Rust.
+          - Do NOT delete Python just to make CI green.
+          - Do NOT weaken, skip, or remove tests.
+          - Do NOT change architecture/contracts merely to silence errors.
+          - Do NOT modify main or any branch other than integration/full-organism-v2.
+          - Do NOT rewrite model artifacts, binaries, or generated output into git.
+          - Preserve public CLI/API behavior wherever the Python code is runtime-facing.
+          - Prefer small, validated migrations over one giant rewrite.
+
+          For each useful migration unit:
+            - implement the Rust equivalent in the appropriate existing crate/module;
+            - add or port focused tests;
+            - preserve error handling and observable behavior;
+            - update Cargo dependencies only when necessary;
+            - remove the Python implementation only after the Rust replacement has
+              demonstrated parity and there is no remaining caller that requires it.
+
+          Also investigate and fix current CI blockers. The known recent blocker is
+          cargo fmt --all --check in the unified-rust job, while build and workspace
+          tests were already passing. After formatting, continue through clippy and
+          the existing integration checks rather than stopping at the first green step.
+
+          Validation required before declaring success:
+            cargo fmt --all --check
+            cargo build --workspace --release
+            cargo test --workspace --release
+            cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+          Run relevant Python diagnostics/tests for Python code that remains. When a
+          Python component is intentionally retained as tooling, document why.
+
+          Keep a concise migration report in:
+            docs/python-to-rust-migration.md
+          Include files inspected, migrations completed, files intentionally retained,
+          tests run, failures found, and remaining work.
+
+          Commit validated changes directly to this branch. Every agent commit MUST
+          start with: [ai-migration]
+          Do not commit speculative or unvalidated changes.
+          If a migration is ambiguous or unsafe, stop that migration, document it in
+          the report, and continue with safe work elsewhere.
+          '
+
+      - name: Final Rust validation
+        run: |
+          cargo fmt --all --check
+          cargo build --workspace --release
+          cargo test --workspace --release
+          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+      - name: Commit any validated uncommitted fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No uncommitted changes remain."
+            exit 0
+          fi
+          git add -A
+          git commit -m "[ai-migration] validate migration fixes"
+          git push origin HEAD:integration/full-organism-v2
