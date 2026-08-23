@@ -36,12 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-      - name: Agents diagnostics
-        working-directory: modules/agents-ci
-        run: python diagnostic_contract_test.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust agents diagnostics
+        run: cargo test -p aions-agents-ci --release
 
   integration-checkpoint:
     needs: [unified-rust, agents-diagnostic]
