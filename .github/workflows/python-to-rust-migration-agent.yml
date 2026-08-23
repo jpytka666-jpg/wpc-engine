@@ -43,35 +43,41 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re
           from pathlib import Path
+          import re
 
           kernel_path = Path("wpc-eval/src/fused_kernel.rs")
           text = kernel_path.read_text()
-          names = (
+
+          # Normalize the six intentionally-unreferenced compatibility kernels
+          # to exactly one dead_code allowance. This is deliberately idempotent.
+          for name in (
               "matvec_v2_fused",
               "matvec_v2_scalar",
               "matvec_v3_fused",
               "matvec_v3_scalar",
               "matvec_v4_fused",
               "matvec_v4_scalar",
-          )
-
-          for name in names:
+          ):
               signature = (
-                  rf"pub unsafe fn {name}"
+                  f"pub unsafe fn {name}"
                   if name.endswith("fused")
-                  else rf"pub fn {name}"
+                  else f"pub fn {name}"
               )
-              text = re.sub(
-                  rf"(?m)^(?:#\[(?:allow|expect)\(dead_code\)\]\n)+(?={signature})",
-                  "",
-                  text,
-              )
-              marker = signature
-              replacement = f"#[allow(dead_code)]\n{marker}"
-              if replacement not in text:
-                  text = text.replace(marker, replacement, 1)
+              pattern = rf"(?m)^(?:#\[(?:allow|expect)\(dead_code\)\]\r?\n)+(?={re.escape(signature)})"
+              text = re.sub(pattern, "", text)
+              text = text.replace(signature, f"#[allow(dead_code)]\n{signature}", 1)
+
+          # Clippy's suggested iterator rewrite does not fire reliably on these
+          # two fixture builders, so make the mechanical transformation explicit.
+          text = text.replace(
+              "            for i in 0..BLOCK_SIZE_V2 {\n                codes[i] = ((i + bi * 13) % 64) as u8;\n            }",
+              "            for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {\n                *code = ((i + bi * 13) % 64) as u8;\n            }",
+          )
+          text = text.replace(
+              "            for i in 0..BLOCK_SIZE_V4 {\n                codes[i] = ((i * 3 + bi * 5) % 16) as u8;\n            }",
+              "            for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V4) {\n                *code = ((i * 3 + bi * 5) % 16) as u8;\n            }",
+          )
 
           kernel_path.write_text(text)
 
