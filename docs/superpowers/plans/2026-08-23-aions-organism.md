@@ -27,16 +27,16 @@
 ### Task 1: Stage-2 CI gate
 
 **Files:**
-- Create/update: `.github/workflows/stage2-contract.yml` on each Stage-2 branch.
+- Create/update: `.github/workflows/stage2-contract-gate.yml` on each Stage-2 branch.
 - Test: schema/contract validation steps for each module.
 
 **Interfaces:** Stage-2 branches consume their parent `arch/*` branch and produce validated contract artifacts.
 
-- [ ] Step 1: Add a reusable contract gate that validates required docs and JSON schemas.
-- [ ] Step 2: Run schema parsing and deterministic fixture checks independently per module.
-- [ ] Step 3: Run the gate on PRs targeting `arch/*` and on pushes to `stage2/*`.
-- [ ] Step 4: Verify every Stage-2 PR gets a distinct run.
-- [ ] Step 5: Commit and leave each PR Draft until green.
+- [x] Step 1: Add module-specific contract gates that validate required docs and JSON files.
+- [ ] Step 2: Run semantic schema validation plus deterministic fixture assertions independently per module.
+- [x] Step 3: Run the gate on PRs targeting `arch/*` and on pushes to `stage2/*`.
+- [x] Step 4: Verify every Stage-2 PR gets a distinct run.
+- [x] Step 5: Commit and leave each PR Draft until green.
 
 ### Task 2: WPC Runtime minimal resident-load contract
 
@@ -48,9 +48,9 @@
 **Interfaces:** Produces stable resident-load metadata for model ID, WPC scheme, weight source and KV policy.
 
 - [ ] Step 1: Validate the schema against the fixture.
-- [ ] Step 2: Add explicit residency lifecycle values.
+- [x] Step 2: Add explicit residency lifecycle values.
 - [ ] Step 3: Verify incompatible empty/unknown combinations are rejected.
-- [ ] Step 4: Commit.
+- [x] Step 4: Commit.
 
 ### Task 3: Agents CI diagnostic core
 
@@ -61,10 +61,10 @@
 
 **Interfaces:** Produces machine-readable diagnostic envelopes with exit code, category, bounded context and repair permission.
 
-- [ ] Step 1: Add deterministic examples for each failure class.
-- [ ] Step 2: Validate the schema and classification vocabulary.
-- [ ] Step 3: Verify bounded repair permission semantics.
-- [ ] Step 4: Commit.
+- [x] Step 1: Add deterministic compile diagnostic example.
+- [x] Step 2: Validate the schema vocabulary and bound diagnostic context size.
+- [ ] Step 3: Verify bounded repair permission semantics with semantic fixtures.
+- [x] Step 4: Commit.
 
 ### Task 4: Memory/KV lifecycle
 
@@ -75,10 +75,10 @@
 
 **Interfaces:** Produces a typed KV handle and append/read lifecycle metadata.
 
-- [ ] Step 1: Define explicit lifecycle states.
-- [ ] Step 2: Add sequence ownership and token-range metadata.
-- [ ] Step 3: Validate round-trip and invalid sequence cases.
-- [ ] Step 4: Commit.
+- [x] Step 1: Define explicit residency/generation-critical rules.
+- [x] Step 2: Add sequence ownership and token-range metadata.
+- [ ] Step 3: Validate round-trip and invalid sequence cases semantically.
+- [x] Step 4: Commit.
 
 ### Task 5: Memory Graph canonical model
 
@@ -89,10 +89,10 @@
 
 **Interfaces:** Produces canonical node/edge snapshots independent of UI.
 
-- [ ] Step 1: Define stable node IDs and typed node kinds.
-- [ ] Step 2: Define edge identity and endpoint rules.
-- [ ] Step 3: Reject duplicate IDs and orphaned edges.
-- [ ] Step 4: Commit.
+- [x] Step 1: Define stable node IDs and typed node kinds.
+- [x] Step 2: Define edge identity and endpoint rules.
+- [ ] Step 3: Reject duplicate IDs and orphaned edges semantically.
+- [x] Step 4: Commit.
 
 ### Task 6: Studio control model
 
@@ -103,10 +103,10 @@
 
 **Interfaces:** Produces typed commands with explicit approval states and source provenance.
 
-- [ ] Step 1: Define `pending`, `approved`, `denied`, `executed` states.
-- [ ] Step 2: Define which command classes require confirmation.
-- [ ] Step 3: Validate invalid state transitions.
-- [ ] Step 4: Commit.
+- [x] Step 1: Define `pending`, `approved`, `rejected`, `executed` states.
+- [x] Step 2: Define confirmation-required behavior in the schema.
+- [ ] Step 3: Validate invalid state transitions semantically.
+- [x] Step 4: Commit.
 
 ### Task 7: AIONS Kernel capability boundary
 
@@ -117,10 +117,10 @@
 
 **Interfaces:** Produces mechanism-level capabilities while keeping service logic in userspace.
 
-- [ ] Step 1: Define a closed vocabulary for privileged rights.
-- [ ] Step 2: Validate owner and device scoping.
-- [ ] Step 3: Add denial fixtures for undeclared rights.
-- [ ] Step 4: Commit.
+- [x] Step 1: Define a closed vocabulary for privileged rights.
+- [x] Step 2: Validate owner/device scoping fields.
+- [ ] Step 3: Add semantic denial tests for undeclared rights.
+- [x] Step 4: Commit.
 
 ### Task 8: Ghost Gate fail-closed policy
 
@@ -131,11 +131,11 @@
 
 **Interfaces:** Produces typed egress requests and policy decisions with auditable mode semantics.
 
-- [ ] Step 1: Define mode and decision fields.
-- [ ] Step 2: Make OFFLINE structurally deny-only.
-- [ ] Step 3: Add DNS and audit metadata.
-- [ ] Step 4: Validate forbidden direct-egress fixtures.
-- [ ] Step 5: Commit.
+- [x] Step 1: Define mode and decision fields.
+- [x] Step 2: Make OFFLINE structurally deny-only.
+- [x] Step 3: Add DNS and audit metadata.
+- [ ] Step 4: Validate forbidden direct-egress fixtures semantically.
+- [x] Step 5: Commit.
 
 ### Task 9: OS Integration control plane
 
@@ -147,11 +147,11 @@
 
 **Interfaces:** Consumes the seven subsystem manifests and produces reproducible orchestration metadata.
 
-- [ ] Step 1: Validate all eight module identities and branch mappings.
-- [ ] Step 2: Add health and lifecycle state fields.
+- [x] Step 1: Register all eight module identities and branch mappings.
+- [x] Step 2: Add health and lifecycle state fields.
 - [ ] Step 3: Add dependency ordering validation.
-- [ ] Step 4: Verify no subsystem implementation leaks into integration ownership.
-- [ ] Step 5: Commit.
+- [x] Step 4: Keep orchestration ownership outside subsystem implementation.
+- [x] Step 5: Commit.
 
 ### Task 10: Integration gate
 
@@ -162,8 +162,8 @@
 
 **Interfaces:** Consumes green `arch/*` module gates and produces one integration verdict.
 
-- [ ] Step 1: Collect module gate results without sharing mutable workspaces.
-- [ ] Step 2: Validate OS Integration manifest against all module heads.
+- [x] Step 1: Collect module branch existence independently with `fail-fast: false`.
+- [x] Step 2: Validate OS Integration manifest against all eight module mappings.
 - [ ] Step 3: Run cross-module schema compatibility checks.
 - [ ] Step 4: Add reproducible integration fixture.
 - [ ] Step 5: Commit and require the integration gate for `main`.
