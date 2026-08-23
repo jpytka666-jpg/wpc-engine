@@ -18,4 +18,4 @@ jobs:
           test -f docs/MODULE-CONTRACT.md
           test -f docs/IMPLEMENTATION-STAGE-1.md
           grep -q "System Graph" docs/MODULE-CONTRACT.md
-          grep -q "stable IDs" docs/IMPLEMENTATION-STAGE-1.md
+          grep -q "stable ID" docs/IMPLEMENTATION-STAGE-1.md
