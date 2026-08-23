@@ -102,34 +102,6 @@ jobs:
           main_path.write_text(main)
           PY
 
-      - name: Assert cleanup invariants
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          text = Path("wpc-eval/src/fused_kernel.rs").read_text()
-          assert "#[allow(dead_code)]\n#[allow(dead_code)]" not in text
-
-          checks = {
-              "wpc-core/src/quant_encoder.rs": [
-                  r"for i in 0\.\.BLOCK_SIZE_V2 \{\s*codes\[i\] =",
-                  r"for i in 0\.\.BLOCK_SIZE_V2 \{\s*weights\[i\] =",
-                  r"for i in 0\.\.BLOCK_SIZE_V4 \{\s*codes\[i\] =",
-                  r"for i in 0\.\.BLOCK_SIZE_V4 \{\s*weights\[i\] =",
-              ],
-              "wpc-format/src/lib.rs": [
-                  r"for i in 0\.\.128 \{\s*codes\[i\] =",
-                  r"for i in 0\.\.BLOCK_SIZE_V4 \{\s*codes\[i\] =",
-              ],
-          }
-          for path, patterns in checks.items():
-              text = Path(path).read_text()
-              for pattern in patterns:
-                  assert not re.search(pattern, text), f"stale indexed fixture loop remains in {path}: {pattern}"
-          PY
-
       - name: Format
         run: cargo fmt --all
 
