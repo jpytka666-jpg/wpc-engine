@@ -239,7 +239,6 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 unsafe fn sgemm_row_major(
     m: usize,
     k: usize,
@@ -266,6 +265,7 @@ impl BatchEngine {
         Self { dim }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn optimized_attention_batch(
         &self,
         q_batch: &[f32],

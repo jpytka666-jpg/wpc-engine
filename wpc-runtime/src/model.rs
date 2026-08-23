@@ -542,8 +542,8 @@ impl Model {
                     }
                     softmax_inplace(&mut scores);
 
-                    for d in 0..head_dim {
-                        out_slice[d] = 0.0;
+                    for x in out_slice.iter_mut().take(head_dim) {
+                        *x = 0.0;
                     }
                     for t in 0..seq_len {
                         let v_t = &v_cache[t * head_dim..(t + 1) * head_dim];

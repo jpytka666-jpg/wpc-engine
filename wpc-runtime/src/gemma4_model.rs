@@ -618,8 +618,8 @@ impl Gemma4Model {
                     }
                     softmax_inplace(&mut scores);
 
-                    for d in 0..head_dim {
-                        out_slice[d] = 0.0;
+                    for x in out_slice.iter_mut().take(head_dim) {
+                        *x = 0.0;
                     }
                     for (si, t) in (t_start..seq_len).enumerate() {
                         let v_t = &v_cache[t * head_dim..(t + 1) * head_dim];
@@ -657,7 +657,7 @@ impl Gemma4Model {
             let mut up = vec![0.0f32; inter];
             layer.gate_proj.matvec(&normed2, &mut gate);
             layer.up_proj.matvec(&normed2, &mut up);
-            const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
+            const SQRT_2_OVER_PI: f32 = 0.797_884_6;
             for i in 0..inter {
                 let g = gate[i];
                 let gelu_tanh =
@@ -681,8 +681,8 @@ impl Gemma4Model {
             // rescales the WHOLE residual stream, not just this layer's delta.
             // See modeling_gemma4.py `Gemma4TextDecoderLayer.forward`:
             // `hidden_states *= self.layer_scalar` after both residual adds.
-            for i in 0..h {
-                residual[i] *= layer.layer_scalar;
+            for x in residual.iter_mut().take(h) {
+                *x *= layer.layer_scalar;
             }
         }
 
