@@ -81,11 +81,19 @@ impl MoeKvCache {
     }
 
     pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
-        if len > self.len { anyhow::bail!("cannot extend KV cache with truncate"); }
-        let elems = len.checked_mul(self.head_dim).ok_or_else(|| anyhow::anyhow!("KV truncate size overflow"))?;
+        if len > self.len {
+            anyhow::bail!("cannot extend KV cache with truncate");
+        }
+        let elems = len
+            .checked_mul(self.head_dim)
+            .ok_or_else(|| anyhow::anyhow!("KV truncate size overflow"))?;
         for layer in &mut self.layers {
-            for head in &mut layer.k { head.truncate(elems); }
-            for head in &mut layer.v { head.truncate(elems); }
+            for head in &mut layer.k {
+                head.truncate(elems);
+            }
+            for head in &mut layer.v {
+                head.truncate(elems);
+            }
         }
         self.len = len;
         Ok(())
