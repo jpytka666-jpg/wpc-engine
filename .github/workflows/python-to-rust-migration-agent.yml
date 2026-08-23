@@ -43,51 +43,53 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
-          kernel = Path("wpc-eval/src/fused_kernel.rs")
-          text = kernel.read_text()
-          for name in (
+          kernel_path = Path("wpc-eval/src/fused_kernel.rs")
+          text = kernel_path.read_text()
+          names = (
               "matvec_v2_fused",
               "matvec_v2_scalar",
               "matvec_v3_fused",
               "matvec_v3_scalar",
               "matvec_v4_fused",
               "matvec_v4_scalar",
-          ):
-              text = text.replace(
-                  f"pub unsafe fn {name}",
-                  f"#[allow(dead_code)]\npub unsafe fn {name}",
-              ).replace(
-                  f"pub fn {name}",
-                  f"#[allow(dead_code)]\npub fn {name}",
-              )
-          text = text.replace("#[expect(dead_code)]\n", "")
-          kernel.write_text(text)
+          )
 
-          main = Path("wpc-eval/src/main.rs")
-          text = main.read_text()
-          text = text.replace("use wpc_format::{CompressedBlock, BLOCK_SIZE};", "use wpc_format::BLOCK_SIZE;")
-          text = text.replace("#[cfg(target_arch = \"x86_64\")]\nuse std::arch::x86_64::*;\n\n", "")
-          main.write_text(text)
+          for name in names:
+              signature = (
+                  rf"pub unsafe fn {name}"
+                  if name.endswith("fused")
+                  else rf"pub fn {name}"
+              )
+              text = re.sub(
+                  rf"(?m)^(?:#\[(?:allow|expect)\(dead_code\)\]\n)+(?={signature})",
+                  "",
+                  text,
+              )
+              marker = signature
+              replacement = f"#[allow(dead_code)]\n{marker}"
+              if replacement not in text:
+                  text = text.replace(marker, replacement, 1)
+
+          kernel_path.write_text(text)
+
+          main_path = Path("wpc-eval/src/main.rs")
+          main = main_path.read_text()
+          main = main.replace(
+              "use wpc_format::{CompressedBlock, BLOCK_SIZE};",
+              "use wpc_format::BLOCK_SIZE;",
+          )
+          main = main.replace(
+              '#[cfg(target_arch = "x86_64")]\nuse std::arch::x86_64::*;\n\n',
+              "",
+          )
+          main_path.write_text(main)
           PY
 
       - name: Format
         run: cargo fmt --all
-
-      - name: Persist validated repair inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No repair changes to persist."
-          else
-            git commit -m "[ai-repair] persist deterministic Clippy fixes"
-            git push origin HEAD:integration/full-organism-v2
-          fi
 
       - name: Validate build
         run: cargo build --workspace --release
@@ -97,6 +99,20 @@ jobs:
 
       - name: Validate full Clippy gate
         run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+      - name: Persist validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No repair changes to persist."
+          else
+            git commit -m "[ai-repair] persist validated Rust CI fixes"
+            git push origin HEAD:integration/full-organism-v2
+          fi
 
       - name: Final status
         run: git status --short --branch
