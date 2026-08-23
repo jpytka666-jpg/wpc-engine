@@ -65,15 +65,17 @@ Every phase must leave the previous phase usable and testable.
 
 ### Phase 1 — WPC Runtime
 
-**Status: substantially implemented; move from the correctness baseline toward a production resident runtime.**
+**Status: COMPLETE — resident runtime and load-once storage are implemented and verified by PR #23 CI.**
 
 - [x] WPC compiler and on-disk formats.
 - [x] v3/v4 quantisation and reconstruction paths.
 - [x] Qwen/Gemma runtime support.
 - [x] Attention, RoPE, norms, MoE routing, and sampling.
 - [x] Fused/reference kernel correctness tests.
-- [ ] Long-lived resident runtime per agent task/session.
-- [ ] Load compressed weights once and reuse allocations.
+- [x] Long-lived resident runtime per agent task/session.
+- [x] Load compressed weights once and reuse allocations at the model/KV storage layer.
+
+**Phase 1 implementation evidence:** `aions-agent` creates one `ResidentEngine` and one `ResidentSession` outside the agent-turn loop; WPC v4 model data is mmap-backed and shared through `Arc`; prompt prefixes and hot KV state are retained across turns; reusable mmap/KV capacity is covered by regression tests. Fine-grained scratch-buffer reuse inside `forward_token` remains a separate profiling-driven optimisation task and is not a Phase 1 correctness gate.
 
 ### Phase 2 — Agents / Local CI
 
@@ -213,8 +215,8 @@ Language boundaries should be **coarse-grained**. Submit batches and tensor view
 
 Public source is assumed observable. Secrets must never be committed. Credentials belong in environment variables, local secret stores, or managed secret systems. Historical Git history requires a dedicated secret scan before a public-clean declaration.
 
-## 8. Immediate priority after CI stabilises
+## 8. Immediate priority after Phase 1
 
-**1. Resident WPC runtime → 2. Persistent KV across agent turns → 3. Batched prefill/forward → 4. Benchmark → 5. Mojo/CUDA/CPU acceleration → 6. Studio → 7. Graph → 8. Kernel → 9. Ghost Gate → 10. OS integration.**
+**1. Persistent KV across the broader Memory/KV subsystem → 2. Batched prefill/forward → 3. Benchmark reference vs batch → 4. Mojo/CUDA/CPU acceleration → 5. Studio → 6. Graph → 7. Kernel → 8. Ghost Gate → 9. OS integration.**
 
 The goal is one coherent AIONS system with a stable Rust core and specialised acceleration and interface layers, not one language forced onto every subsystem.
