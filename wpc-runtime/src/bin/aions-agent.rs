@@ -172,11 +172,6 @@ __WPC_AGENT_ASSISTANT__
 "#
     )
 }
-fn reply(s: &str) -> String {
-    s.rsplit_once("__WPC_AGENT_ASSISTANT__")
-        .map(|(_, x)| x.trim().into())
-        .unwrap_or_else(|| s.trim().into())
-}
 enum Action {
     Tool(String, Value),
     Final(String),
