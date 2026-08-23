@@ -1,0 +1,18 @@
+name: Studio Implementation Gate
+
+on:
+  push:
+    branches: ["stage2/studio-contracts"]
+  pull_request:
+    branches: ["arch/studio"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Studio headless API
+        run: cargo test -p aions-studio
