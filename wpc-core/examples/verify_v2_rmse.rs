@@ -1,8 +1,8 @@
 //! RMSE verification for the v2 (6-bit affine) quantization scheme, run
 directly against real safetensors weights using the actual production
-`wpc_core::quant_encoder` code -- not a reimplementation in a scripting
-language. Reads one named tensor at a time (never mmaps/loads the whole
-multi-GB file into a Vec) to stay safe on a 15GB-RAM machine.
+//! `wpc_core::quant_encoder` code -- not a reimplementation in a scripting
+//! language. Reads one named tensor at a time (never mmaps/loads the whole
+//! multi-GB file into a Vec) to stay safe on a 15GB-RAM machine.
 //!
 //! Usage: verify_v2_rmse <safetensors_path> <tensor_name> [<tensor_name> ...]
 
