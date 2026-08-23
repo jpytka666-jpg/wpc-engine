@@ -239,6 +239,7 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 unsafe fn sgemm_row_major(
     m: usize,
     k: usize,
