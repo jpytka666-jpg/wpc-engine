@@ -39,6 +39,7 @@
 //! checkpoint in `--model`, alongside the 1D norms.
 
 use crate::config::Config;
+use crate::forward_batch::BatchEngine;
 use crate::norm::{rms_norm, softmax_inplace};
 use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, ShardedSafetensors};
@@ -423,6 +424,38 @@ impl Qwen3MoeModel {
         }
     }
 
+    /// Run a contiguous prompt batch through the transformer. Linear/MoE work is
+    /// still per-token; self-attention is executed as a causal GEMM batch.
+    pub fn forward_batch(&self, token_ids: &[u32], cache: &mut MoeKvCache) -> anyhow::Result<Vec<Vec<f32>>> {
+        if token_ids.is_empty() { return Ok(Vec::new()); }
+        let cfg=&self.config; let h=cfg.hidden_size; let hd=cfg.head_dim(); let nh=cfg.num_attention_heads; let nkh=cfg.num_key_value_heads; let rep=nh/nkh; let batch=token_ids.len(); let eps=cfg.rms_norm_eps as f32; let past_len=cache.len;
+        let mut residuals=Vec::with_capacity(batch);
+        for &id in token_ids { let mut r=vec![0.0;h]; self.embed.embed(id,&mut r); residuals.push(r); }
+        for (li,layer) in self.layers.iter().enumerate() {
+            let mut qa=Vec::with_capacity(batch); let mut ka=Vec::with_capacity(batch); let mut va=Vec::with_capacity(batch);
+            for (t,residual) in residuals.iter().enumerate() {
+                let mut n=vec![0.0;h]; rms_norm(residual,&layer.input_layernorm,eps,&mut n); let mut q=vec![0.0;nh*hd]; let mut k=vec![0.0;nkh*hd]; let mut v=vec![0.0;nkh*hd]; layer.q_proj.matvec(&n,&mut q); layer.k_proj.matvec(&n,&mut k); layer.v_proj.matvec(&n,&mut v); let mut tmp=vec![0.0;hd];
+                for head in 0..nh { let s=&mut q[head*hd..(head+1)*hd]; rms_norm(s,&layer.q_norm,eps,&mut tmp); s.copy_from_slice(&tmp); apply_rope(s,past_len+t,cfg.rope_theta); }
+                for head in 0..nkh { let s=&mut k[head*hd..(head+1)*hd]; rms_norm(s,&layer.k_norm,eps,&mut tmp); s.copy_from_slice(&tmp); apply_rope(s,past_len+t,cfg.rope_theta); }
+                qa.push(q); ka.push(k); va.push(v);
+            }
+            let lc=&mut cache.layers[li];
+            for t in 0..batch { for head in 0..nkh { lc.k[head].extend_from_slice(&ka[t][head*hd..(head+1)*hd]); lc.v[head].extend_from_slice(&va[t][head*hd..(head+1)*hd]); } }
+            let total=past_len+batch; let eng=BatchEngine::new(hd); let mut attn=vec![vec![0.0;nh*hd];batch];
+            for qh in 0..nh { let kvh=qh/rep; let mut qb=vec![0.0;batch*hd]; for t in 0..batch { qb[t*hd..(t+1)*hd].copy_from_slice(&qa[t][qh*hd..(qh+1)*hd]); }
+                let out=unsafe { eng.optimized_attention_batch(&qb,lc.k[kvh].as_ptr(),lc.v[kvh].as_ptr(),batch,total,past_len)? }; for t in 0..batch { attn[t][qh*hd..(qh+1)*hd].copy_from_slice(&out[t*hd..(t+1)*hd]); }
+            }
+            for t in 0..batch {
+                let mut ap=vec![0.0;h]; layer.o_proj.matvec(&attn[t],&mut ap); for i in 0..h { residuals[t][i]+=ap[i]; }
+                let mut n2=vec![0.0;h]; rms_norm(&residuals[t],&layer.post_attention_layernorm,eps,&mut n2); let mut rs=vec![0.0;layer.experts.len()]; layer.router.matvec(&n2,&mut rs); softmax_inplace(&mut rs); let mut chosen=Vec::with_capacity(self.top_k); self.route(&rs,&mut chosen); let mi=self.moe_inter; let mut mo=vec![0.0;h]; let mut gate=vec![0.0;mi]; let mut up=vec![0.0;mi]; let mut eo=vec![0.0;h];
+                for &(e,w) in &chosen { let ex=&layer.experts[e]; ex.gate_proj.matvec(&n2,&mut gate); ex.up_proj.matvec(&n2,&mut up); for i in 0..mi { let g=gate[i]; gate[i]=(g/(1.0+(-g).exp()))*up[i]; } ex.down_proj.matvec(&gate,&mut eo); for i in 0..h { mo[i]+=w*eo[i]; } }
+                for i in 0..h { residuals[t][i]+=mo[i]; }
+            }
+        }
+        cache.len=past_len+batch;
+        let mut logits_all=Vec::with_capacity(batch); for r in &residuals { let mut n=vec![0.0;h]; rms_norm(r,&self.final_norm,eps,&mut n); let mut logits=vec![0.0;cfg.vocab_size]; self.lm_head.matvec(&n,&mut logits); logits_all.push(logits); } Ok(logits_all)
+    }
+
     /// Run one token through the full stack, updating `cache` in place, and
     /// return the logits over the vocabulary for the *next* token.
     pub fn forward_token(&self, token_id: u32, cache: &mut MoeKvCache) -> Vec<f32> {
@@ -621,6 +654,20 @@ mod tests {
         assert_eq!(c.layers[0].k[0], vec![1.0, 2.0, 3.0, 4.0]);
         assert_eq!(c.layers[0].v[0], vec![6.0, 5.0, 4.0, 3.0]);
         assert!(c.truncate(3).is_err());
+    }
+
+    #[test]
+    fn batched_forward_matches_sequential_forward() {
+        let config=cfg_with(2,1,true); let h=8; let vocab=100; let hd=4;
+        let embed=(0..vocab*h).map(|i| ((i%13) as f32-6.0)*0.01).collect::<Vec<_>>();
+        let lm=(0..vocab*h).map(|i| ((i%7) as f32-3.0)*0.02).collect::<Vec<_>>();
+        let mut eye=vec![0.0;h*h]; for i in 0..h { eye[i*h+i]=1.0; }
+        let k_eye=eye[..hd*h].to_vec(); let router_w=(0..2*h).map(|i| if i<h {0.02} else {-0.01}).collect::<Vec<_>>();
+        let exw=(0..4*h).map(|i| ((i%5) as f32-2.0)*0.01).collect::<Vec<_>>(); let down=(0..h*4).map(|i| ((i%3) as f32-1.0)*0.02).collect::<Vec<_>>();
+        let ex=|| Expert{gate_proj:Box::new(DenseLinear::new(4,h,exw.clone(),None)),up_proj:Box::new(DenseLinear::new(4,h,exw.clone(),None)),down_proj:Box::new(DenseLinear::new(h,4,down.clone(),None))};
+        let layer=MoeLayer{input_layernorm:vec![1.0;h],post_attention_layernorm:vec![1.0;h],q_norm:vec![1.0;hd],k_norm:vec![1.0;hd],q_proj:Box::new(DenseLinear::new(h,h,eye.clone(),None)),k_proj:Box::new(DenseLinear::new(hd,h,k_eye.clone(),None)),v_proj:Box::new(DenseLinear::new(hd,h,k_eye,None)),o_proj:Box::new(DenseLinear::new(h,h,eye,None)),router:Box::new(DenseLinear::new(2,h,router_w,None)),experts:vec![ex(),ex()]};
+        let model=Qwen3MoeModel{config:config.clone(),embed:Box::new(DenseEmbedding::new(vocab,h,embed)),lm_head:Box::new(DenseLinear::new(vocab,h,lm,None)),layers:vec![layer],final_norm:vec![1.0;h],top_k:1,norm_topk:true,moe_inter:4};
+        let tokens=[1u32,2,3,4]; let mut s_cache=model.new_cache(); let seq=tokens.iter().map(|&t|model.forward_token(t,&mut s_cache)).collect::<Vec<_>>(); let mut b_cache=model.new_cache(); let bat=model.forward_batch(&tokens,&mut b_cache).unwrap(); assert_eq!(b_cache.len,tokens.len()); assert_eq!(seq.len(),bat.len()); for (a,b) in seq.iter().zip(bat.iter()) { let e=a.iter().zip(b).map(|(x,y)|(x-y).abs()).fold(0.0,f32::max); assert!(e<1e-4,"max error {e}"); }
     }
 
     #[test]
