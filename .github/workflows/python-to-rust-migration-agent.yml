@@ -60,79 +60,54 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          copilot --yolo -p '
+          read -r -d '' PROMPT <<'COPILOT_PROMPT' || true
           You are the senior migration engineer for jpytka666-jpg/wpc-engine.
 
           Work ONLY on branch integration/full-organism-v2. Never touch main.
-          Your mission is to move appropriate executable/runtime Python logic to
-          Rust, while fixing existing Rust issues and preserving behavior.
+          Move appropriate executable/runtime Python logic to Rust, fix current Rust
+          CI blockers, preserve behavior, and add focused tests.
 
-          First inspect the entire repository and inventory every *.py file.
-          Classify each Python file as one of:
-            1) runtime/application logic that should be migrated to Rust,
-            2) test/diagnostic logic that can sensibly be ported or duplicated in Rust,
-            3) build/download/CI/dev tooling that should remain Python unless there is
-               a compelling technical reason to replace it.
-
-          IMPORTANT SAFETY RULES:
+          SAFETY RULES:
           - Do NOT blindly translate every Python line into Rust.
           - Do NOT delete Python just to make CI green.
           - Do NOT weaken, skip, or remove tests.
           - Do NOT change architecture/contracts merely to silence errors.
-          - Do NOT modify main or any branch other than integration/full-organism-v2.
+          - Do NOT modify main or another branch.
           - Do NOT rewrite model artifacts, binaries, or generated output into git.
-          - Preserve public CLI/API behavior wherever the Python code is runtime-facing.
-          - Prefer small, validated migrations over one giant rewrite.
+          - Preserve public CLI/API behavior for runtime-facing code.
+          - Prefer small validated migrations over one giant rewrite.
 
-          For each useful migration unit:
-            - implement the Rust equivalent in the appropriate existing crate/module;
-            - add or port focused tests;
-            - preserve error handling and observable behavior;
-            - update Cargo dependencies only when necessary;
-            - remove the Python implementation only after the Rust replacement has
-              demonstrated parity and there is no remaining caller that requires it.
+          First inventory all *.py files and classify each as runtime logic, tests/diagnostics,
+          or build/download/CI/dev tooling. Migrate only useful runtime/test logic; retain tooling
+          Python when appropriate and document why.
 
-          CURRENT KNOWN CI BLOCKERS TO FIX, NOT SUPPRESS:
-            - wpc-runtime/src/gemma4_model.rs: needless_range_loop in attention output initialization,
-              excessive_precision for SQRT_2_OVER_PI, and needless_range_loop for layer_scalar.
-            - wpc-runtime/src/model.rs: needless_range_loop in attention output initialization.
-            - wpc-runtime/src/qwen3_moe_model.rs: needless_range_loop in attention output initialization.
-            - wpc-runtime/src/weights.rs: chunks_exact_to_as_chunks in F32/F16/BF16 decoding.
-            - wpc-runtime/src/wpc_weights.rs: chunks_exact_to_as_chunks for pattern/residual tables.
-            - wpc-runtime/src/wpc_weights_v2.rs: intentionally retained deserialized shape metadata,
-              which may use a narrowly scoped dead_code justification.
-            - wpc-runtime/src/forward_batch.rs: too_many_arguments on the low-level sgemm wrapper and
-              raw-pointer API safety lint on optimized_attention_batch. Prefer real API safety fixes;
-              do not blanket-disable Clippy.
-            - modules/memory-kv/benches/hot_kv.rs: unit_arg benchmark lint.
+          CURRENT KNOWN CLIPPY BLOCKERS — FIX, DON'T SUPPRESS:
+          - wpc-runtime/src/gemma4_model.rs: needless_range_loop, excessive_precision.
+          - wpc-runtime/src/model.rs: needless_range_loop.
+          - wpc-runtime/src/qwen3_moe_model.rs: needless_range_loop.
+          - wpc-runtime/src/weights.rs: chunks_exact_to_as_chunks.
+          - wpc-runtime/src/wpc_weights.rs: chunks_exact_to_as_chunks.
+          - wpc-runtime/src/wpc_weights_v2.rs: unused shape metadata; justify narrowly or use it.
+          - wpc-runtime/src/forward_batch.rs: too_many_arguments and raw-pointer safety lint.
+          - modules/memory-kv/benches/hot_kv.rs: unit_arg benchmark lint.
 
-          Do not stop after fixing only one category. After every batch of fixes, run the exact full
-          workspace Clippy command and keep working until it exits 0. Do NOT pipe Clippy through grep,
-          head, or any command that can hide its exit status. Treat the command's exit code as mandatory.
+          Run this exact command yourself and keep fixing until it exits 0:
+          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+          Do not pipe it through grep/head or otherwise hide its exit status.
 
-          Build, tests, and formatting must remain green. Then continue useful migration work after
-          the baseline passes.
+          Required validation before declaring success:
+          cargo fmt --all --check
+          cargo build --workspace --release
+          cargo test --workspace --release
+          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
 
-          Validation required before declaring success:
-            cargo fmt --all --check
-            cargo build --workspace --release
-            cargo test --workspace --release
-            cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+          Keep docs/python-to-rust-migration.md concise and current. Include files inspected,
+          migrations completed, files retained, tests run, failures, and remaining work.
 
-          Run relevant Python diagnostics/tests for Python code that remains. When a
-          Python component is intentionally retained as tooling, document why.
-
-          Keep a concise migration report in:
-            docs/python-to-rust-migration.md
-          Include files inspected, migrations completed, files intentionally retained,
-          tests run, failures found, and remaining work.
-
-          Commit validated changes directly to this branch. Every agent commit MUST
-          start with: [ai-migration]
-          Do not commit speculative or unvalidated changes.
-          If a migration is ambiguous or unsafe, stop that migration, document it in
-          the report, and continue with safe work elsewhere.
-          '
+          Commit ONLY validated changes directly to integration/full-organism-v2.
+          Every agent commit MUST start with [ai-migration]. Do not commit speculative changes.
+          COPILOT_PROMPT
+          copilot --yolo -p "$PROMPT"
 
       - name: Final Rust validation
         run: |
