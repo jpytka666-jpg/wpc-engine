@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AIONS Studio Command",
   "type": "object",
-  "required": ["id", "command", "source"],
+  "required": ["id", "command", "source", "approval"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "command": {"type": "string", "minLength": 1},
     "args": {"type": "object"},
     "source": {"type": "string", "enum": ["palette", "graph", "agent", "automation"]},
+    "approval": {"type": "string", "enum": ["not_required", "pending", "approved", "rejected"]},
     "requires_confirmation": {"type": "boolean"}
   },
   "additionalProperties": false
