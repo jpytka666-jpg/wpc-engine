@@ -6,7 +6,9 @@ fn bench_append(c: &mut Criterion) {
         b.iter(|| {
             let mut buffer = HotKvBuffer::new();
             let entries = (0..128).map(|_| vec![0u8; 64]).collect();
-            black_box(buffer.append(0, entries).expect("append"));
+            buffer
+                .append(0, black_box(entries))
+                .expect("append");
         });
     });
 }
