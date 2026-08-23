@@ -48,6 +48,21 @@ pub enum RuntimeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KvHandle {
+    pub session_id: String,
+    pub layer: usize,
+    pub sequence_start: usize,
+    pub sequence_end: usize,
+}
+
+pub trait KvAdapter {
+    type Error;
+
+    fn read(&self, handle: &KvHandle) -> Result<Vec<Vec<u8>>, Self::Error>;
+    fn append(&mut self, handle: &KvHandle, entries: Vec<Vec<u8>>) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidentSession {
     config: RuntimeLoad,
     turns_served: usize,
@@ -91,7 +106,10 @@ impl ResidentSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{KvPolicy, Lifecycle, ResidentSession, RuntimeError, RuntimeLoad, Scheme, WeightsSource};
+    use super::{
+        KvAdapter, KvHandle, KvPolicy, Lifecycle, ResidentSession, RuntimeError, RuntimeLoad,
+        Scheme, WeightsSource,
+    };
 
     fn load() -> RuntimeLoad {
         RuntimeLoad {
@@ -128,5 +146,35 @@ mod tests {
         let config = session.evict();
         assert_eq!(config.lifecycle, Lifecycle::Cold);
         assert!(!config.resident);
+    }
+
+    #[test]
+    fn kv_adapter_is_storage_agnostic() {
+        struct FakeKv {
+            values: Vec<Vec<u8>>,
+        }
+
+        impl KvAdapter for FakeKv {
+            type Error = ();
+
+            fn read(&self, _handle: &KvHandle) -> Result<Vec<Vec<u8>>, Self::Error> {
+                Ok(self.values.clone())
+            }
+
+            fn append(&mut self, _handle: &KvHandle, entries: Vec<Vec<u8>>) -> Result<(), Self::Error> {
+                self.values.extend(entries);
+                Ok(())
+            }
+        }
+
+        let handle = KvHandle {
+            session_id: "session-1".into(),
+            layer: 0,
+            sequence_start: 0,
+            sequence_end: 2,
+        };
+        let mut kv = FakeKv { values: Vec::new() };
+        kv.append(&handle, vec![vec![1], vec![2]]).unwrap();
+        assert_eq!(kv.read(&handle).unwrap(), vec![vec![1], vec![2]]);
     }
 }
