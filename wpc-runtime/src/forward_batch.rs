@@ -64,7 +64,6 @@ impl MmapF32 {
         self.len
     }
 
-    /// Mark the first `used` elements as initialized so growth can preserve them.
     pub fn mark_used(&mut self, used: usize) -> Result<()> {
         if used > self.len {
             anyhow::bail!("used exceeds capacity");
@@ -252,7 +251,11 @@ impl BatchEngine {
         Self { dim }
     }
 
-    pub fn optimized_attention_batch(
+    /// # Safety
+    /// `k_flat` and `v_flat` must each point to at least `total_rows * dim`
+    /// readable `f32` values. The pointed-to memory must remain valid for the
+    /// duration of this call and may not alias `q_batch` or the returned output.
+    pub unsafe fn optimized_attention_batch(
         &self,
         q_batch: &[f32],
         k_flat: *const f32,
@@ -284,22 +287,20 @@ impl BatchEngine {
         }
 
         let mut scores = vec![0.0f32; b * s];
-        unsafe {
-            sgemm_row_major(
-                b,
-                d,
-                s,
-                q_batch.as_ptr(),
-                d as isize,
-                1,
-                k_flat,
-                1,
-                d as isize,
-                scores.as_mut_ptr(),
-                s as isize,
-                1,
-            );
-        }
+        sgemm_row_major(
+            b,
+            d,
+            s,
+            q_batch.as_ptr(),
+            d as isize,
+            1,
+            k_flat,
+            1,
+            d as isize,
+            scores.as_mut_ptr(),
+            s as isize,
+            1,
+        );
 
         let scale = 1.0f32 / (d as f32).sqrt();
         for x in scores.iter_mut() {
@@ -316,22 +317,20 @@ impl BatchEngine {
         }
 
         let mut out = vec![0.0f32; b * d];
-        unsafe {
-            sgemm_row_major(
-                b,
-                s,
-                d,
-                scores.as_ptr(),
-                s as isize,
-                1,
-                v_flat,
-                d as isize,
-                1,
-                out.as_mut_ptr(),
-                d as isize,
-                1,
-            );
-        }
+        sgemm_row_major(
+            b,
+            s,
+            d,
+            scores.as_ptr(),
+            s as isize,
+            1,
+            v_flat,
+            d as isize,
+            1,
+            out.as_mut_ptr(),
+            d as isize,
+            1,
+        );
         Ok(out)
     }
 
@@ -352,14 +351,16 @@ impl BatchEngine {
         {
             anyhow::bail!("past_len + batch_size must equal KV sequence length");
         }
-        self.optimized_attention_batch(
-            q_batch,
-            kv.keys_ptr(),
-            kv.vals_ptr(),
-            batch_size,
-            kv.seq_len,
-            past_len,
-        )
+        unsafe {
+            self.optimized_attention_batch(
+                q_batch,
+                kv.keys_ptr(),
+                kv.vals_ptr(),
+                batch_size,
+                kv.seq_len,
+                past_len,
+            )
+        }
     }
 
     pub fn reference_attention_batch(&self, q_batch: &[Vec<f32>], kv: &KvLayer) -> Result<Vec<Vec<f32>>> {
