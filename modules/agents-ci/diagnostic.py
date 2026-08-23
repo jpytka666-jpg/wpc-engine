@@ -44,11 +44,13 @@ def parse_rust_diagnostics(stdout: str, stderr: str, affected_paths: list[str], 
         if path:
             candidates.append(f"path:{path}")
 
+    result: list[str] = []
     for item in candidates:
         if item in seen:
             continue
         seen.add(item)
-        if len(seen) >= max_items:
+        result.append(item)
+        if len(result) >= max_items:
             break
 
-    return [item for item in seen][:max_items]
+    return result
