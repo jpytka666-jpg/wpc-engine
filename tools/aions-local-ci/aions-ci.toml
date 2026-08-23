@@ -1,0 +1,15 @@
+[project]
+name = "wpc-engine"
+
+[policy]
+max_repair_attempts = 3
+allow_push = false
+allow_merge = false
+
+[commands]
+format = "cargo fmt --all --check"
+build = "cargo build --workspace --release"
+test = "cargo test --workspace --release"
+clippy = "cargo clippy -p wpc-runtime --all-targets --release -- -D warnings"
+bench_compile = "cargo bench -p wpc-runtime --bench attention_bench --no-run"
+bench_smoke = "cargo bench -p wpc-runtime --bench attention_bench -- --noplot --sample-size 10 --measurement-time 0.2"
