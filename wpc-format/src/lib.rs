@@ -439,8 +439,8 @@ mod tests {
     #[test]
     fn v2_round_trips() {
         let mut codes = [0u8; 128];
-        for i in 0..128 {
-            codes[i] = (i % 64) as u8;
+        for (i, item) in codes.iter_mut().enumerate().take(128) {
+            *item = (i % 64) as u8;
         }
         let block = QuantBlockV2 {
             zero_point: f16::from_f32(-1.5),
@@ -462,8 +462,8 @@ mod tests {
     #[test]
     fn v4_round_trips_through_le_bytes() {
         let mut codes = [0u8; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            codes[i] = (i % 16) as u8;
+        for (i, item) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = (i % 16) as u8;
         }
         let block = QuantBlockV4 {
             zero_point: f16::from_f32(-1.5),
@@ -491,8 +491,8 @@ mod tests {
         // And a pattern where the low half and the high half differ, so the
         // two nibbles cannot be confused for one another.
         let mut codes = [0u8; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            codes[i] = ((i * 5 + i / 16) % 16) as u8;
+        for (i, item) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = ((i * 5 + i / 16) % 16) as u8;
         }
         let packed = QuantBlockV4::pack_codes(&codes);
         assert_eq!(QuantBlockV4::unpack_codes(&packed), codes);

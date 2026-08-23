@@ -141,8 +141,8 @@ mod tests {
         // Every 6-bit value in every lane of the 4-code group, so a bad shift
         // cannot hide in a lane the test never exercises.
         let mut codes = [0u8; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            codes[i] = ((i * 7 + i / 4) % 64) as u8;
+        for (i, item) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {
+            *item = ((i * 7 + i / 4) % 64) as u8;
         }
         let packed = QuantBlockV3::pack_codes(&codes);
         assert_eq!(QuantBlockV3::unpack_codes(&packed), codes);
@@ -161,8 +161,8 @@ mod tests {
     #[test]
     fn v3_reconstructs_bit_identically_to_v2() {
         let mut weights = [0.0f32; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            weights[i] = (i as f32 * 0.37).sin() * 0.05;
+        for (i, item) in weights.iter_mut().enumerate().take(BLOCK_SIZE_V2) {
+            *item = (i as f32 * 0.37).sin() * 0.05;
         }
         let v2 = affine_quant_block(&weights);
         let v3 = affine_quant_block_v3(&weights);
@@ -180,9 +180,9 @@ mod tests {
         // And the decoded values themselves, not just the codes.
         let zp = v2_zp.to_f32();
         let sc = v2_sc.to_f32();
-        for i in 0..BLOCK_SIZE_V2 {
-            let a = zp + v2_codes[i] as f32 * sc;
-            let b = zp + unpacked[i] as f32 * sc;
+        for (i, (&v2_code, &unpacked_code)) in v2_codes.iter().zip(unpacked.iter()).enumerate() {
+            let a = zp + v2_code as f32 * sc;
+            let b = zp + unpacked_code as f32 * sc;
             assert_eq!(a.to_bits(), b.to_bits(), "value {i} differs");
         }
     }
@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn v3_survives_the_disk_round_trip() {
         let mut weights = [0.0f32; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            weights[i] = i as f32 * 0.05 - 3.2;
+        for (i, item) in weights.iter_mut().enumerate().take(BLOCK_SIZE_V2) {
+            *item = i as f32 * 0.05 - 3.2;
         }
         let block = affine_quant_block_v3(&weights);
         let bytes = block.to_le_bytes();
@@ -222,12 +222,17 @@ mod tests {
         let mut sum_sq_error = 0.0f32;
         let mut sum_sq_original = 0.0f32;
 
-        for i in 0..BLOCK_SIZE_V2 {
-            let decoded = zp + block.codes[i] as f32 * scale;
-            reconstructed[i] = decoded;
-            let error = (decoded - weights[i]).abs();
+        for ((i, &code), (&weight, reconstructed_value)) in block
+            .codes
+            .iter()
+            .enumerate()
+            .zip(weights.iter().zip(reconstructed.iter_mut()))
+        {
+            let decoded = zp + code as f32 * scale;
+            *reconstructed_value = decoded;
+            let error = (decoded - weight).abs();
             sum_sq_error += error * error;
-            sum_sq_original += weights[i].abs().max(1e-6) * weights[i].abs().max(1e-6);
+            sum_sq_original += weight.abs().max(1e-6) * weight.abs().max(1e-6);
         }
 
         let rmse = (sum_sq_error / BLOCK_SIZE_V2 as f32).sqrt();
@@ -266,8 +271,8 @@ mod tests {
         }
 
         let mut codes = [0u8; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            codes[i] = ((i * 3 + i / 8) % 16) as u8;
+        for (i, item) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = ((i * 3 + i / 8) % 16) as u8;
         }
         let packed = QuantBlockV4::pack_codes(&codes);
         assert_eq!(QuantBlockV4::unpack_codes(&packed), codes);
@@ -278,8 +283,8 @@ mod tests {
         // A code out of range would be silently truncated by pack_codes and
         // decode as a different weight, so the clamp is checked directly.
         let mut weights = [0.0f32; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            weights[i] = (i as f32 * 0.91).sin() * 12.5 - 3.0;
+        for (i, item) in weights.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = (i as f32 * 0.91).sin() * 12.5 - 3.0;
         }
         let block = affine_quant_block_v4(&weights);
         let packed = block.packed;
@@ -294,8 +299,8 @@ mod tests {
         // reconstruction, where a step is `scale`. This is the property that
         // makes the error bounded rather than merely "usually small".
         let mut weights = [0.0f32; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            weights[i] = (i as f32 * 0.37).sin() * 0.05;
+        for (i, item) in weights.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = (i as f32 * 0.37).sin() * 0.05;
         }
         let block = affine_quant_block_v4(&weights);
         let (zp, sc, packed) = (block.zero_point, block.scale, block.packed);
@@ -303,14 +308,13 @@ mod tests {
         let sc = sc.to_f32();
         let codes = QuantBlockV4::unpack_codes(&packed);
 
-        for i in 0..BLOCK_SIZE_V4 {
-            let decoded = zp + codes[i] as f32 * sc;
-            let err = (decoded - weights[i]).abs();
+        for (i, (&code, &weight)) in codes.iter().zip(weights.iter()).enumerate() {
+            let decoded = zp + code as f32 * sc;
+            let err = (decoded - weight).abs();
             // Half a step, plus slack for zero_point/scale themselves being f16.
             assert!(
                 err <= sc * 0.5 + sc * 0.05 + 1e-6,
-                "value {i}: |{decoded} - {}| = {err} exceeds half a step ({})",
-                weights[i],
+                "value {i}: |{decoded} - {weight}| = {err} exceeds half a step ({})",
                 sc * 0.5
             );
         }
@@ -323,8 +327,8 @@ mod tests {
         // the RMSE, so a factor of 8 is a generous ceiling that still fails
         // loudly if the code path is wrong rather than merely coarser.
         let mut weights = [0.0f32; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            weights[i] = (i as f32 * 0.13).sin() * 0.04 + (i as f32 * 0.7).cos() * 0.01;
+        for (i, item) in weights.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = (i as f32 * 0.13).sin() * 0.04 + (i as f32 * 0.7).cos() * 0.01;
         }
 
         let v3 = affine_quant_block_v3(&weights);
@@ -337,9 +341,11 @@ mod tests {
 
         let mut e3 = 0.0f32;
         let mut e4 = 0.0f32;
-        for i in 0..BLOCK_SIZE_V4 {
-            let d3 = v3_zp.to_f32() + v3_codes[i] as f32 * v3_sc.to_f32() - weights[i];
-            let d4 = v4_zp.to_f32() + v4_codes[i] as f32 * v4_sc.to_f32() - weights[i];
+        for ((&v3_code, &v4_code), &weight) in
+            v3_codes.iter().zip(v4_codes.iter()).zip(weights.iter())
+        {
+            let d3 = v3_zp.to_f32() + v3_code as f32 * v3_sc.to_f32() - weight;
+            let d4 = v4_zp.to_f32() + v4_code as f32 * v4_sc.to_f32() - weight;
             e3 += d3 * d3;
             e4 += d4 * d4;
         }
@@ -359,8 +365,8 @@ mod tests {
     #[test]
     fn v4_survives_the_disk_round_trip() {
         let mut weights = [0.0f32; BLOCK_SIZE_V4];
-        for i in 0..BLOCK_SIZE_V4 {
-            weights[i] = i as f32 * 0.05 - 3.2;
+        for (i, item) in weights.iter_mut().enumerate().take(BLOCK_SIZE_V4) {
+            *item = i as f32 * 0.05 - 3.2;
         }
         let block = affine_quant_block_v4(&weights);
         let bytes = block.to_le_bytes();
