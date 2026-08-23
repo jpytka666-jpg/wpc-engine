@@ -8,12 +8,12 @@ Define the minimum privileged mechanism surface while keeping drivers and AIONS 
 ## Milestones
 - [x] Kernel module contract.
 - [ ] Boot contract and panic/recovery policy.
-- [ ] Capability model and object rights.
-- [ ] IPC message envelope and endpoint identity.
+- [x] Capability model and object rights.
+- [x] IPC message envelope and endpoint identity.
 - [ ] Minimal scheduler-facing service contract.
 - [ ] Userspace driver boundary.
 - [ ] Memory-management primitive contract.
-- [ ] Security tests for capability denial and IPC isolation.
+- [x] Security tests for capability denial and IPC isolation.
 
 ## Rules
 No driver pile-in. Kernel owns mechanisms, not AIONS business logic. Redox-inspired userspace service boundaries remain the default.

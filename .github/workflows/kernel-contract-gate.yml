@@ -1,0 +1,18 @@
+name: AIONS Kernel Contract Gate
+
+on:
+  push:
+    branches: ["stage2/aions-kernel-contracts"]
+  pull_request:
+    branches: ["arch/aions-kernel"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test kernel contracts
+        run: cargo test -p aions-kernel-contract
