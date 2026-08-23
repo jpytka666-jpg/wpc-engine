@@ -1,6 +1,7 @@
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use wpc_core::codebook::{PatternDict, BLOCK_DIM};
-use wpc_core::encoder::{normalize_block, two_pass_encode};
+use wpc_core::codebook::{dummy_residual_dict, PatternDict, ResidualDict, BLOCK_DIM};
+use wpc_core::encoder::{encode_block, normalize_block};
 use wpc_format::CompressedBlock;
 
 #[derive(Debug, Clone)]
@@ -20,7 +21,10 @@ pub struct WpcKvMetrics {
     pub original_bytes_f32: usize,
     pub original_bytes_f16: usize,
     pub compressed_bytes: usize,
+    pub payload_bytes: usize,
+    pub dictionary_bytes: usize,
     pub compression_ratio_vs_f16: f64,
+    pub payload_compression_ratio_vs_f16: f64,
     pub key_rmse: f64,
     pub value_rmse: f64,
     pub attention_output_rmse: f64,
@@ -32,7 +36,7 @@ pub struct WpcKvMetrics {
 struct EncodedTensor {
     blocks: Vec<CompressedBlock>,
     pattern_dict: PatternDict,
-    residual_dict: wpc_core::codebook::ResidualDict,
+    residual_dict: ResidualDict,
 }
 
 fn train_pattern_dict(values: &[f32], pattern_count: usize) -> Result<PatternDict, &'static str> {
@@ -62,12 +66,30 @@ fn encode_tensor(
     }
 
     let pattern_dict = train_pattern_dict(values, pattern_count)?;
-    let (blocks, residual_dict) = two_pass_encode(values, &pattern_dict, train_iters);
+    let num_blocks = values.len() / BLOCK_DIM;
+    let dummy = dummy_residual_dict();
 
-    let expected_residuals = residual_count.min(residual_dict.centroids_f32.len());
-    if expected_residuals == 0 {
-        return Err("WPC residual dictionary is empty");
-    }
+    let residuals: Vec<[f32; BLOCK_DIM]> = (0..num_blocks)
+        .into_par_iter()
+        .map(|index| {
+            let mut block = [0.0; BLOCK_DIM];
+            block.copy_from_slice(&values[index * BLOCK_DIM..(index + 1) * BLOCK_DIM]);
+            let (_, residual) = encode_block(&block, &pattern_dict, &dummy);
+            residual
+        })
+        .collect();
+
+    let residual_k = residual_count.min(num_blocks).max(1);
+    let residual_dict = ResidualDict::train(&residuals, residual_k, train_iters);
+
+    let blocks = (0..num_blocks)
+        .into_par_iter()
+        .map(|index| {
+            let mut block = [0.0; BLOCK_DIM];
+            block.copy_from_slice(&values[index * BLOCK_DIM..(index + 1) * BLOCK_DIM]);
+            encode_block(&block, &pattern_dict, &residual_dict).0
+        })
+        .collect();
 
     Ok(EncodedTensor {
         blocks,
@@ -165,12 +187,7 @@ pub fn run_wpc_kv(input: WpcKvInput) -> Result<WpcKvMetrics, &'static str> {
     let decoded_values = decode_tensor(&values);
 
     let query = &input.keys[..input.vector_width];
-    let reference_attention = attention_output(
-        query,
-        &input.keys,
-        &input.values,
-        input.vector_width,
-    );
+    let reference_attention = attention_output(query, &input.keys, &input.values, input.vector_width);
     let compressed_attention = attention_output(
         query,
         &decoded_keys,
@@ -202,13 +219,17 @@ pub fn run_wpc_kv(input: WpcKvInput) -> Result<WpcKvMetrics, &'static str> {
 
     let original_bytes_f32 = input.keys.len() * std::mem::size_of::<f32>() * 2;
     let original_bytes_f16 = input.keys.len() * std::mem::size_of::<u16>() * 2;
+    let payload_reference_bytes = block_count * BLOCK_DIM * std::mem::size_of::<u16>();
 
     Ok(WpcKvMetrics {
         session_id: input.session_id,
         original_bytes_f32,
         original_bytes_f16,
         compressed_bytes,
+        payload_bytes,
+        dictionary_bytes,
         compression_ratio_vs_f16: original_bytes_f16 as f64 / compressed_bytes as f64,
+        payload_compression_ratio_vs_f16: payload_reference_bytes as f64 / payload_bytes as f64,
         key_rmse: mse_rmse(&input.keys, &decoded_keys),
         value_rmse: mse_rmse(&input.values, &decoded_values),
         attention_output_rmse,
@@ -236,12 +257,12 @@ mod tests {
 
     #[test]
     fn wpc_kv_round_trip_preserves_attention_reasonably() {
-        let (keys, values) = synthetic_kv(64, 32);
+        let (keys, values) = synthetic_kv(128, 64);
         let metrics = run_wpc_kv(WpcKvInput {
             session_id: "test-session".into(),
             keys,
             values,
-            vector_width: 32,
+            vector_width: 64,
             pattern_count: 16,
             residual_count: 256,
             train_iters: 5,
@@ -252,8 +273,8 @@ mod tests {
         assert!(metrics.key_rmse < 0.25, "key RMSE too high: {}", metrics.key_rmse);
         assert!(metrics.value_rmse < 0.25, "value RMSE too high: {}", metrics.value_rmse);
         assert!(metrics.attention_output_rmse < 0.25);
+        assert!(metrics.payload_compression_ratio_vs_f16 > 1.0);
         assert!(metrics.compressed_bytes > 0);
-        assert!(metrics.compression_ratio_vs_f16 > 0.0);
     }
 
     #[test]
