@@ -2,14 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AIONS Kernel Capability",
   "type": "object",
-  "required": ["id", "version", "owner", "rights"],
+  "required": ["id", "version", "owner", "rights", "delegable"],
   "properties": {
     "id": {"type": "string", "pattern": "^aions\\.[a-z0-9._-]+$"},
     "version": {"type": "integer", "minimum": 1},
     "owner": {"type": "string", "minLength": 1},
-    "rights": {"type": "array", "items": {"enum": ["read", "write", "execute", "map", "ipc"]}, "uniqueItems": true, "minItems": 1},
+    "rights": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["read", "write", "execute", "map", "ipc"]},
+      "uniqueItems": true,
+      "minItems": 1
+    },
     "device": {"type": "string"},
-    "delegable": {"type": "boolean", "default": false}
+    "delegable": {"type": "boolean"}
   },
   "additionalProperties": false
 }
