@@ -1,0 +1,1 @@
+{"snapshot_id":"boot-001","nodes":[{"id":"agent:main","type":"agent","version":1},{"id":"memory:cbms","type":"memory","version":1},{"id":"module:wpc-runtime","type":"module","version":1}],"edges":[{"id":"e1","from":"agent:main","to":"module:wpc-runtime","kind":"uses"},{"id":"e2","from":"agent:main","to":"memory:cbms","kind":"reads"}]}
