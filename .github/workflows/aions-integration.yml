@@ -1,0 +1,61 @@
+name: AIONS Integration Gate
+
+on:
+  push:
+    branches: ["stage2/os-integration-contracts"]
+  pull_request:
+    branches: ["arch/os-integration"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate eight-module manifest
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          p = Path('modules/os-integration/stage2-manifest.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          expected = {
+              'wpc-runtime', 'agents-ci', 'memory-kv', 'memory-graph',
+              'studio', 'aions-kernel', 'ghost-gate', 'os-integration'
+          }
+          actual = {m['id'] for m in data['modules']}
+          assert actual == expected, (actual, expected)
+          assert all(m['arch_branch'].startswith('arch/') for m in data['modules'])
+          assert all(m['stage2_branch'].startswith('stage2/') for m in data['modules'])
+          print('VALID eight-module manifest')
+
+  module-branches:
+    needs: manifest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - wpc-runtime
+          - agents-ci
+          - memory-kv
+          - memory-graph
+          - studio
+          - aions-kernel
+          - ghost-gate
+          - os-integration
+    steps:
+      - name: Verify module branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODULE: ${{ matrix.module }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/arch/${MODULE}" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/stage2/${MODULE}$( [[ "$MODULE" == "agents-ci" ]] && echo '-diagnostics' || [[ "$MODULE" == "os-integration" ]] && echo '-contracts' || [[ "$MODULE" == "wpc-runtime" ]] && echo '-contracts' || [[ "$MODULE" == "memory-kv" ]] && echo '-contracts' || [[ "$MODULE" == "memory-graph" ]] && echo '-contracts' || [[ "$MODULE" == "studio" ]] && echo '-contracts' || [[ "$MODULE" == "aions-kernel" ]] && echo '-contracts' || echo '-contracts' ))" >/dev/null
+          echo "VALID branches for ${MODULE}"
