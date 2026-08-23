@@ -22,17 +22,23 @@ fn read_tensor_f32(mmap: &Mmap, name: &str) -> (Vec<usize>, Vec<f32>) {
     let data = match view.dtype() {
         safetensors::Dtype::F32 => view
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         safetensors::Dtype::F16 => view
             .data()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         safetensors::Dtype::BF16 => view
             .data()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| {
                 let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
                 f32::from_bits(bits << 16)
