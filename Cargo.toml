@@ -10,6 +10,7 @@ members = [
     "modules/aions-kernel",
     "modules/ghost-gate",
     "modules/os-integration",
+    "modules/organism-smoke",
 ]
 exclude = [
     "wpc-engine",  # C++ lives here, not a Rust crate
