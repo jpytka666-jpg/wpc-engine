@@ -44,3 +44,16 @@ Never disable Clippy, tests, security checks, or functional gates just to obtain
 Build an offline-first AIONS operating environment consisting of:
 
 Rust kernel → userspace services/drivers → Ghost Gate → memory substrate → resident WPC runtime → agent/tool platform → AIONS Studio → live graph → final OS integration.
+
+## Current milestone state
+
+- Milestones 1–2: complete on the integration branch after full workspace build/test/format/Clippy/benchmark gates passed.
+- Milestone 3: active.
+- Resident WPC weights remain loaded across agent turns.
+- Resident prompt/KV reuse is implemented in commit `7605c94c` and must remain green after formatting.
+- Stage 3A batched Qwen3-MoE prefill is isolated in draft PR `#22` (`feature/qwen3-moe-batched-prefill`) and must pass its Rust correctness/CI gate before merge.
+- Do not merge PR #22 until the integration branch and the PR checks are both green.
+
+## Work sequencing
+
+Finish and verify resident KV reuse first. Then validate Stage 3A batched prefill. Only after both are green move to deeper batched linear/MoE execution, speculative verification, expert-grouped scheduling, and the later kernel/Ghost Gate/Studio/OS integration milestones.
