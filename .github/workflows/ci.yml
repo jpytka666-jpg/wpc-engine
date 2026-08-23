@@ -24,3 +24,5 @@ jobs:
         run: cargo bench -p wpc-runtime --bench attention_bench --no-run
       - name: Benchmark smoke
         run: cargo bench -p wpc-runtime --bench attention_bench -- --noplot --sample-size 10 --measurement-time 0.2
+
+# CI intentionally retriggers after the formatter's bot commit so the next run validates the formatted tree.
