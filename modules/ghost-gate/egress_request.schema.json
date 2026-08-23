@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Ghost Gate Egress Request",
   "type": "object",
-  "required": ["request_id", "mode", "destination", "protocol", "decision"],
+  "required": ["request_id", "mode", "destination", "protocol", "decision", "dns_policy", "reason"],
   "properties": {
     "request_id": {"type": "string", "minLength": 1},
     "mode": {"type": "string", "enum": ["OFFLINE", "VPN", "VPN_FIREWALL", "TOR"]},
@@ -13,8 +13,9 @@
     "dns_policy": {"type": "string", "enum": ["gateway_only", "blocked", "explicit"]},
     "reason": {"type": "string", "minLength": 1}
   },
-  "additionalProperties": false,
   "allOf": [
-    {"if": {"properties": {"mode": {"const": "OFFLINE"}}}, "then": {"properties": {"decision": {"const": "deny"}}}}
-  ]
+    {"if": {"properties": {"mode": {"const": "OFFLINE"}}}, "then": {"properties": {"decision": {"const": "deny"}, "dns_policy": {"const": "blocked"}}}},
+    {"if": {"properties": {"mode": {"const": "VPN_FIREWALL"}}}, "then": {"properties": {"decision": {"enum": ["allow", "deny", "audit"]}}}}
+  ],
+  "additionalProperties": false
 }
