@@ -39,23 +39,41 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - wpc-runtime
-          - agents-ci
-          - memory-kv
-          - memory-graph
-          - studio
-          - aions-kernel
-          - ghost-gate
-          - os-integration
+        include:
+          - module: wpc-runtime
+            arch_branch: arch/wpc-runtime
+            stage2_branch: stage2/wpc-runtime-contracts
+          - module: agents-ci
+            arch_branch: arch/agents-ci
+            stage2_branch: stage2/agents-ci-diagnostics
+          - module: memory-kv
+            arch_branch: arch/memory-kv
+            stage2_branch: stage2/memory-kv-contracts
+          - module: memory-graph
+            arch_branch: arch/memory-graph
+            stage2_branch: stage2/memory-graph-contracts
+          - module: studio
+            arch_branch: arch/studio
+            stage2_branch: stage2/studio-contracts
+          - module: aions-kernel
+            arch_branch: arch/aions-kernel
+            stage2_branch: stage2/aions-kernel-contracts
+          - module: ghost-gate
+            arch_branch: arch/ghost-gate
+            stage2_branch: stage2/ghost-gate-contracts
+          - module: os-integration
+            arch_branch: arch/os-integration
+            stage2_branch: stage2/os-integration-contracts
     steps:
-      - name: Verify module branch
+      - name: Verify module branches
         env:
           GH_TOKEN: ${{ github.token }}
+          ARCH_BRANCH: ${{ matrix.arch_branch }}
+          STAGE2_BRANCH: ${{ matrix.stage2_branch }}
           MODULE: ${{ matrix.module }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/arch/${MODULE}" >/dev/null
-          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/stage2/${MODULE}$( [[ "$MODULE" == "agents-ci" ]] && echo '-diagnostics' || [[ "$MODULE" == "os-integration" ]] && echo '-contracts' || [[ "$MODULE" == "wpc-runtime" ]] && echo '-contracts' || [[ "$MODULE" == "memory-kv" ]] && echo '-contracts' || [[ "$MODULE" == "memory-graph" ]] && echo '-contracts' || [[ "$MODULE" == "studio" ]] && echo '-contracts' || [[ "$MODULE" == "aions-kernel" ]] && echo '-contracts' || echo '-contracts' ))" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${ARCH_BRANCH}" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${STAGE2_BRANCH}" >/dev/null
           echo "VALID branches for ${MODULE}"
