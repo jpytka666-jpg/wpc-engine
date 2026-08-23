@@ -1,0 +1,38 @@
+name: AIONS Unified Organism
+
+on:
+  push:
+    branches: ["integration/full-organism-v2"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-organism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build entire Rust workspace
+        run: cargo build --workspace --release
+      - name: Test entire Rust workspace
+        run: cargo test --workspace --release
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy unified runtime
+        run: cargo clippy -p wpc-runtime --all-targets --release -- -D warnings
+      - name: Unified cross-module smoke
+        run: cargo test -p aions-organism-smoke --release
+
+  python-agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Agents diagnostics
+        working-directory: modules/agents-ci
+        run: python diagnostic_contract_test.py
