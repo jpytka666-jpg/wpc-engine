@@ -1,0 +1,27 @@
+name: Memory-KV Benchmark Gate
+
+on:
+  push:
+    branches: ["feature/memory-kv-implementation"]
+  pull_request:
+    branches: ["arch/memory-kv"]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Memory-KV benchmarks
+        run: cargo bench -p aions-memory-kv --bench hot_kv -- --noplot
+      - name: Save benchmark output
+        run: cargo bench -p aions-memory-kv --bench hot_kv -- --noplot 2>&1 | tee memory-kv-benchmark.txt
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-kv-benchmark
+          path: |
+            memory-kv-benchmark.txt
+            target/criterion
