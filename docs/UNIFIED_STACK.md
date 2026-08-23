@@ -123,7 +123,7 @@ CUDA is the preferred NVIDIA production backend. PTX and assembly are surgical t
 
 ## 4. Runtime contract
 
-The production loop is designed to become:
+The current resident production loop is:
 
 1. Start one `aions-agent` session.
 2. Start or connect to the configured AIONS MCP server.
@@ -132,21 +132,23 @@ The production loop is designed to become:
 5. Attach the agent to **one resident WPC runtime** for the task/session.
 6. Load compressed weights once.
 7. Keep the active KV cache resident.
-8. Use batched prefill/forward where possible.
-9. If the model emits `TOOL_CALL`, execute it through MCP.
-10. Append the tool result to the same transcript and continue from the same runtime/KV state.
-11. Repeat until `FINAL`, cancellation or `max_turns`.
+8. Reuse the shared prompt prefix when the next turn extends the same prefix.
+9. Use batched prefill/forward where possible as the next performance phase.
+10. If the model emits `TOOL_CALL`, execute it through MCP.
+11. Append the tool result to the same transcript and continue from the same runtime/KV state.
+12. Repeat until `FINAL`, cancellation or `max_turns`.
 
-The current project may still use subprocess runtime startup while the resident runtime is being implemented, but that is a temporary boundary, not the target architecture.
+The former per-turn subprocess model is no longer the active target boundary. Resident runtime/session behaviour is now implemented and CI-verified in Phase 1.
 
 ## 5. Performance path
 
-The target execution path is:
+The current target execution path is:
 
 ```text
 model artifact
    -> mmap / packed weights
    -> resident WPC runtime
+   -> prompt-prefix reuse
    -> batched prefill / forward
    -> dequant backend
    -> GEMM / attention backend
@@ -161,11 +163,11 @@ The architecture is layered so performance improvements do not destabilise the s
 
 Keep the existing Rust implementation as the reference path. Preserve numerical contracts and deterministic tests.
 
-**Layer 1 — runtime residency**
+**Layer 1 — runtime residency — COMPLETE**
 
-Make the WPC runtime long-lived per session. Load weights once, reuse allocations and keep KV state alive across agent turns.
+The WPC runtime is long-lived per agent session. WPC v4 weights are mmap-backed and shared through `Arc`; the session retains prompt/KV state across turns and reusable KV/mmap capacity is covered by tests.
 
-**Layer 2 — batching**
+**Layer 2 — batching — NEXT**
 
 Promote `BatchEngine`/batched forward and prompt prefill. Benchmark latency, throughput, memory use and correctness against the single-token reference.
 
@@ -235,13 +237,16 @@ A component moves into the active stack only when it has:
 - [x] CI repair loop with pre-push verification and explicit workflow dispatch
 - [ ] Historical Git secret scan before declaring public repositories clean
 
-### Phase B — Resident inference runtime
+### Phase B — Resident inference runtime — COMPLETE
 
-- [ ] Make `wpc-runtime` long-lived for an entire agent task/session
-- [ ] Keep compressed model weights resident across turns
-- [ ] Keep KV cache resident and reusable across turns
-- [ ] Reuse allocator/buffer pools instead of rebuilding execution state
-- [ ] Expose a stable Rust session API for the resident runtime
+- [x] Long-lived `wpc-runtime` for an entire agent task/session
+- [x] Keep compressed model weights resident across turns
+- [x] Keep KV cache resident and reusable across turns
+- [x] Reuse mmap/KV allocation capacity where storage grows or is truncated
+- [x] Stable Rust resident session API
+- [x] Regression tests and full CI verification
+
+A fine-grained scratch-buffer pool inside every forward token remains a separate profiling-driven optimisation and is not required to mark this phase complete.
 
 ### Phase C — Batched compute
 
@@ -295,15 +300,10 @@ A component moves into the active stack only when it has:
 
 ## 10. Current priority order
 
-The immediate order is intentionally strict:
-
-1. Finish the current CI verification cycle on `integration/full-organism-v2`.
-2. Treat the verified Rust workspace as the stable reference baseline.
-3. Build the resident runtime/session layer.
-4. Make KV state persistent across agent turns.
-5. Finish and benchmark batched prefill/forward.
-6. Introduce backend interfaces and benchmark Mojo/CUDA/CPU specialisations.
-7. Build AIONS Studio on TypeScript + Tauri.
-8. Expand Memory/Graph, then Kernel, Ghost Gate and OS integration.
+1. Finish Phase 3 resident Memory/KV integration and explicit hot-path/persistent-memory boundaries.
+2. Complete and benchmark batched prefill/forward.
+3. Introduce backend interfaces and benchmark Mojo/CUDA/CPU specialisations.
+4. Build AIONS Studio on TypeScript + Tauri.
+5. Expand Memory/Graph, then Kernel, Ghost Gate and OS integration.
 
 The project should optimise **from the inside out**: preserve a correct Rust core, add acceleration behind stable interfaces, and promote only changes that improve speed, quality or hardware coverage without creating an unacceptable stability or maintenance cost.
