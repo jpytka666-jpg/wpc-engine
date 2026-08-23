@@ -3,13 +3,13 @@
 Status: active GitHub-only implementation stage.
 
 ## Goal
-Create a real graph model based on stable AIONS entity IDs rather than UI-only nodes.
+Create a real graph model based on **stable ID** AIONS entity identities rather than UI-only nodes.
 
 ## Milestones
 - [x] Operational graph contract.
-- [ ] Canonical node/edge identity model.
-- [ ] Entity types for memory, code symbol, process, agent, module and dependency.
-- [ ] Event ingestion contract.
+- [x] Canonical node/edge identity model.
+- [x] Entity types for memory, code symbol, process, agent, module and dependency.
+- [x] Event ingestion contract.
 - [ ] Snapshot/export format.
 - [ ] Integrity checks for orphaned or duplicate IDs.
 - [ ] Query API for neighbourhood, ancestry and dependency paths.
