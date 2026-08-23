@@ -14,3 +14,4 @@ pub mod wpc_weights_v3;
 pub mod wpc_weights_v4;
 
 pub mod forward_batch;
+pub mod resident;
