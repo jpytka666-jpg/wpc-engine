@@ -1,0 +1,1 @@
+{"model_id":"qwen3-moe-wpc-v4","scheme":"v4","weights_source":"wpc_mmap","resident":true,"lifecycle":"resident","max_context":131072,"kv_policy":"hot_only"}
