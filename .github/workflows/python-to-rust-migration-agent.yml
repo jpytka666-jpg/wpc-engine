@@ -44,49 +44,80 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
+          def replace_or_fail(path: Path, pattern: str, replacement: str, label: str, flags: int = 0) -> None:
+              text = path.read_text()
+              new, count = re.subn(pattern, replacement, text, flags=flags)
+              if count == 0:
+                  raise SystemExit(f"deterministic cleanup did not match: {path}: {label}")
+              path.write_text(new)
 
           kernel = Path("wpc-eval/src/fused_kernel.rs")
-          text = kernel.read_text()
-
-          replacements = {
-              """        for i in 0..BLOCK_SIZE_V2 {\n            codes[i] = (i % 64) as u8;\n        }\n""": """        for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {\n            *code = (i % 64) as u8;\n        }\n""",
-              """        for i in 0..BLOCK_SIZE_V2 {\n            x[i] = (i as f32 * 0.01 - 0.5) % 1.0;\n        }\n""": """        for (i, value) in x.iter_mut().enumerate().take(BLOCK_SIZE_V2) {\n            *value = (i as f32 * 0.01 - 0.5) % 1.0;\n        }\n""",
-              """        for i in 0..10 {\n            x[i] = 2.0;\n        }\n""": """        for value in x.iter_mut().take(10) {\n            *value = 2.0;\n        }\n""",
-              """        for i in 0..BLOCK_SIZE_V2 {\n            let w = zp + block.codes[i] as f32 * scale;\n            expected += w * x[i];\n        }\n""": """        for (i, &code) in block.codes.iter().enumerate().take(BLOCK_SIZE_V2) {\n            let w = zp + code as f32 * scale;\n            expected += w * x[i];\n        }\n""",
-              """            for i in 0..BLOCK_SIZE_V2 {\n                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V2 + i];\n            }\n""": """            for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V2) {\n                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V2 + i];\n            }\n""",
-              """            for i in 0..BLOCK_SIZE_V4 {\n                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];\n            }\n""": """            for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V4) {\n                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];\n            }\n""",
-          }
-          for old, new in replacements.items():
-              text = text.replace(old, new)
-
-          # Do not manufacture #[expect(dead_code)] attributes: with -D warnings,
-          # an unused expectation is itself a hard failure once the function is used.
-          text = text.replace("#[expect(dead_code)]\n", "")
-          kernel.write_text(text)
-
-          # Keep the main binary warning-clean.
-          main = Path("wpc-eval/src/main.rs")
-          text = main.read_text()
-          text = text.replace("use wpc_format::{CompressedBlock, BLOCK_SIZE};", "use wpc_format::BLOCK_SIZE;")
-          text = text.replace("#[cfg(target_arch = \"x86_64\")]\nuse std::arch::x86_64::*;\n\n", "")
-          text = text.replace(
-              """    for i in 0..n_blocks {\n        let b = &blocks[i];\n""",
-              """    for (i, b) in blocks.iter().enumerate().take(n_blocks) {\n""",
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V2 \{\n\s*codes\[i\] = \(i % 64\) as u8;.*\n\s*\}",
+              "for (i, code) in codes.iter_mut().enumerate().take(BLOCK_SIZE_V2) {\n            *code = (i % 64) as u8;\n        }",
+              "v2 varied codes",
           )
-          main.write_text(text)
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V2 \{\n\s*x\[i\] = \(i as f32 \* 0\.01 - 0\.5\) % 1\.0;.*\n\s*\}",
+              "for (i, value) in x.iter_mut().enumerate().take(BLOCK_SIZE_V2) {\n            *value = (i as f32 * 0.01 - 0.5) % 1.0;\n        }",
+              "v2 varied activations",
+          )
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.10 \{\n\s*x\[i\] = 2\.0;\n\s*\}",
+              "for value in x.iter_mut().take(10) {\n            *value = 2.0;\n        }",
+              "v2 scalar first ten",
+          )
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V2 \{\n\s*let w = zp \+ block\.codes\[i\] as f32 \* scale;\n\s*expected \+= w \* x\[i\];\n\s*\}",
+              "for (i, &code) in block.codes.iter().enumerate().take(BLOCK_SIZE_V2) {\n            let w = zp + code as f32 * scale;\n            expected += w * x[i];\n        }",
+              "v2 reference",
+          )
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V2 \{\n\s*acc \+= \(zp \+ codes\[i\] as f32 \* sc\) \* x\[bi \* BLOCK_SIZE_V2 \+ i\];\n\s*\}",
+              "for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V2) {\n                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V2 + i];\n            }",
+              "v2 multi-block reference",
+          )
+          replace_or_fail(
+              kernel,
+              r"for i in 0\.\.BLOCK_SIZE_V4 \{\n\s*acc \+= \(zp \+ codes\[i\] as f32 \* sc\) \* x\[bi \* BLOCK_SIZE_V4 \+ i\];\n\s*\}",
+              "for (i, &code) in codes.iter().enumerate().take(BLOCK_SIZE_V4) {\n                acc += (zp + code as f32 * sc) * x[bi * BLOCK_SIZE_V4 + i];\n            }",
+              "v4 reference",
+          )
+          # Remove the previously introduced expectations entirely.
+          kernel.write_text(kernel.read_text().replace("#[expect(dead_code)]\n", ""))
 
-          # RMSE example: iterator form instead of indexing the block in a range loop.
           verify = Path("wpc-core/examples/verify_v2_rmse.rs")
-          text = verify.read_text()
-          text = text.replace(
-              """            for k in 0..BLOCK_SIZE_V2 {\n                let a = block[k] as f32;\n""",
-              """            for (k, &a_code) in block.iter().enumerate().take(BLOCK_SIZE_V2) {\n                let a = a_code as f32;\n""",
+          replace_or_fail(
+              verify,
+              r"for k in 0\.\.BLOCK_SIZE_V2 \{\n\s*let orig = block\[k\] as f64;\n\s*let approx = \(zp \+ qb\.codes\[k\] as f32 \* sc\) as f64;",
+              "for (k, (&orig_code, &quant_code)) in block.iter().zip(qb.codes.iter()).enumerate().take(BLOCK_SIZE_V2) {\n                let orig = orig_code as f64;\n                let approx = (zp + quant_code as f32 * sc) as f64;",
+              "rmse reference",
           )
-          verify.write_text(text)
           PY
 
       - name: Format
         run: cargo fmt --all
+
+      - name: Persist validated repair inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No repair changes to persist."
+          else
+            git commit -m "[ai-repair] persist deterministic Clippy fixes"
+            git push origin HEAD:integration/full-organism-v2
+          fi
 
       - name: Validate build
         run: cargo build --workspace --release
@@ -97,16 +128,5 @@ jobs:
       - name: Validate full Clippy gate
         run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
 
-      - name: Commit validated repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "No repair changes needed."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "[ai-repair] apply deterministic Clippy fixes"
-          git push origin HEAD:integration/full-organism-v2
+      - name: Final status
+        run: git status --short --branch
