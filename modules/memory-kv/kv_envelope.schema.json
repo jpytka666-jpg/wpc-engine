@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIONS KV Envelope",
+  "type": "object",
+  "required": ["model_fingerprint", "session_id", "dimension", "sequence_length", "encoding"],
+  "properties": {
+    "model_fingerprint": {"type": "string", "minLength": 8},
+    "session_id": {"type": "string", "minLength": 1},
+    "dimension": {"type": "integer", "minimum": 1},
+    "sequence_length": {"type": "integer", "minimum": 0},
+    "encoding": {"type": "string", "enum": ["f32", "f16", "bf16", "wpc"]},
+    "payload_ref": {"type": "string"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIONS Graph Event",
+  "type": "object",
+  "required": ["event_id", "timestamp", "kind", "provenance"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "kind": {"type": "string", "enum": ["node_upsert", "edge_add", "observation"]},
+    "node_id": {"type": "string"},
+    "edge_type": {"type": "string"},
+    "provenance": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"}
+  },
+  "additionalProperties": false
+}

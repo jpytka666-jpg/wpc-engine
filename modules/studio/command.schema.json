@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIONS Studio Command",
+  "type": "object",
+  "required": ["id", "command", "source", "approval", "requires_confirmation"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "command": {"type": "string", "minLength": 1},
+    "args": {"type": "object"},
+    "source": {"type": "string", "enum": ["palette", "graph", "agent", "automation"]},
+    "approval": {"type": "string", "enum": ["not_required", "pending", "approved", "rejected", "executed"]},
+    "requires_confirmation": {"type": "boolean"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"requires_confirmation": {"const": true}}},
+      "then": {"properties": {"approval": {"enum": ["pending", "approved", "rejected"]}}}
+    },
+    {
+      "if": {"properties": {"approval": {"const": "executed"}}},
+      "then": {"properties": {"requires_confirmation": {"const": false}}}
+    }
+  ],
+  "additionalProperties": false
+}

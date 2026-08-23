@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIONS Module Manifest",
+  "type": "object",
+  "required": ["module_id", "version", "ci", "health", "lifecycle"],
+  "properties": {
+    "module_id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "ci": {"type": "string", "enum": ["unknown", "pending", "green", "red"]},
+    "health": {"type": "string", "enum": ["unknown", "starting", "healthy", "degraded", "failed"]},
+    "lifecycle": {"type": "string", "enum": ["defined", "staged", "starting", "running", "stopping", "stopped", "failed"]},
+    "depends_on": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  },
+  "additionalProperties": false
+}

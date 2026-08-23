@@ -1,0 +1,9 @@
+{
+  "run_id": "run-test-001",
+  "stage": "compile",
+  "exit_code": 101,
+  "classification": "compile",
+  "summary": "unresolved import",
+  "context": ["error[E0432]", "missing module"],
+  "repair_allowed": true
+}
