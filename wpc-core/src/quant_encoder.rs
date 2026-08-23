@@ -209,8 +209,8 @@ mod tests {
     fn test_affine_quant_block() {
         // Create a varied test block: linear ramp
         let mut weights = [0.0f32; BLOCK_SIZE_V2];
-        for i in 0..BLOCK_SIZE_V2 {
-            weights[i] = i as f32 * 0.05 - 3.2; // ramp from -3.2 to 3.2
+        for (i, weight) in weights.iter_mut().enumerate() {
+            *weight = i as f32 * 0.05 - 3.2; // ramp from -3.2 to 3.2
         }
 
         let block = affine_quant_block(&weights);
@@ -222,7 +222,7 @@ mod tests {
         let mut sum_sq_error = 0.0f32;
         let mut sum_sq_original = 0.0f32;
 
-        for ((i, &code), (&weight, reconstructed_value)) in block
+        for ((_i, &code), (&weight, reconstructed_value)) in block
             .codes
             .iter()
             .enumerate()
