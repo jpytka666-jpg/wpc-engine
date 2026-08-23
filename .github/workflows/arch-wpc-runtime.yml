@@ -1,0 +1,37 @@
+name: AIONS Architecture - WPC Runtime
+
+on:
+  push:
+    branches: ["arch/wpc-runtime"]
+  pull_request:
+    branches: [main]
+    paths:
+      - "CLAUDE.md"
+      - "docs/**"
+      - "wpc-runtime/**"
+      - ".github/workflows/arch-wpc-runtime.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-rust-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify module contract
+        shell: bash
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          grep -q "GitHub first" CLAUDE.md
+          grep -q "WPC Runtime" docs/MODULE-CONTRACT.md
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace --release
+      - name: Test
+        run: cargo test --workspace --release
+      - name: Clippy runtime
+        run: cargo clippy -p wpc-runtime --all-targets --release -- -D warnings
