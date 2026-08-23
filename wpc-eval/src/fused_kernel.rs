@@ -6,6 +6,9 @@ use wpc_format::{
 };
 
 /// Sum of horizontal adds of a __m256. Standard AVX2 trick.
+///
+/// # Safety
+/// Requires AVX2 support on the current CPU. The input vector must be a valid `__m256`.
 #[inline]
 #[target_feature(enable = "avx2")]
 pub unsafe fn hsum_avx2(v: __m256) -> f32 {
@@ -24,6 +27,11 @@ pub unsafe fn hsum_avx2(v: __m256) -> f32 {
 /// This function NEVER writes the decoded 16 weights anywhere except into
 /// YMM registers. Each block's 16 weights are generated and immediately
 /// consumed by `_mm256_fmadd_ps` in the matvec accumulator.
+///
+/// # Safety
+/// Requires AVX2, FMA, and F16C. `blocks` must contain at least `n_blocks` elements.
+/// `patterns`, `residuals`, and `x` must point to readable data for all indexed elements,
+/// and the pointers must remain valid for the duration of the call.
 #[target_feature(enable = "avx2,fma,f16c")]
 pub unsafe fn matvec_wpc_fused(
     blocks: &[CompressedBlock],
@@ -72,6 +80,9 @@ pub unsafe fn matvec_wpc_fused(
     hsum_avx2(acc)
 }
 
+///
+/// # Safety
+/// Requires AVX2 and FMA. `w` and `x` must each point to at least `n` readable `f32` values.
 #[target_feature(enable = "avx2,fma")]
 pub unsafe fn matvec_fp32_baseline(w: *const f32, x: *const f32, n: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
@@ -95,6 +106,10 @@ pub unsafe fn matvec_fp32_baseline(w: *const f32, x: *const f32, n: usize) -> f3
 ///
 /// Each block's 128 weights are decoded via: value = zero_point + code * scale,
 /// then immediately consumed by FMA. Branch-free decode, no dictionary lookups.
+///
+/// # Safety
+/// Requires AVX2 and FMA. `blocks` must contain at least `n_blocks` elements and `x`
+/// must point to at least `n_blocks * 128` readable `f32` values.
 #[target_feature(enable = "avx2,fma")]
 pub unsafe fn matvec_v2_fused(blocks: &[QuantBlockV2], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
