@@ -26,13 +26,10 @@ jobs:
       - name: Unified cross-module smoke
         run: cargo test -p aions-organism-smoke --release
 
-  python-agents:
+  agents-diagnostic:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Agents diagnostics
-        working-directory: modules/agents-ci
-        run: python diagnostic_contract_test.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust agents diagnostics
+        run: cargo test -p aions-agents-ci --release
