@@ -1,8 +1,6 @@
 name: AIONS CI Repair Agent
 
 on:
-  push:
-    branches: ["integration/full-organism-v2"]
   workflow_dispatch:
 
 concurrency:
@@ -11,6 +9,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   repair:
@@ -90,6 +89,20 @@ jobs:
 
           core = replace_exact(
               core,
+              """        for i in 0..BLOCK_SIZE_V2 {\n            weights[i] = i as f32 * 0.05 - 3.2; // ramp from -3.2 to 3.2\n        }""",
+              """        for (i, weight) in weights.iter_mut().enumerate() {\n            *weight = i as f32 * 0.05 - 3.2; // ramp from -3.2 to 3.2\n        }""",
+              "v2 ramp fixture",
+          )
+
+          core = replace_exact(
+              core,
+              """        for ((i, &code), (&weight, reconstructed_value)) in block\n            .codes\n            .iter()\n            .enumerate()\n            .zip(weights.iter().zip(reconstructed.iter_mut()))\n        {""",
+              """        for (&code, (&weight, reconstructed_value)) in block\n            .codes\n            .iter()\n            .zip(weights.iter().zip(reconstructed.iter_mut()))\n        {""",
+              "affine reconstruction loop",
+          )
+
+          core = replace_exact(
+              core,
               """        for i in 0..BLOCK_SIZE_V2 {\n            let a = zp + v2_codes[i] as f32 * sc;\n            let b = zp + unpacked[i] as f32 * sc;\n            assert_eq!(a.to_bits(), b.to_bits(), \"value {i} differs\");\n        }""",
               """        for (i, (&v2_code, &unpacked_code)) in v2_codes.iter().zip(unpacked.iter()).enumerate() {\n            let a = zp + v2_code as f32 * sc;\n            let b = zp + unpacked_code as f32 * sc;\n            assert_eq!(a.to_bits(), b.to_bits(), \"value {i} differs\");\n        }""",
               "v3 decoded-value comparison",
@@ -98,7 +111,7 @@ jobs:
           core = replace_exact(
               core,
               """        for i in 0..BLOCK_SIZE_V2 {\n            let decoded = zp + block.codes[i] as f32 * scale;\n            reconstructed[i] = decoded;\n            let error = (decoded - weights[i]).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weights[i].abs().max(1e-6) * weights[i].abs().max(1e-6);\n        }""",
-              """        for ((i, &code), (&weight, reconstructed_value)) in block\n            .codes\n            .iter()\n            .enumerate()\n            .zip(weights.iter().zip(reconstructed.iter_mut()))\n        {\n            let decoded = zp + code as f32 * scale;\n            *reconstructed_value = decoded;\n            let error = (decoded - weight).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weight.abs().max(1e-6) * weight.abs().max(1e-6);\n        }""",
+              """        for ((&code, &weight), reconstructed_value) in block\n            .codes\n            .iter()\n            .zip(weights.iter())\n            .zip(reconstructed.iter_mut())\n        {\n            let decoded = zp + code as f32 * scale;\n            *reconstructed_value = decoded;\n            let error = (decoded - weight).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weight.abs().max(1e-6) * weight.abs().max(1e-6);\n        }""",
               "affine reconstruction check",
           )
 
@@ -145,22 +158,41 @@ jobs:
       - name: Validate tests
         run: cargo test --workspace --release
 
-      - name: Persist repair changes
+      - name: Validate full Clippy gate
+        run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+
+      - name: Detect verified repair changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Persist verified repair changes
+        if: steps.changes.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          if git diff --cached --quiet; then
-            echo "No repair changes to persist."
-          else
-            git commit -m "[ai-repair] persist Rust CI cleanup"
-            git push origin HEAD:integration/full-organism-v2
-          fi
+          git commit -m "[ai-repair] persist verified Rust CI cleanup"
+          git push origin HEAD:integration/full-organism-v2
 
-      - name: Validate full Clippy gate
-        run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+      - name: Dispatch verification workflows
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref integration/full-organism-v2
+          gh workflow run full-organism-build.yml --repo "$GITHUB_REPOSITORY" --ref integration/full-organism-v2
+          gh workflow run unified-organism.yml --repo "$GITHUB_REPOSITORY" --ref integration/full-organism-v2
+          gh workflow run full-organism-gate.yml --repo "$GITHUB_REPOSITORY" --ref integration/full-organism-v2
 
       - name: Final status
         run: git status --short --branch
