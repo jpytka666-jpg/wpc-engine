@@ -1,0 +1,79 @@
+name: AIONS Integration Gate
+
+on:
+  push:
+    branches: ["stage2/os-integration-contracts"]
+  pull_request:
+    branches: ["arch/os-integration"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate eight-module manifest
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          p = Path('modules/os-integration/stage2-manifest.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          expected = {
+              'wpc-runtime', 'agents-ci', 'memory-kv', 'memory-graph',
+              'studio', 'aions-kernel', 'ghost-gate', 'os-integration'
+          }
+          actual = {m['id'] for m in data['modules']}
+          assert actual == expected, (actual, expected)
+          assert all(m['arch_branch'].startswith('arch/') for m in data['modules'])
+          assert all(m['stage2_branch'].startswith('stage2/') for m in data['modules'])
+          print('VALID eight-module manifest')
+
+  module-branches:
+    needs: manifest
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: wpc-runtime
+            arch_branch: arch/wpc-runtime
+            stage2_branch: stage2/wpc-runtime-contracts
+          - module: agents-ci
+            arch_branch: arch/agents-ci
+            stage2_branch: stage2/agents-ci-diagnostics
+          - module: memory-kv
+            arch_branch: arch/memory-kv
+            stage2_branch: stage2/memory-kv-contracts
+          - module: memory-graph
+            arch_branch: arch/memory-graph
+            stage2_branch: stage2/memory-graph-contracts
+          - module: studio
+            arch_branch: arch/studio
+            stage2_branch: stage2/studio-contracts
+          - module: aions-kernel
+            arch_branch: arch/aions-kernel
+            stage2_branch: stage2/aions-kernel-contracts
+          - module: ghost-gate
+            arch_branch: arch/ghost-gate
+            stage2_branch: stage2/ghost-gate-contracts
+          - module: os-integration
+            arch_branch: arch/os-integration
+            stage2_branch: stage2/os-integration-contracts
+    steps:
+      - name: Verify module branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH_BRANCH: ${{ matrix.arch_branch }}
+          STAGE2_BRANCH: ${{ matrix.stage2_branch }}
+          MODULE: ${{ matrix.module }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${ARCH_BRANCH}" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${STAGE2_BRANCH}" >/dev/null
+          echo "VALID branches for ${MODULE}"

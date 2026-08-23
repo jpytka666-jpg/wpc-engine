@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "modules": [
+    {"id":"wpc-runtime","arch_branch":"arch/wpc-runtime","stage2_branch":"stage2/wpc-runtime-contracts"},
+    {"id":"agents-ci","arch_branch":"arch/agents-ci","stage2_branch":"stage2/agents-ci-diagnostics"},
+    {"id":"memory-kv","arch_branch":"arch/memory-kv","stage2_branch":"stage2/memory-kv-contracts"},
+    {"id":"memory-graph","arch_branch":"arch/memory-graph","stage2_branch":"stage2/memory-graph-contracts"},
+    {"id":"studio","arch_branch":"arch/studio","stage2_branch":"stage2/studio-contracts"},
+    {"id":"aions-kernel","arch_branch":"arch/aions-kernel","stage2_branch":"stage2/aions-kernel-contracts"},
+    {"id":"ghost-gate","arch_branch":"arch/ghost-gate","stage2_branch":"stage2/ghost-gate-contracts"},
+    {"id":"os-integration","arch_branch":"arch/os-integration","stage2_branch":"stage2/os-integration-contracts"}
+  ],
+  "integration_rule":"stage2 merges into its arch branch first; arch branches integrate to main only after module gate acceptance"
+}

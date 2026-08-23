@@ -7,8 +7,8 @@ Create the integration control plane that consumes the seven module contracts wi
 
 ## Milestones
 - [x] Integration contract and dependency rule.
-- [ ] Module manifest with version and CI status.
-- [ ] Health-check envelope.
+- [x] Module manifest with version and CI status.
+- [x] Health-check envelope.
 - [ ] Service lifecycle contract.
 - [ ] Permission/profile declaration.
 - [ ] Boot/recovery state machine.

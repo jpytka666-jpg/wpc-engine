@@ -1,0 +1,78 @@
+name: AIONS Integration Gate
+
+on:
+  push:
+    branches: ["stage2/os-integration-contracts"]
+  pull_request:
+    branches: ["arch/os-integration"]
+
+permissions:
+  contents: read
+
+jobs:
+  module-checks:
+    name: Verify ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: agents-ci
+            ref: stage2/agents-ci-diagnostics
+            kind: python
+          - name: wpc-runtime
+            ref: stage2/wpc-runtime-contracts
+            kind: cargo
+            package: aions-wpc-runtime-contract
+          - name: memory-kv
+            ref: feature/memory-kv-implementation
+            kind: cargo
+            package: aions-memory-kv
+          - name: memory-graph
+            ref: stage2/memory-graph-contracts
+            kind: cargo
+            package: aions-memory-graph
+          - name: studio
+            ref: stage2/studio-contracts
+            kind: cargo
+            package: aions-studio
+          - name: kernel
+            ref: stage2/aions-kernel-contracts
+            kind: cargo
+            package: aions-kernel-contract
+          - name: ghost-gate
+            ref: stage2/ghost-gate-contracts
+            kind: cargo
+            package: aions-ghost-gate-contract
+          - name: os-integration
+            ref: stage2/os-integration-contracts
+            kind: cargo
+            package: aions-os-integration-contract
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Run Python contract checks
+        if: matrix.kind == 'python'
+        run: python3 modules/agents-ci/diagnostic_contract_test.py
+
+      - name: Run Rust module checks
+        if: matrix.kind == 'cargo'
+        run: cargo test -p ${{ matrix.package }}
+
+  integration-final:
+    name: Final integration gate
+    needs: module-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate integration manifest
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          manifest = Path('modules/os-integration/stage2-manifest.json')
+          data = json.loads(manifest.read_text(encoding='utf-8'))
+          assert data
+          print('Integration manifest valid:', manifest)
