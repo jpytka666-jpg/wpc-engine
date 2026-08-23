@@ -1,0 +1,21 @@
+name: AIONS Architecture - Kernel
+on:
+  push:
+    branches: ["arch/aions-kernel"]
+  pull_request:
+    branches: [main]
+    paths: ["CLAUDE.md", "docs/**", ".github/workflows/arch-kernel.yml"]
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify contract
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          test -f docs/IMPLEMENTATION-STAGE-1.md
+          grep -q "AIONS Kernel" docs/MODULE-CONTRACT.md
+          grep -q "capability" docs/IMPLEMENTATION-STAGE-1.md
