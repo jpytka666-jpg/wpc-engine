@@ -1,0 +1,18 @@
+name: AIONS OS Integration Contract Gate
+
+on:
+  push:
+    branches: ["stage2/os-integration-contracts"]
+  pull_request:
+    branches: ["arch/os-integration"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test OS integration contracts
+        run: cargo test -p aions-os-integration-contract
