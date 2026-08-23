@@ -13,7 +13,7 @@ jobs:
   migrate-and-debug:
     if: ${{ !contains(github.event.head_commit.message, '[ai-migration]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       - name: Checkout integration branch
@@ -30,86 +30,59 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Python for parity checks
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Inventory Python code
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "=== Python files ==="
-          find . -type f -name '*.py' -not -path './.git/*' -print | sort
-          echo "=== Python line counts ==="
-          find . -type f -name '*.py' -not -path './.git/*' -print0 \
-            | xargs -0 -r wc -l | sort -n
-
-      - name: Baseline Rust validation
-        run: |
-          cargo build --workspace --release
-          cargo test --workspace --release
-          cargo fmt --all --check
-
       - name: Install GitHub Copilot CLI
         run: npm install -g @github/copilot
 
-      - name: Run Copilot migration/debug agent
+      - name: Run focused Clippy fixer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           read -r -d '' PROMPT <<'COPILOT_PROMPT' || true
-          You are the senior migration engineer for jpytka666-jpg/wpc-engine.
+          You are fixing CI on branch integration/full-organism-v2 for jpytka666-jpg/wpc-engine.
 
-          Work ONLY on branch integration/full-organism-v2. Never touch main.
-          Move appropriate executable/runtime Python logic to Rust, fix current Rust
-          CI blockers, preserve behavior, and add focused tests.
+          THIS RUN IS A FOCUSED CLIPPY FIX PASS.
+          Do NOT perform Python migration in this run.
+          Do NOT touch main or another branch.
+          Do NOT weaken tests, remove tests, or add broad allow attributes just to silence CI.
+          Preserve runtime behavior.
 
-          SAFETY RULES:
-          - Do NOT blindly translate every Python line into Rust.
-          - Do NOT delete Python just to make CI green.
-          - Do NOT weaken, skip, or remove tests.
-          - Do NOT change architecture/contracts merely to silence errors.
-          - Do NOT modify main or another branch.
-          - Do NOT rewrite model artifacts, binaries, or generated output into git.
-          - Preserve public CLI/API behavior for runtime-facing code.
-          - Prefer small validated migrations over one giant rewrite.
+          CURRENT EXACT CLIPPY BLOCKERS FROM THE LATEST FULL-WORKSPACE RUN:
 
-          First inventory all *.py files and classify each as runtime logic, tests/diagnostics,
-          or build/download/CI/dev tooling. Migrate only useful runtime/test logic; retain tooling
-          Python when appropriate and document why.
+          1. wpc-eval/src/main.rs
+             - remove unused import `CompressedBlock`
+             - remove unused import `std::arch::x86_64::*`
+             - line ~173: replace the range/index loop over `blocks` with an iterator/enumerate form that preserves the same indexing behavior.
 
-          CURRENT KNOWN CLIPPY BLOCKERS — FIX, DON'T SUPPRESS:
-          - wpc-runtime/src/gemma4_model.rs: needless_range_loop, excessive_precision.
-          - wpc-runtime/src/model.rs: needless_range_loop.
-          - wpc-runtime/src/qwen3_moe_model.rs: needless_range_loop.
-          - wpc-runtime/src/weights.rs: chunks_exact_to_as_chunks.
-          - wpc-runtime/src/wpc_weights.rs: chunks_exact_to_as_chunks.
-          - wpc-runtime/src/wpc_weights_v2.rs: unused shape metadata; justify narrowly or use it.
-          - wpc-runtime/src/forward_batch.rs: too_many_arguments and raw-pointer safety lint.
-          - modules/memory-kv/benches/hot_kv.rs: unit_arg benchmark lint.
+          2. wpc-eval/src/fused_kernel.rs
+             Fix the current `clippy::needless_range_loop` errors at approximately lines:
+             - 367: loop index is used to index `codes`
+             - 378: loop index is used to index `x`
+             - 386: loop index is used to index `x`
+             - 404: loop index is used to index `codes`
+             - 414: loop index is only used to index `x`
+             - 423: loop index is used to index `x`
+             - 439: loop index is used to index `codes`
+             - 554: loop index is used to index `codes` for BLOCK_SIZE_V4
+             Use the appropriate `iter()`, `iter_mut()`, `enumerate()`, and `take(...)` forms while preserving exact computation and bounds.
 
-          Run this exact command yourself and keep fixing until it exits 0:
-          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
-          Do not pipe it through grep/head or otherwise hide its exit status.
+          Do NOT blanket-disable `needless_range_loop`.
+          Do NOT change numeric formulas or kernel semantics.
 
-          IMPORTANT: before final validation, run `cargo fmt --all` (not just --check), then
-          run the exact checks below. Do not leave formatting-only failures behind.
+          After these fixes, run the exact validation sequence:
+            cargo fmt --all
+            cargo fmt --all --check
+            cargo build --workspace --release
+            cargo test --workspace --release
+            cargo clippy --workspace --all-targets --all-features --release -- -D warnings
 
-          Required validation before declaring success:
-          cargo fmt --all
-          cargo fmt --all --check
-          cargo build --workspace --release
-          cargo test --workspace --release
-          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
+          The full Clippy command must exit 0. Do not pipe it through grep/head or otherwise hide its exit code.
+          If Clippy reveals additional real blockers elsewhere after the wpc-eval fixes, fix those surgically too, still preserving behavior.
 
-          Keep docs/python-to-rust-migration.md concise and current. Include files inspected,
-          migrations completed, files retained, tests run, failures, and remaining work.
-
-          Commit ONLY validated changes directly to integration/full-organism-v2.
-          Every agent commit MUST start with [ai-migration]. Do not commit speculative changes.
+          Commit only validated changes on integration/full-organism-v2.
+          Commit message MUST start with: [ai-migration]
+          Do not commit speculative changes.
           COPILOT_PROMPT
           copilot --yolo -p "$PROMPT"
 
@@ -131,5 +104,5 @@ jobs:
             exit 0
           fi
           git add -A
-          git commit -m "[ai-migration] validate migration fixes"
+          git commit -m "[ai-migration] validate clippy fixes"
           git push origin HEAD:integration/full-organism-v2
