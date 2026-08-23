@@ -9,6 +9,8 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+wpc-core = { package = "wpc-core", path = "../../wpc-core" }
+wpc-format = { package = "wpc-format", path = "../../wpc-format" }
 
 [dev-dependencies]
 criterion = "0.5"
