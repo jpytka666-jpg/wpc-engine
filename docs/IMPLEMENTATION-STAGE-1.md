@@ -8,7 +8,7 @@ Define the boundary between generation-critical KV and durable/compressed memory
 ## Milestones
 - [x] Hot-KV versus persistent-memory contract.
 - [x] Typed KV handle and lifecycle interface.
-- [ ] Append/read batch semantics with sequence ownership.
+- [x] Append/read batch semantics with sequence ownership.
 - [ ] Memory residency metrics.
 - [ ] Compression experiment interface kept outside the token-critical path.
 - [ ] CBMS adapter contract.
@@ -17,3 +17,4 @@ Define the boundary between generation-critical KV and durable/compressed memory
 
 ## Rules
 The model owns execution; this module owns KV state policy. Durable storage must never silently enter the critical generation path.
+Sequence ownership is contiguous and exclusive: appends begin at the next unowned position; gaps and overlaps are rejected.
