@@ -1,0 +1,14 @@
+name: Memory KV Compression Experiment
+on:
+  push:
+    branches: ["feature/memory-kv-compression-experiment"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p aions-memory-kv --test compression_experiment --release
