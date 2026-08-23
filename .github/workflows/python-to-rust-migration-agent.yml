@@ -1,108 +1,17 @@
 name: AIONS Python to Rust Migration Agent
 
 on:
-  push:
-    branches: ["integration/full-organism-v2"]
   workflow_dispatch:
 
+# Copilot automation is intentionally disconnected. CI repairs are now
+# performed and validated explicitly rather than consuming Copilot quota
+# on every push to the integration branch.
 permissions:
   contents: write
-  copilot-requests: write
 
 jobs:
   migrate-and-debug:
-    if: ${{ !contains(github.event.head_commit.message, '[ai-migration]') }}
+    if: ${{ false }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
     steps:
-      - name: Checkout integration branch
-        uses: actions/checkout@v4
-        with:
-          ref: integration/full-organism-v2
-          fetch-depth: 0
-
-      - name: Configure Git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install GitHub Copilot CLI
-        run: npm install -g @github/copilot
-
-      - name: Run focused Clippy fixer
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          read -r -d '' PROMPT <<'COPILOT_PROMPT' || true
-          You are fixing CI on branch integration/full-organism-v2 for jpytka666-jpg/wpc-engine.
-
-          THIS RUN IS A FOCUSED CLIPPY FIX PASS.
-          Do NOT perform Python migration in this run.
-          Do NOT touch main or another branch.
-          Do NOT weaken tests, remove tests, or add broad allow attributes just to silence CI.
-          Preserve runtime behavior.
-
-          CURRENT EXACT CLIPPY BLOCKERS FROM THE LATEST FULL-WORKSPACE RUN:
-
-          1. wpc-eval/src/main.rs
-             - remove unused import `CompressedBlock`
-             - remove unused import `std::arch::x86_64::*`
-             - line ~173: replace the range/index loop over `blocks` with an iterator/enumerate form that preserves the same indexing behavior.
-
-          2. wpc-eval/src/fused_kernel.rs
-             Fix the current `clippy::needless_range_loop` errors at approximately lines:
-             - 367: loop index is used to index `codes`
-             - 378: loop index is used to index `x`
-             - 386: loop index is used to index `x`
-             - 404: loop index is used to index `codes`
-             - 414: loop index is only used to index `x`
-             - 423: loop index is used to index `x`
-             - 439: loop index is used to index `codes`
-             - 554: loop index is used to index `codes` for BLOCK_SIZE_V4
-             Use the appropriate `iter()`, `iter_mut()`, `enumerate()`, and `take(...)` forms while preserving exact computation and bounds.
-
-          Do NOT blanket-disable `needless_range_loop`.
-          Do NOT change numeric formulas or kernel semantics.
-
-          After these fixes, run the exact validation sequence:
-            cargo fmt --all
-            cargo fmt --all --check
-            cargo build --workspace --release
-            cargo test --workspace --release
-            cargo clippy --workspace --all-targets --all-features --release -- -D warnings
-
-          The full Clippy command must exit 0. Do not pipe it through grep/head or otherwise hide its exit code.
-          If Clippy reveals additional real blockers elsewhere after the wpc-eval fixes, fix those surgically too, still preserving behavior.
-
-          Commit only validated changes on integration/full-organism-v2.
-          Commit message MUST start with: [ai-migration]
-          Do not commit speculative changes.
-          COPILOT_PROMPT
-          copilot --yolo -p "$PROMPT"
-
-      - name: Final Rust validation
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          cargo fmt --all --check
-          cargo build --workspace --release
-          cargo test --workspace --release
-          cargo clippy --workspace --all-targets --all-features --release -- -D warnings
-
-      - name: Commit any validated uncommitted fixes
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "No uncommitted changes remain."
-            exit 0
-          fi
-          git add -A
-          git commit -m "[ai-migration] validate clippy fixes"
-          git push origin HEAD:integration/full-organism-v2
+      - run: echo "Copilot migration agent disabled; repairs are performed explicitly."
