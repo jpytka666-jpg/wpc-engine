@@ -179,9 +179,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let context = parse_rust_diagnostics(&stdout, "", &["src/lib.rs", "src/lib.rs"], 2);
-        assert_eq!(
-            context,
-            vec!["error[E0001]: failure", "path:src/lib.rs"]
-        );
+        assert_eq!(context, vec!["error[E0001]: failure", "path:src/lib.rs"]);
     }
 }
