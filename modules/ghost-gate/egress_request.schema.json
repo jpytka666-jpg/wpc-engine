@@ -2,13 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Ghost Gate Egress Request",
   "type": "object",
-  "required": ["request_id", "destination", "protocol", "reason"],
+  "required": ["request_id", "mode", "destination", "protocol", "decision", "dns_policy", "reason"],
   "properties": {
     "request_id": {"type": "string", "minLength": 1},
+    "mode": {"type": "string", "enum": ["OFFLINE", "VPN", "VPN_FIREWALL", "TOR"]},
     "destination": {"type": "string", "minLength": 1},
-    "protocol": {"type": "string", "enum": ["https", "http", "dns", "tcp"]},
-    "reason": {"type": "string", "minLength": 1},
-    "policy": {"type": "string", "enum": ["direct", "vpn", "tor"]}
+    "protocol": {"type": "string", "enum": ["https", "http", "dns", "tcp", "udp"]},
+    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "decision": {"type": "string", "enum": ["allow", "deny", "audit"]},
+    "dns_policy": {"type": "string", "enum": ["gateway_only", "blocked", "explicit"]},
+    "reason": {"type": "string", "minLength": 1}
   },
+  "allOf": [
+    {"if": {"properties": {"mode": {"const": "OFFLINE"}}}, "then": {"properties": {"decision": {"const": "deny"}, "dns_policy": {"const": "blocked"}}}},
+    {"if": {"properties": {"mode": {"const": "VPN_FIREWALL"}}}, "then": {"properties": {"decision": {"enum": ["allow", "deny", "audit"]}}}}
+  ],
   "additionalProperties": false
 }

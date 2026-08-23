@@ -1,0 +1,1 @@
+{"request_id":"egress-001","mode":"OFFLINE","destination":"example.invalid","protocol":"https","port":443,"decision":"deny","dns_policy":"blocked","reason":"offline mode denies all egress"}
