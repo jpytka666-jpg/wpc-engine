@@ -53,6 +53,7 @@ jobs:
 
           kernel_path = Path("wpc-eval/src/fused_kernel.rs")
           text = kernel_path.read_text()
+          text = text.replace("\r\n", "\n").replace("\r", "\n")
           duplicate = "#[allow(dead_code)]\n#[allow(dead_code)]"
           while duplicate in text:
               text = text.replace(duplicate, "#[allow(dead_code)]")
@@ -83,7 +84,7 @@ jobs:
               return re.sub(pattern, repl, text)
 
           core_path = Path("wpc-core/src/quant_encoder.rs")
-          core = core_path.read_text()
+          core = core_path.read_text().replace("\r\n", "\n").replace("\r", "\n")
           core = rewrite_assign_loops(core, "BLOCK_SIZE_V2")
           core = rewrite_assign_loops(core, "BLOCK_SIZE_V4")
 
@@ -97,7 +98,7 @@ jobs:
           core = replace_exact(
               core,
               """        for i in 0..BLOCK_SIZE_V2 {\n            let decoded = zp + block.codes[i] as f32 * scale;\n            reconstructed[i] = decoded;\n            let error = (decoded - weights[i]).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weights[i].abs().max(1e-6) * weights[i].abs().max(1e-6);\n        }""",
-              """        for (i, (&code, &weight)) in block.codes.iter().zip(weights.iter()).enumerate() {\n            let decoded = zp + code as f32 * scale;\n            reconstructed[i] = decoded;\n            let error = (decoded - weight).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weight.abs().max(1e-6) * weight.abs().max(1e-6);\n        }""",
+              """        for ((i, &code), (&weight, reconstructed_value)) in block\n            .codes\n            .iter()\n            .enumerate()\n            .zip(weights.iter().zip(reconstructed.iter_mut()))\n        {\n            let decoded = zp + code as f32 * scale;\n            *reconstructed_value = decoded;\n            let error = (decoded - weight).abs();\n            sum_sq_error += error * error;\n            sum_sq_original += weight.abs().max(1e-6) * weight.abs().max(1e-6);\n        }""",
               "affine reconstruction check",
           )
 
@@ -117,13 +118,13 @@ jobs:
           core_path.write_text(core)
 
           format_path = Path("wpc-format/src/lib.rs")
-          fmt = format_path.read_text()
+          fmt = format_path.read_text().replace("\r\n", "\n").replace("\r", "\n")
           fmt = rewrite_assign_loops(fmt, "128")
           fmt = rewrite_assign_loops(fmt, "BLOCK_SIZE_V4")
           format_path.write_text(fmt)
 
           main_path = Path("wpc-eval/src/main.rs")
-          main = main_path.read_text()
+          main = main_path.read_text().replace("\r\n", "\n").replace("\r", "\n")
           main = main.replace(
               "use wpc_format::{CompressedBlock, BLOCK_SIZE};",
               "use wpc_format::BLOCK_SIZE;",
@@ -144,10 +145,7 @@ jobs:
       - name: Validate tests
         run: cargo test --workspace --release
 
-      - name: Validate full Clippy gate
-        run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
-
-      - name: Persist validated repair
+      - name: Persist repair changes
         shell: bash
         run: |
           set -euo pipefail
@@ -157,9 +155,12 @@ jobs:
           if git diff --cached --quiet; then
             echo "No repair changes to persist."
           else
-            git commit -m "[ai-repair] persist validated Rust CI fixes"
+            git commit -m "[ai-repair] persist Rust CI cleanup"
             git push origin HEAD:integration/full-organism-v2
           fi
+
+      - name: Validate full Clippy gate
+        run: cargo clippy --workspace --all-targets --all-features --release -- -D warnings
 
       - name: Final status
         run: git status --short --branch
