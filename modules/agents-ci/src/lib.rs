@@ -27,7 +27,10 @@ pub fn classify_failure(exit_code: i32, stage: &str) -> Diagnostic {
         };
     }
 
-    if REPAIRABLE_STAGES.iter().any(|candidate| *candidate == stage) {
+    if REPAIRABLE_STAGES
+        .iter()
+        .any(|candidate| *candidate == stage)
+    {
         let classification = match stage {
             "format" => Classification::Formatting,
             "compile" => Classification::Compile,
@@ -78,7 +81,11 @@ pub fn parse_rust_diagnostics(
     }
 
     if result.len() < max_items {
-        for path in affected_paths.iter().copied().filter(|path| !path.is_empty()) {
+        for path in affected_paths
+            .iter()
+            .copied()
+            .filter(|path| !path.is_empty())
+        {
             push_unique_bounded(&mut result, format!("path:{path}"), max_items);
             if result.len() >= max_items {
                 break;
@@ -171,12 +178,7 @@ mod tests {
             .map(|_| "error[E0001]: failure")
             .collect::<Vec<_>>()
             .join("\n");
-        let context = parse_rust_diagnostics(
-            &stdout,
-            "",
-            &["src/lib.rs", "src/lib.rs"],
-            2,
-        );
+        let context = parse_rust_diagnostics(&stdout, "", &["src/lib.rs", "src/lib.rs"], 2);
         assert_eq!(context, vec!["error[E0001]: failure"]);
     }
 }
