@@ -22,23 +22,17 @@ fn read_tensor_f32(mmap: &Mmap, name: &str) -> (Vec<usize>, Vec<f32>) {
     let data = match view.dtype() {
         safetensors::Dtype::F32 => view
             .data()
-            .as_chunks::<4>()
-            .0
-            .iter()
+            .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
         safetensors::Dtype::F16 => view
             .data()
-            .as_chunks::<2>()
-            .0
-            .iter()
+            .chunks_exact(2)
             .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect(),
         safetensors::Dtype::BF16 => view
             .data()
-            .as_chunks::<2>()
-            .0
-            .iter()
+            .chunks_exact(2)
             .map(|c| {
                 let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
                 f32::from_bits(bits << 16)
@@ -77,9 +71,9 @@ fn main() {
             let qb = affine_quant_block(&block);
             let zp = qb.zero_point.to_f32();
             let sc = qb.scale.to_f32();
-            for (&orig_code, &quant_code) in block.iter().zip(qb.codes.iter()) {
-                let orig = orig_code as f64;
-                let approx = (zp + quant_code as f32 * sc) as f64;
+            for (k, &value) in block.iter().enumerate().take(BLOCK_SIZE_V2) {
+                let orig = value as f64;
+                let approx = (zp + qb.codes[k] as f32 * sc) as f64;
                 sq_err += (orig - approx).powi(2);
                 sq_sig += orig * orig;
             }
