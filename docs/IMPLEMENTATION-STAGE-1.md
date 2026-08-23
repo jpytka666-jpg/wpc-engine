@@ -8,9 +8,9 @@ Turn the parallel CI contract into a bounded diagnostic and repair pipeline.
 ## Milestones
 - [x] Parallel matrix gate with fail-fast disabled.
 - [x] Module contract and safety boundary.
-- [ ] Stable diagnostic JSON schema.
-- [ ] Capture exit code/stdout/stderr and affected paths.
-- [ ] Failure classifier for format/build/test/lint/benchmark.
+- [x] Stable diagnostic JSON schema.
+- [x] Capture exit code/stdout/stderr and affected paths.
+- [x] Failure classifier for format/build/test/lint/benchmark.
 - [ ] Bounded repair proposal interface.
 - [ ] Isolated apply + verify loop.
 - [ ] Coding-agent command interface behind explicit approval.

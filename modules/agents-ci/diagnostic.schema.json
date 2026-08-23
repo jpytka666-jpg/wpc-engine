@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIONS CI Diagnostic",
+  "type": "object",
+  "required": ["run_id", "stage", "exit_code", "classification", "summary", "repair_allowed"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "stage": {"type": "string", "enum": ["format", "compile", "test", "lint", "benchmark", "contract"]},
+    "exit_code": {"type": "integer"},
+    "classification": {"type": "string", "enum": ["formatting", "compile", "test", "lint", "benchmark", "contract", "unknown"]},
+    "summary": {"type": "string", "minLength": 1},
+    "context": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+    "repair_allowed": {"type": "boolean"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"classification": {"const": "contract"}}},
+      "then": {"properties": {"stage": {"const": "contract"}}}
+    }
+  ],
+  "additionalProperties": false
+}
