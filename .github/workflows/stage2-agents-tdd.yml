@@ -1,0 +1,18 @@
+name: Agents CI Stage 2 TDD
+
+on:
+  push:
+    branches: ["stage2/agents-ci-diagnostics"]
+  pull_request:
+    branches: ["arch/agents-ci"]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run diagnostic contract tests
+        run: python3 modules/agents-ci/diagnostic_contract_test.py
