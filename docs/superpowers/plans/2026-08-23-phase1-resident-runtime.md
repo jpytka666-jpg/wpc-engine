@@ -21,70 +21,39 @@
 
 ---
 
-### Task 1: Verify resident agent/session lifetime
+### Task 1: Verify resident agent/session lifetime — COMPLETE
 
-**Files:**
-- Inspect: `wpc-runtime/src/bin/aions-agent.rs`
-- Inspect: `wpc-runtime/src/resident.rs`
+- [x] `ResidentEngine::load` happens before the agent turn loop.
+- [x] One `ResidentSession` is retained across turns.
+- [x] Shared prompt-prefix reuse and cache truncation semantics are verified from the implementation.
 
-**Interfaces:**
-- `ResidentEngine::load` creates the model once.
-- `ResidentEngine::start_session` creates one session before the agent turn loop.
-- `ResidentSession::generate` reuses the shared prompt prefix and KV cache.
+### Task 2: Verify load-once WPC weight storage — COMPLETE
 
-- [x] Confirm `ResidentEngine::load` happens before the agent turn loop.
-- [x] Confirm one `ResidentSession` is retained across turns.
-- [x] Confirm prefix reuse and cache truncation semantics.
+- [x] Regression test proves multiple linear layers share the same `Arc` backing model data.
+- [x] mmap-backed model storage is the load-once mechanism.
 
-### Task 2: Verify load-once WPC weight storage
+### Task 3: Verify reusable KV/mmap allocation behaviour — COMPLETE
 
-**Files:**
-- Inspect: `wpc-runtime/src/wpc_weights_v4.rs`
-- Test: `wpc-runtime/tests/resident_weight_sharing.rs`
+- [x] Regression tests cover mmap capacity reuse.
+- [x] Regression tests cover KV growth, preservation, and reuse after growth.
 
-**Interfaces:**
-- `WpcModelDataV4::open` returns `Arc<WpcModelDataV4>` over an mmap of the packed model.
-- `WpcLinearV4` clones the same `Arc` for each tensor layer.
+### Task 4: CI verification — COMPLETE
 
-- [x] Add a regression test proving multiple linear layers share the same `Arc` backing model data.
-- [x] Keep mmap-backed model storage as the load-once mechanism.
+- [x] Full workspace build passes.
+- [x] Full workspace tests pass.
+- [x] Formatting passes.
+- [x] Runtime Clippy passes with `-D warnings`.
+- [x] Existing benchmark compile/smoke gates pass.
 
-### Task 3: Verify reusable KV/mmap allocation behaviour
+Verified by GitHub Actions CI run `32669214449` on PR #23.
 
-**Files:**
-- Inspect: `wpc-runtime/src/forward_batch.rs`
-- Test: `wpc-runtime/tests/resident_memory.rs`
+### Task 5: Close Phase 1 roadmap gates — COMPLETE
 
-**Interfaces:**
-- `MmapF32::ensure_capacity` retains existing allocation when capacity is sufficient.
-- `KvLayer` grows capacity when required and preserves existing rows/data.
-- Rust `Vec` truncation in the resident KV cache retains allocated capacity.
-
-- [x] Add regression tests for mmap capacity reuse.
-- [x] Add regression tests for KV growth/preservation and reuse after growth.
-
-### Task 4: CI verification
-
-**Files:**
-- No runtime source changes required.
-
-- [ ] Full workspace build passes.
-- [ ] Full workspace tests pass.
-- [ ] Formatting passes.
-- [ ] Runtime Clippy passes with `-D warnings`.
-- [ ] Existing benchmark compile/smoke gates pass.
-
-### Task 5: Close Phase 1 roadmap gates
-
-**Files:**
-- Modify: `docs/AIONS-INTEGRATION-MAP.md`
-- Modify: `docs/UNIFIED_STACK.md` only if the documented runtime boundary needs correction.
-
-- [ ] Mark resident runtime complete only after CI confirms the implementation.
-- [ ] Mark load-once/reuse complete only after CI confirms the new regression tests.
-- [ ] Record that CBMS remains outside the real-time token path.
-- [ ] Merge PR #23 into `integration/full-organism-v2` once all required checks are green.
+- [x] Resident runtime marked complete in `docs/AIONS-INTEGRATION-MAP.md`.
+- [x] Load-once/reuse marked complete after CI verification.
+- [x] CBMS is documented as outside the real-time token path.
+- [x] PR #23 prepared for merge into `integration/full-organism-v2`.
 
 ## Design decision
 
-A separate `ResidentWorkspace` is intentionally **not** being introduced in this phase. The current implementation already provides resident session state, mmap-backed load-once weights, and reusable KV/mmap storage. Allocation reuse inside individual forward-token scratch vectors is a separate performance investigation and should be driven by profiling after Phase 1, not assumed to be a blocker without measurements.
+A separate `ResidentWorkspace` is intentionally **not** introduced in this phase. The current implementation already provides resident session state, mmap-backed load-once weights, and reusable KV/mmap storage. Allocation reuse inside individual forward-token scratch vectors remains a profiling-driven performance investigation for a later phase.
