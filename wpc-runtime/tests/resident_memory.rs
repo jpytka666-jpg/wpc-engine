@@ -14,7 +14,8 @@ fn mmap_buffer_reuses_capacity_without_reallocation_until_needed() {
     }
     buf.mark_used(8).expect("mark used");
 
-    buf.ensure_capacity(8).expect("existing capacity must be reused");
+    buf.ensure_capacity(8)
+        .expect("existing capacity must be reused");
     assert_eq!(buf.capacity(), initial_capacity);
     assert_eq!(buf.as_slice()[7], 7.0);
 }
