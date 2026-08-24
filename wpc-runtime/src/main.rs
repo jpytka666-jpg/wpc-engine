@@ -271,20 +271,26 @@ fn run_qwen3_moe(
 
 /// Same loop as [`generate`], against the MoE model and its own cache type.
 fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> anyhow::Result<()> {
-    let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
     let mut next_logits: Vec<f32> = Vec::new();
 
-    let t1 = Instant::now();
-    for &tok in &prompt_ids {
-        next_logits = model.forward_token(tok, &mut cache);
+    if let Ok(snapshot_path) = std::env::var("AIONS_KV_RESTORE") {
+        let logits_path = std::env::var("AIONS_KV_RESTORE_LOGITS").unwrap_or_else(|_| format!("{snapshot_path}.logits.f32"));
+        next_logits = cache.restore_from_files(&snapshot_path, &logits_path)?;
+        eprintln!("restored KV prefix: {} positions from {}", cache.len, snapshot_path);
+    } else {
+        let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
+        let t1 = Instant::now();
+        for &tok in &prompt_ids {
+            next_logits = model.forward_token(tok, &mut cache);
+        }
+        eprintln!(
+            "prefill ({} tokens) in {:?}",
+            prompt_ids.len(),
+            t1.elapsed()
+        );
     }
-    eprintln!(
-        "prefill ({} tokens) in {:?}",
-        prompt_ids.len(),
-        t1.elapsed()
-    );
 
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
