@@ -70,6 +70,7 @@ pub struct MoeKvCache {
     /// Number of positions appended so far.
     pub len: usize,
     probe: Option<KvProbeHandle>,
+    expected_vocab_size: usize,
 }
 
 impl MoeKvCache {
@@ -84,6 +85,7 @@ impl MoeKvCache {
             head_dim,
             len: 0,
             probe: None,
+            expected_vocab_size: 0,
         }
     }
 
@@ -149,7 +151,6 @@ impl MoeKvCache {
         Ok(logits)
     }
 
-    fn expected_vocab_size(&self) -> usize { self.config.vocab_size }
 }
 
 // -----------------------------------------------------------------------------
@@ -437,6 +438,7 @@ impl Qwen3MoeModel {
             self.config.num_key_value_heads,
             self.config.head_dim(),
         );
+        cache.expected_vocab_size = self.config.vocab_size;
         if matches!(
             std::env::var("AIONS_KV_PROBE").as_deref(),
             Ok("1") | Ok("sample")
