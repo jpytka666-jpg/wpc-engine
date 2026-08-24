@@ -153,7 +153,7 @@ pub struct StatsKvProbe {
     stride: usize,
     stats: Mutex<SampleStats>,
     capture: Mutex<Option<CaptureState>>,
-    final_logits: Mutex<Option<Vec<f32>>,
+    final_logits: Mutex<Option<Vec<f32>>>,
 
 }
 
@@ -289,6 +289,7 @@ impl Drop for StatsKvProbe {
                             "kv-memory: canonical envelope not written: {err}"
                         ),
                     }
+                }
                 }
             }
         }
