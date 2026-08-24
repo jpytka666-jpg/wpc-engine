@@ -26,6 +26,7 @@ const DEFAULT_CAPTURE_MAX_POSITIONS: usize = 128;
 /// vectors, but they must not mutate them.
 pub trait KvProbe: Send + Sync {
     fn observe(&self, layer: usize, position: usize, kv_head: usize, key: &[f32], value: &[f32]);
+    fn record_logits(&self, _logits: &[f32]) {}
 }
 
 pub type KvProbeHandle = Arc<dyn KvProbe>;
@@ -152,6 +153,8 @@ pub struct StatsKvProbe {
     stride: usize,
     stats: Mutex<SampleStats>,
     capture: Mutex<Option<CaptureState>>,
+    final_logits: Mutex<Option<Vec<f32>>,
+
 }
 
 #[derive(Default)]
@@ -182,6 +185,7 @@ impl StatsKvProbe {
                 ..Default::default()
             }),
             capture: Mutex::new(CaptureState::from_env()),
+            final_logits: Mutex::new(None),
         })
     }
 
@@ -199,6 +203,10 @@ impl StatsKvProbe {
 }
 
 impl KvProbe for StatsKvProbe {
+    fn record_logits(&self, logits: &[f32]) {
+        *self.final_logits.lock().expect("KV logits mutex poisoned") = Some(logits.to_vec());
+    }
+
     fn observe(
         &self,
         layer: usize,
@@ -251,7 +259,17 @@ impl Drop for StatsKvProbe {
 
                 if capture.truncated {
                     eprintln!("kv-memory: envelope suppressed because capture is truncated");
-                } else if let Some(first) = capture.records.first() {
+                } else {
+                    let logits = self.final_logits.get_mut().expect("KV logits mutex poisoned").take();
+                    if let Some(logits) = logits {
+                        let mut lp = capture.path.clone(); lp.set_extension("logits.f32");
+                        let mut bytes = Vec::with_capacity(logits.len()*4);
+                        for v in logits { bytes.extend_from_slice(&v.to_le_bytes()); }
+                        if let Err(err) = std::fs::write(&lp, bytes) { eprintln!("kv-capture: failed to write {}: {err}", lp.display()); } else { eprintln!("kv-capture: wrote final logits to {}", lp.display()); }
+                    }
+                }
+                if !capture.truncated {
+                    if let Some(first) = capture.records.first() {
                     let sequence_length = capture
                         .records
                         .iter()
