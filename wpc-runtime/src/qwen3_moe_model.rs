@@ -1,6 +1,6 @@
 //! Qwen3-MoE (`model_type: "qwen3_moe"`), e.g. Qwen3-Coder-30B-A3B-Instruct.
 //!
-//! 2026-08-24 — maintained by ChatGPT in this session.
+//! 2026-08-24 â€” maintained by ChatGPT in this session.
 //! Reason: activate the existing read-only KV probe at the resident-cache
 //! boundary for real Qwen statistics. No model-file write path is introduced.
 //!
@@ -8,7 +8,7 @@
 //! the same way `gemma4_model` is: nothing here can change the behaviour of the
 //! dense Qwen2/Qwen3 path, which is already working and compressed-model-tested.
 //!
-//! Attention is *identical* to dense Qwen3 — explicit `head_dim`, per-head
+//! Attention is *identical* to dense Qwen3 â€” explicit `head_dim`, per-head
 //! `q_norm`/`k_norm` before RoPE, no q/k/v biases, GQA, full RoPE. Only two
 //! things differ, and both are in this file:
 //!
@@ -18,7 +18,7 @@
 //!    (`mlp.experts.{e}.{gate,up,down}_proj.weight`, each `[moe_intermediate, hidden]`).
 //!    Per token the router scores all experts, the top `num_experts_per_tok`
 //!    run, and their outputs are summed weighted by the routing probabilities.
-//!    On Qwen3-Coder-30B-A3B that is 8 of 128 — which is why a 30B model moves
+//!    On Qwen3-Coder-30B-A3B that is 8 of 128 â€” which is why a 30B model moves
 //!    roughly a 3B model's worth of weights per token.
 //!
 //! 2. **`lm_head` is its own tensor.** `tie_word_embeddings` is false here, so
@@ -34,7 +34,7 @@
 //! a value, where quantization error averages out across thousands of terms.
 //! `mlp.gate.weight` instead makes a *discrete choice*: when two experts score
 //! within quantization noise of each other, a 6-bit rounding decides which of
-//! them runs, and the token takes a different computation path — an error no
+//! them runs, and the token takes a different computation path â€” an error no
 //! downstream arithmetic can dilute. All 48 routers together are 12.6M
 //! parameters, 0.04% of the model, so keeping them exact costs about 50 MB
 //! against a ~24 GB compressed model. This is the same lesson as Gemma4's tied
@@ -147,7 +147,7 @@ impl MoeKvCache {
         let bytes = std::fs::read(logits_path)?;
         anyhow::ensure!(bytes.len() % 4 == 0, "logits sidecar length is not f32-aligned");
         let logits: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-        anyhow::ensure!(logits.len() == self.expected_vocab_size(), "logits sidecar vocabulary size mismatch");
+        anyhow::ensure!(logits.len() == self.expected_vocab_size, "logits sidecar vocabulary size mismatch");
         Ok(logits)
     }
 
@@ -255,7 +255,7 @@ where
             k_proj: make_linear(&format!("{p}.self_attn.k_proj.weight"), kv_dim, h),
             v_proj: make_linear(&format!("{p}.self_attn.v_proj.weight"), kv_dim, h),
             o_proj: make_linear(&format!("{p}.self_attn.o_proj.weight"), h, q_dim),
-            // The router is read DENSE and never compressed — see the note at
+            // The router is read DENSE and never compressed â€” see the note at
             // the top of this file. `wpc-full-compiler` skips `mlp.gate.weight`
             // for the same reason, so it is simply not present in the .wpc.
             router: Box::new(DenseLinear::new(
