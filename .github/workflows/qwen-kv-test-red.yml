@@ -1,53 +1,15 @@
-name: Qwen KV Probe RED Gate
+# Retired 2026-08-24 by ChatGPT.
+# Reason: this workflow attempted blind source rewriting and caused false RED
+# failures when the Qwen cache constructor evolved. The KV probe is now wired
+# directly in Rust and verified by the normal CI gate. Kept as documentation;
+# it must never modify repository files automatically.
+name: Qwen KV Probe Patcher (retired)
 
 on:
-  push:
-    branches: [feature/memory-kv-real-model-bridge]
-
-permissions:
-  contents: write
+  workflow_dispatch:
 
 jobs:
-  apply-qwen-kv-probe:
-    if: "!contains(github.event.head_commit.message, '[qwen-kv-impl]')"
+  retired:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Wire Qwen resident KV probe
-        shell: python
-        run: |
-          from pathlib import Path
-          p = Path('wpc-runtime/src/qwen3_moe_model.rs')
-          s = p.read_text()
-
-          imp = 'use crate::kv_probe::KvProbeHandle;\n'
-          anchor = 'use crate::config::Config;\n'
-          if imp not in s:
-              s = s.replace(anchor, anchor + imp, 1)
-
-          old = '''pub struct MoeKvCache {\n    layers: Vec<LayerCache>,\n    head_dim: usize,\n    /// Number of positions appended so far.\n    pub len: usize,\n}\n'''
-          new = '''pub struct MoeKvCache {\n    layers: Vec<LayerCache>,\n    head_dim: usize,\n    /// Number of positions appended so far.\n    pub len: usize,\n    probe: Option<KvProbeHandle>,\n}\n'''
-          if old in s:
-              s = s.replace(old, new, 1)
-
-          old = '''            .collect(),\n            head_dim,\n            len: 0,\n        }\n    }\n\n    pub fn truncate'''
-          new = '''            .collect(),\n            head_dim,\n            len: 0,\n            probe: None,\n        }\n    }\n\n    /// Install or remove the optional read-only K/V observation hook.\n    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {\n        self.probe = probe;\n    }\n\n    pub fn truncate'''
-          if old not in s:
-              raise SystemExit('cache constructor anchor not found')
-          s = s.replace(old, new, 1)
-
-          old = '''            let lc = &mut cache.layers[li];\n            for hd in 0..num_kv_heads {\n                lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);\n                lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);\n            }\n            let seq_len = pos + 1;\n'''
-          new = '''            let probe = cache.probe.as_ref().cloned();\n            let lc = &mut cache.layers[li];\n            for hd in 0..num_kv_heads {\n                lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);\n                lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);\n            }\n            if let Some(probe) = probe.as_ref() {\n                for hd in 0..num_kv_heads {\n                    probe.observe(\n                        li,\n                        pos,\n                        hd,\n                        &k[hd * head_dim..(hd + 1) * head_dim],\n                        &v[hd * head_dim..(hd + 1) * head_dim],\n                    );\n                }\n            }\n            let seq_len = pos + 1;\n'''
-          if old not in s:
-              raise SystemExit('KV append anchor not found')
-          s = s.replace(old, new, 1)
-
-          p.write_text(s)
-      - name: Commit implementation
-        shell: bash
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add wpc-runtime/src/qwen3_moe_model.rs
-          git commit -m 'feat(qwen): wire resident KV probe [qwen-kv-impl]'
-          git push
+      - run: echo "Retired on 2026-08-24 — Rust KV probe is now source-controlled; no automatic patching is permitted."
