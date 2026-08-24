@@ -17,6 +17,7 @@ anyhow = "1.0"
 wpc-format = { path = "../wpc-format" }
 wpc-core = { path = "../wpc-core" }
 wpc-eval = { path = "../wpc-eval" }
+aions-memory-kv = { path = "../modules/memory-kv" }
 matrixmultiply = "0.3"
 libc = "0.2"
 
