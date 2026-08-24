@@ -91,19 +91,26 @@ Every phase must leave the previous phase usable and testable.
 
 ### Phase 3 — Memory / KV
 
-**Status: existing crates and tests; next major architectural milestone.**
+**Status: active — contracts and WPC-KV compression gate are implemented; persistence/integration work is next.**
 
 - [x] Memory/KV crates and contract tests.
 - [x] KV persistence and lifecycle contracts.
 - [x] mmap-backed / structured memory work where already implemented.
-- [ ] Resident KV cache across model turns.
+- [x] WPC vector-KV compression gate using the existing WPC PatternDict + ResidualDict engine.
+- [x] WPC-KV reconstruction/attention correctness gate on deterministic synthetic tensors.
+- [x] WPC-KV compression gate CI is independently runnable on the feature branch.
+- [ ] Promote auditable WPC-KV metrics to the canonical CI evidence record.
+- [ ] Validate WPC-KV against production attention tensors and real model distributions.
+- [ ] Resident KV cache across the broader Memory/KV subsystem.
 - [ ] Reusable model state across MCP tool calls.
 - [ ] Explicit hot-path versus CBMS persistence boundary.
 - [ ] Measure memory growth, reuse, eviction, and cache locality.
 
+**WPC-KV checkpoint:** PR #21 remains open/Draft intentionally. It proves the WPC-derived vector-KV path and its correctness/compression gate, but it is **not generation-critical** and is not yet promoted into the resident hot KV path. The next Phase 3 work must build persistence/integration around the verified reference path rather than silently replacing it.
+
 ### Phase 4 — Batched execution
 
-**Status: next performance-critical implementation step.**
+**Status: next performance-critical implementation step after the remaining Phase 3 gates.**
 
 - [ ] BatchEngine as the primary prefill/forward path.
 - [ ] Batched prompt prefill.
@@ -217,6 +224,6 @@ Public source is assumed observable. Secrets must never be committed. Credential
 
 ## 8. Immediate priority after Phase 1
 
-**1. Persistent KV across the broader Memory/KV subsystem → 2. Batched prefill/forward → 3. Benchmark reference vs batch → 4. Mojo/CUDA/CPU acceleration → 5. Studio → 6. Graph → 7. Kernel → 8. Ghost Gate → 9. OS integration.**
+**1. Memory/KV contract and persistence integration → 2. WPC-KV validation on real model-derived tensors → 3. Resident/persistent KV boundary and reuse/eviction metrics → 4. Batched prefill/forward → 5. Compute acceleration → 6. Studio → 7. Graph → 8. Kernel → 9. Ghost Gate → 10. OS integration.**
 
 The goal is one coherent AIONS system with a stable Rust core and specialised acceleration and interface layers, not one language forced onto every subsystem.
