@@ -25,6 +25,7 @@
 //! module docs for exactly what was fetched).
 
 use crate::gemma4_config::{Gemma4Config, LayerSpec};
+use crate::kv_probe::KvProbeHandle;
 use crate::norm::{rms_norm, rms_norm_no_weight, softmax_inplace};
 use crate::rope::apply_rope_partial;
 use crate::weights::{EmbeddingTable, Linear, SafetensorsFile};
@@ -77,6 +78,7 @@ struct LayerCache {
 pub struct Gemma4KvCache {
     layers: Vec<LayerCache>,
     pub len: usize,
+    probe: Option<KvProbeHandle>,
 }
 
 impl Gemma4KvCache {
@@ -90,7 +92,13 @@ impl Gemma4KvCache {
                 })
                 .collect(),
             len: 0,
+            probe: None,
         }
+    }
+
+    /// Install or remove an opt-in K/V observation hook.
+    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {
+        self.probe = probe;
     }
 }
 
@@ -581,10 +589,22 @@ impl Gemma4Model {
                 apply_rope_partial(slice, pos, spec.rope_theta, spec.rotary_pairs);
             }
 
+            let probe = cache.probe.as_ref().cloned();
             let lc = &mut cache.layers[li];
             for hd in 0..spec.num_kv_heads {
                 lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);
                 lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);
+            }
+            if let Some(probe) = probe.as_ref() {
+                for hd in 0..spec.num_kv_heads {
+                    probe.observe(
+                        li,
+                        pos,
+                        hd,
+                        &k[hd * head_dim..(hd + 1) * head_dim],
+                        &v[hd * head_dim..(hd + 1) * head_dim],
+                    );
+                }
             }
             let seq_len = pos + 1;
             // Gemma4TextAttention.scaling = 1.0 explicitly (NOT 1/sqrt(head_dim));
