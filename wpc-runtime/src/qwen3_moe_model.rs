@@ -39,6 +39,7 @@
 //! checkpoint in `--model`, alongside the 1D norms.
 
 use crate::config::Config;
+use crate::kv_probe::KvProbeHandle;
 use crate::norm::{rms_norm, softmax_inplace};
 use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, ShardedSafetensors};
@@ -64,6 +65,7 @@ pub struct MoeKvCache {
     head_dim: usize,
     /// Number of positions appended so far.
     pub len: usize,
+    probe: Option<KvProbeHandle>,
 }
 
 impl MoeKvCache {
@@ -77,7 +79,13 @@ impl MoeKvCache {
                 .collect(),
             head_dim,
             len: 0,
+            probe: None,
         }
+    }
+
+    /// Install or remove the optional read-only K/V observation hook.
+    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {
+        self.probe = probe;
     }
 
     pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
@@ -587,6 +595,11 @@ impl Qwen3MoeModel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn kv_probe_can_be_installed_on_qwen_cache() {
+        let mut cache = MoeKvCache::new(1, 1, 2);
+        cache.set_kv_probe(None);
+    }
     use super::*;
 
     fn cfg_with(n_exp: usize, top_k: usize, norm: bool) -> Config {
