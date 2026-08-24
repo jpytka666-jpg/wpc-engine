@@ -110,6 +110,46 @@ impl MoeKvCache {
         self.len = len;
         Ok(())
     }
+
+    /// Restore a complete resident-KV snapshot plus the final logits for that prefix.
+    /// KV alone cannot reconstruct the final residual state after a process restart,
+    /// so the matching logits sidecar is required for exact continuation.
+    pub fn restore_from_files(&mut self, snapshot_path: impl AsRef<Path>, logits_path: impl AsRef<Path>) -> anyhow::Result<Vec<f32>> {
+        let snapshot = crate::kv_probe::KvSnapshot::read_from_path(snapshot_path)?;
+        anyhow::ensure!(!snapshot.truncated, "KV snapshot is truncated and cannot be restored");
+        anyhow::ensure!(!snapshot.records.is_empty(), "KV snapshot contains no records");
+        let num_layers = self.layers.len();
+        let num_kv_heads = self.layers.first().map(|l| l.k.len()).unwrap_or(0);
+        let per_position = num_layers.checked_mul(num_kv_heads).ok_or_else(|| anyhow::anyhow!("KV restore count overflow"))?;
+        let sequence_length = snapshot.records.iter().map(|r| r.position as usize + 1).max().unwrap_or(0);
+        anyhow::ensure!(sequence_length > 0, "KV snapshot has zero sequence length");
+        anyhow::ensure!(snapshot.records.len() == per_position * sequence_length, "KV snapshot record count does not match runtime geometry");
+        for layer in &mut self.layers {
+            for head in &mut layer.k { head.clear(); head.resize(sequence_length * self.head_dim, 0.0); }
+            for head in &mut layer.v { head.clear(); head.resize(sequence_length * self.head_dim, 0.0); }
+        }
+        let mut seen = std::collections::HashSet::with_capacity(snapshot.records.len());
+        for record in snapshot.records {
+            let layer = record.layer as usize; let head = record.kv_head as usize; let position = record.position as usize;
+            anyhow::ensure!(layer < num_layers, "KV snapshot layer out of range");
+            anyhow::ensure!(head < num_kv_heads, "KV snapshot head out of range");
+            anyhow::ensure!(position < sequence_length, "KV snapshot position out of range");
+            anyhow::ensure!(record.key.len() == self.head_dim && record.value.len() == self.head_dim, "KV snapshot dimension mismatch");
+            anyhow::ensure!(seen.insert((layer, head, position)), "duplicate KV snapshot record");
+            let start = position * self.head_dim;
+            self.layers[layer].k[head][start..start+self.head_dim].copy_from_slice(&record.key);
+            self.layers[layer].v[head][start..start+self.head_dim].copy_from_slice(&record.value);
+        }
+        anyhow::ensure!(seen.len() == per_position * sequence_length, "KV snapshot has missing records");
+        self.len = sequence_length;
+        let bytes = std::fs::read(logits_path)?;
+        anyhow::ensure!(bytes.len() % 4 == 0, "logits sidecar length is not f32-aligned");
+        let logits: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        anyhow::ensure!(logits.len() == self.expected_vocab_size(), "logits sidecar vocabulary size mismatch");
+        Ok(logits)
+    }
+
+    fn expected_vocab_size(&self) -> usize { self.config.vocab_size }
 }
 
 // -----------------------------------------------------------------------------
@@ -590,6 +630,9 @@ impl Qwen3MoeModel {
 
         let mut logits = vec![0.0f32; cfg.vocab_size];
         self.lm_head.matvec(&final_normed, &mut logits);
+        if let Some(probe) = cache.probe.as_ref() {
+            probe.record_logits(&logits);
+        }
         logits
     }
 }
