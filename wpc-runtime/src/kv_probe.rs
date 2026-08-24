@@ -6,7 +6,14 @@ use std::sync::Arc;
 /// normal generation path. Implementations may copy or compress the borrowed
 /// vectors, but they must not mutate them.
 pub trait KvProbe: Send + Sync {
-    fn observe(&self, layer: usize, position: usize, kv_head: usize, key: &[f32], value: &[f32]);
+    fn observe(
+        &self,
+        layer: usize,
+        position: usize,
+        kv_head: usize,
+        key: &[f32],
+        value: &[f32],
+    );
 }
 
 pub type KvProbeHandle = Arc<dyn KvProbe>;
