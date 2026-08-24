@@ -1,0 +1,170 @@
+name: Manual Qwen KV Stats Wiring
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/memory-kv-real-model-bridge
+
+      - name: Wire bounded opt-in KV statistics probe
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          kv = Path('wpc-runtime/src/kv_probe.rs')
+          s = kv.read_text()
+          if 'pub struct StatsKvProbe' not in s:
+              s = s.replace(
+                  'use std::sync::Arc;\n',
+                  'use std::sync::{Arc, Mutex};\nuse std::sync::atomic::{AtomicU64, Ordering};\nuse std::env;\n',
+                  1,
+              )
+              s += r'''
+
+/// Bounded read-only KV statistics collector.
+///
+/// It counts every observed K/V vector and estimates the raw resident KV byte
+/// volume exactly, while only scanning sampled positions for value statistics.
+/// Enable with `AIONS_KV_PROBE=1`; sampling stride defaults to 64 and can be
+/// overridden by `AIONS_KV_PROBE_STRIDE`.
+pub struct StatsKvProbe {
+    calls: AtomicU64,
+    raw_bytes: AtomicU64,
+    max_position: AtomicU64,
+    sampled_values: AtomicU64,
+    stride: usize,
+    stats: Mutex<SampleStats>,
+}
+
+#[derive(Default)]
+struct SampleStats {
+    sum: f64,
+    sumsq: f64,
+    min: f32,
+    max: f32,
+}
+
+impl StatsKvProbe {
+    pub fn from_env() -> Self {
+        let stride = env::var("AIONS_KV_PROBE_STRIDE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(64);
+        Self {
+            calls: AtomicU64::new(0),
+            raw_bytes: AtomicU64::new(0),
+            max_position: AtomicU64::new(0),
+            sampled_values: AtomicU64::new(0),
+            stride,
+            stats: Mutex::new(SampleStats {
+                min: f32::INFINITY,
+                max: f32::NEG_INFINITY,
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn observe_values(&self, values: &[f32]) {
+        let mut stats = self.stats.lock().expect("KV probe stats mutex poisoned");
+        for &v in values {
+            stats.sum += v as f64;
+            stats.sumsq += (v as f64) * (v as f64);
+            stats.min = stats.min.min(v);
+            stats.max = stats.max.max(v);
+        }
+        self.sampled_values.fetch_add(values.len() as u64, Ordering::Relaxed);
+    }
+}
+
+impl KvProbe for StatsKvProbe {
+    fn observe(&self, _layer: usize, position: usize, _kv_head: usize, key: &[f32], value: &[f32]) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.raw_bytes.fetch_add(((key.len() + value.len()) * 4) as u64, Ordering::Relaxed);
+        let mut current = self.max_position.load(Ordering::Relaxed);
+        let p = position as u64;
+        while p + 1 > current {
+            match self.max_position.compare_exchange_weak(
+                current,
+                p + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+        if position % self.stride == 0 {
+            self.observe_values(key);
+            self.observe_values(value);
+        }
+    }
+}
+
+impl Drop for StatsKvProbe {
+    fn drop(&mut self) {
+        let calls = self.calls.load(Ordering::Relaxed);
+        let raw_bytes = self.raw_bytes.load(Ordering::Relaxed);
+        let sampled = self.sampled_values.load(Ordering::Relaxed);
+        let positions = self.max_position.load(Ordering::Relaxed);
+        let stats = self.stats.lock().expect("KV probe stats mutex poisoned");
+        let mean = if sampled == 0 { 0.0 } else { stats.sum / sampled as f64 };
+        let variance = if sampled == 0 {
+            0.0
+        } else {
+            (stats.sumsq / sampled as f64) - (mean * mean)
+        };
+        let rms = (variance.max(0.0) + mean * mean).sqrt();
+        eprintln!(
+            "kv-probe: calls={} positions={} raw_kv_bytes={} sampled_values={} sample_min={:.6} sample_max={:.6} sample_mean={:.6} sample_rms={:.6}",
+            calls, positions, raw_bytes, sampled, stats.min, stats.max, mean, rms
+        );
+    }
+}
+'''
+              kv.write_text(s)
+
+          qwen = Path('wpc-runtime/src/qwen3_moe_model.rs')
+          s = qwen.read_text()
+          if 'StatsKvProbe' not in s:
+              s = s.replace(
+                  'use crate::kv_probe::KvProbeHandle;\n',
+                  'use crate::kv_probe::{KvProbeHandle, StatsKvProbe};\n',
+                  1,
+              )
+          old = '''    pub fn new_cache(&self) -> MoeKvCache {\n        MoeKvCache::new(\n            self.config.num_hidden_layers,\n            self.config.num_key_value_heads,\n            self.config.head_dim(),\n        )\n    }'''
+          if old not in s:
+              old = '''    pub fn new_cache(&self) -> MoeKvCache {\n        MoeKvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)\n    }'''
+          if old not in s:
+              raise SystemExit('new_cache anchor not found')
+          new = old.replace(
+              '        MoeKvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)\n',
+              '        let mut cache = MoeKvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads);\n        if matches!(std::env::var("AIONS_KV_PROBE").as_deref(), Ok("1") | Ok("sample")) {\n            cache.set_kv_probe(Some(std::sync::Arc::new(StatsKvProbe::from_env())));\n        }\n        cache\n',
+          ).replace(
+              '''        MoeKvCache::new(\n            self.config.num_hidden_layers,\n            self.config.num_key_value_heads,\n            self.config.head_dim(),\n        )\n''',
+              '''        let mut cache = MoeKvCache::new(\n            self.config.num_hidden_layers,\n            self.config.num_key_value_heads,\n            self.config.head_dim(),\n        );\n        if matches!(std::env::var("AIONS_KV_PROBE").as_deref(), Ok("1") | Ok("sample")) {\n            cache.set_kv_probe(Some(std::sync::Arc::new(StatsKvProbe::from_env())));\n        }\n        cache\n''',
+          )
+          s = s.replace(old, new, 1)
+          qwen.write_text(s)
+
+          wf = Path('.github/workflows/manual-enable-qwen-kv-stats.yml')
+          wf.unlink()
+          print('wired stats probe and removed temporary workflow')
+          PY
+
+      - name: Format and commit
+        run: |
+          cargo fmt --all
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wpc-runtime/src/kv_probe.rs wpc-runtime/src/qwen3_moe_model.rs .github/workflows/manual-enable-qwen-kv-stats.yml
+          git commit -m "feat(memory-kv): add bounded Qwen KV statistics probe"
+          git push origin HEAD:feature/memory-kv-real-model-bridge
