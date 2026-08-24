@@ -9,7 +9,7 @@ use anyhow::{bail, ensure, Context, Result};
 use memmap2::{Mmap, MmapOptions};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,7 +167,7 @@ mod tests {
             }"#,
         )
         .expect("meta");
-        let payload: Vec<u8> = (0..8).collect();
+        let payload: Vec<u8> = (0..8u8).collect();
         fs::write(dir.path().join("model_v3.wpc"), &payload).expect("payload");
 
         let artifact = ReadonlyWpcArtifact::open(dir.path(), "model_v3").expect("open");
@@ -187,7 +187,11 @@ mod tests {
         .expect("meta");
         fs::write(dir.path().join("model_v3.wpc"), [0u8; 8]).expect("payload");
 
-        let error = ReadonlyWpcArtifact::open(dir.path(), "model_v3").expect_err("must reject");
+        let result = ReadonlyWpcArtifact::open(dir.path(), "model_v3");
+        let error = match result {
+            Ok(_) => panic!("must reject"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("exceeds WPC payload"));
     }
 }
