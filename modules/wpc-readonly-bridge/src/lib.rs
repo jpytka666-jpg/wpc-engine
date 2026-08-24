@@ -84,7 +84,9 @@ impl ReadonlyWpcArtifact {
                 mmap.len()
             );
             ensure!(
-                tensors.insert(tensor.name.clone(), tensor.clone()).is_none(),
+                tensors
+                    .insert(tensor.name.clone(), tensor.clone())
+                    .is_none(),
                 "duplicate tensor metadata: {}",
                 tensor.name
             );
@@ -173,7 +175,10 @@ mod tests {
         let artifact = ReadonlyWpcArtifact::open(dir.path(), "model_v3").expect("open");
         assert_eq!(artifact.block_size(), 128);
         assert_eq!(artifact.payload_len(), 8);
-        assert_eq!(artifact.tensor_bytes("k").expect("tensor"), payload.as_slice());
+        assert_eq!(
+            artifact.tensor_bytes("k").expect("tensor"),
+            payload.as_slice()
+        );
         assert!(artifact.tensor_bytes("missing").is_err());
     }
 
