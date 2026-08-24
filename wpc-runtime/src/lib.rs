@@ -1,6 +1,7 @@
 pub mod config;
 pub mod gemma4_config;
 pub mod gemma4_model;
+pub mod kv_memory_bridge;
 pub mod kv_probe;
 pub mod model;
 pub mod norm;
