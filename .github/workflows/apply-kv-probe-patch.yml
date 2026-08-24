@@ -1,0 +1,62 @@
+name: Apply Gemma KV Probe Patch
+
+on:
+  push:
+    branches: [feature/memory-kv-real-model-bridge]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "!contains(github.event.head_commit.message, '[kv-probe-applied]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply narrow source patch
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('wpc-runtime/src/gemma4_model.rs')
+          s = p.read_text()
+
+          old = 'use crate::gemma4_config::{Gemma4Config, LayerSpec};\n'
+          new = old + 'use crate::kv_probe::KvProbeHandle;\n'
+          if old not in s or 'use crate::kv_probe::KvProbeHandle;' in s:
+              raise SystemExit('unexpected import state')
+          s = s.replace(old, new, 1)
+
+          old = '''pub struct Gemma4KvCache {\n    layers: Vec<LayerCache>,\n    pub len: usize,\n}\n'''
+          new = '''pub struct Gemma4KvCache {\n    layers: Vec<LayerCache>,\n    pub len: usize,\n    probe: Option<KvProbeHandle>,\n}\n'''
+          if old not in s:
+              raise SystemExit('cache struct anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''                })\n                .collect(),\n            len: 0,\n        }\n    }\n}\n'''
+          new = '''                })\n                .collect(),\n            len: 0,\n            probe: None,\n        }\n    }\n\n    /// Install or remove an opt-in K/V observation hook.\n    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {\n        self.probe = probe;\n    }\n}\n'''
+          if old not in s:
+              raise SystemExit('cache constructor anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            let lc = &mut cache.layers[li];\n            for hd in 0..spec.num_kv_heads {\n                lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);\n                lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);\n            }\n'''
+          new = '''            let probe = cache.probe.as_ref().cloned();\n            let lc = &mut cache.layers[li];\n            for hd in 0..spec.num_kv_heads {\n                lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);\n                lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);\n            }\n            if let Some(probe) = probe.as_ref() {\n                for hd in 0..spec.num_kv_heads {\n                    probe.observe(\n                        li,\n                        pos,\n                        hd,\n                        &k[hd * head_dim..(hd + 1) * head_dim],\n                        &v[hd * head_dim..(hd + 1) * head_dim],\n                    );\n                }\n            }\n'''
+          if old not in s:
+              raise SystemExit('KV cache write anchor not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+
+      - name: Verify patch
+        run: |
+          cargo fmt --all
+          cargo test -p wpc-runtime --release
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add wpc-runtime/src/gemma4_model.rs wpc-runtime/src/kv_probe.rs
+          git diff --cached --quiet && exit 0
+          git commit -m 'feat(runtime): wire opt-in Gemma KV probe [kv-probe-applied]'
+          git push

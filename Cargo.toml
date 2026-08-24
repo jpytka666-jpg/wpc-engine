@@ -12,6 +12,7 @@ members = [
     "modules/os-integration",
     "modules/organism-smoke",
     "modules/agents-ci",
+    "modules/wpc-readonly-bridge",
 ]
 exclude = [
     "wpc-engine",  # C++ lives here, not a Rust crate
