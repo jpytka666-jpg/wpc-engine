@@ -1,0 +1,112 @@
+name: One-shot Qwen KV wiring runner
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/memory-kv-real-model-bridge
+          fetch-depth: 1
+      - name: Patch Qwen KV probe
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          kv = Path('wpc-runtime/src/kv_probe.rs')
+          s = kv.read_text()
+          if 'pub struct StatsKvProbe' not in s:
+              s = s.replace('use std::sync::Arc;\n','use std::env;\nuse std::sync::{Arc, Mutex};\nuse std::sync::atomic::{AtomicU64, Ordering};\n',1)
+              s += r'''
+
+/// Bounded read-only resident-KV statistics collector.
+pub struct StatsKvProbe {
+    calls: AtomicU64,
+    raw_bytes: AtomicU64,
+    positions: AtomicU64,
+    sampled: AtomicU64,
+    stride: usize,
+    stats: Mutex<SampleStats>,
+}
+#[derive(Default)]
+struct SampleStats { sum: f64, sumsq: f64, min: f32, max: f32 }
+impl StatsKvProbe {
+    pub fn from_env() -> Self {
+        let stride = env::var("AIONS_KV_PROBE_STRIDE").ok().and_then(|v| v.parse().ok()).filter(|v: &usize| *v > 0).unwrap_or(64);
+        Self { calls: AtomicU64::new(0), raw_bytes: AtomicU64::new(0), positions: AtomicU64::new(0), sampled: AtomicU64::new(0), stride, stats: Mutex::new(SampleStats { min: f32::INFINITY, max: f32::NEG_INFINITY, ..Default::default() }) }
+    }
+}
+impl KvProbe for StatsKvProbe {
+    fn observe(&self, _layer: usize, position: usize, _kv_head: usize, key: &[f32], value: &[f32]) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.raw_bytes.fetch_add(((key.len() + value.len()) * 4) as u64, Ordering::Relaxed);
+        self.positions.fetch_max((position + 1) as u64, Ordering::Relaxed);
+        if position % self.stride == 0 {
+            let mut s = self.stats.lock().expect("KV probe mutex poisoned");
+            for &v in key.iter().chain(value.iter()) { s.sum += v as f64; s.sumsq += (v as f64) * (v as f64); s.min = s.min.min(v); s.max = s.max.max(v); }
+            self.sampled.fetch_add((key.len() + value.len()) as u64, Ordering::Relaxed);
+        }
+    }
+}
+impl Drop for StatsKvProbe {
+    fn drop(&mut self) {
+        let n = self.sampled.load(Ordering::Relaxed); let s = self.stats.lock().expect("KV probe mutex poisoned");
+        let mean = if n == 0 { 0.0 } else { s.sum / n as f64 };
+        let var = if n == 0 { 0.0 } else { (s.sumsq / n as f64) - mean * mean };
+        eprintln!("kv-probe: calls={} positions={} raw_kv_bytes={} sampled_values={} min={:.6} max={:.6} mean={:.6} rms={:.6}", self.calls.load(Ordering::Relaxed), self.positions.load(Ordering::Relaxed), self.raw_bytes.load(Ordering::Relaxed), n, s.min, s.max, mean, (var.max(0.0) + mean * mean).sqrt());
+    }
+}
+'''
+              kv.write_text(s)
+
+          p = Path('wpc-runtime/src/qwen3_moe_model.rs')
+          s = p.read_text()
+          if 'use crate::kv_probe::KvProbeHandle;' not in s:
+              s = s.replace('use crate::config::Config;\n','use crate::config::Config;\nuse crate::kv_probe::KvProbeHandle;\n',1)
+          if 'probe: Option<KvProbeHandle>' not in s:
+              s = s.replace('    pub len: usize,\n','    pub len: usize,\n    probe: Option<KvProbeHandle>,\n',1)
+          if 'probe: None,' not in s:
+              s = re.sub(r'(            len: 0,\n)(        }\n    }\n)', r'\1            probe: None,\n\2', s, count=1)
+          if 'pub fn set_kv_probe' not in s:
+              idx = s.find('    pub fn new_cache(&self)')
+              if idx < 0: raise SystemExit('new_cache missing')
+              ins = s.rfind('\n', 0, idx)
+              s = s[:ins] + '\n    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) { self.probe = probe; }\n' + s[ins:]
+          if 'probe.observe(' not in s:
+              pat = re.compile(r'(let lc = &mut cache\.layers\[li\];\n)(.*?)(let seq_len = pos \+ 1;)', re.S)
+              m = pat.search(s)
+              if not m: raise SystemExit('KV append block missing')
+              block = m.group(0)
+              block = block.replace(m.group(1),'let probe = cache.probe.as_ref().cloned();\n            '+m.group(1),1)
+              block = block.replace('            }\n            let seq_len = pos + 1;','            }\n            if let Some(probe) = probe.as_ref() {\n                for hd in 0..num_kv_heads {\n                    probe.observe(li, pos, hd, &k[hd * head_dim..(hd + 1) * head_dim], &v[hd * head_dim..(hd + 1) * head_dim]);\n                }\n            }\n            let seq_len = pos + 1;',1)
+              s = s[:m.start()] + block + s[m.end():]
+          old_new = re.compile(r'    pub fn new_cache\(&self\) -> MoeKvCache \{.*?\n    \}', re.S)
+          m = old_new.search(s)
+          if not m: raise SystemExit('new_cache function missing')
+          body = m.group(0)
+          if 'AIONS_KV_PROBE' not in body:
+              replacement = body[:-5] + '        let mut cache = MoeKvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads);\n        if std::env::var("AIONS_KV_PROBE").as_deref() == Ok("1") {\n            cache.set_kv_probe(Some(std::sync::Arc::new(crate::kv_probe::StatsKvProbe::from_env())));\n        }\n        cache\n    }'
+              s = s[:m.start()] + replacement + s[m.end():]
+          p.write_text(s)
+          PY
+      - name: Format and test
+        run: |
+          cargo fmt --all
+          cargo test --manifest-path wpc-runtime/Cargo.toml --lib
+      - name: Commit target branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add wpc-runtime/src/kv_probe.rs wpc-runtime/src/qwen3_moe_model.rs
+          git commit -m 'feat(memory-kv): add bounded Qwen KV statistics probe'
+          git push origin HEAD:feature/memory-kv-real-model-bridge
+      - name: Remove helper from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh api repos/jpytka666-jpg/wpc-engine/contents/.github/workflows/trigger-qwen-kv-wiring-once.yml?ref=main --jq .sha)
+          gh api --method DELETE repos/jpytka666-jpg/wpc-engine/contents/.github/workflows/trigger-qwen-kv-wiring-once.yml -f message='chore: remove one-shot Qwen KV wiring helper' -f sha=$sha -f branch=main
