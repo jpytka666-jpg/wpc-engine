@@ -1,7 +1,5 @@
 name: Memory KV Compression Experiment
 
-timeout-minutes: 20
-
 on:
   push:
     branches: ["feature/memory-kv-compression-experiment"]
@@ -15,6 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
