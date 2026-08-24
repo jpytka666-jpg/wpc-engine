@@ -1,5 +1,9 @@
 //! Qwen3-MoE (`model_type: "qwen3_moe"`), e.g. Qwen3-Coder-30B-A3B-Instruct.
 //!
+//! 2026-08-24 — maintained by ChatGPT in this session.
+//! Reason: activate the existing read-only KV probe at the resident-cache
+//! boundary for real Qwen statistics. No model-file write path is introduced.
+//!
 //! Deliberately a separate model type rather than a variant of [`crate::model::Model`],
 //! the same way `gemma4_model` is: nothing here can change the behaviour of the
 //! dense Qwen2/Qwen3 path, which is already working and compressed-model-tested.
@@ -39,7 +43,7 @@
 //! checkpoint in `--model`, alongside the 1D norms.
 
 use crate::config::Config;
-use crate::kv_probe::KvProbeHandle;
+use crate::kv_probe::{KvProbeHandle, StatsKvProbe};
 use crate::norm::{rms_norm, softmax_inplace};
 use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, ShardedSafetensors};
@@ -230,10 +234,6 @@ where
 }
 
 impl Qwen3MoeModel {
-    /// Dense load straight from the checkpoint. Costs roughly `4 *
-    /// parameter_count` bytes because bf16 is widened to f32 — about 122 GB for
-    /// a 30B model, so this exists for parity testing on small MoE checkpoints,
-    /// not for running Qwen3-Coder-30B.
     pub fn load(model_dir: &Path, config: Config) -> anyhow::Result<Self> {
         let (n_exp, top_k, moe_inter, norm_topk) = moe_dims(&config)?;
         let st = ShardedSafetensors::open(model_dir)?;
@@ -271,7 +271,6 @@ impl Qwen3MoeModel {
         })
     }
 
-    /// Load through the WPC v2 backend (affine 6-bit, one byte per code).
     pub fn load_wpc_v2(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Self> {
         let (n_exp, top_k, moe_inter, norm_topk) = moe_dims(&config)?;
         let st = ShardedSafetensors::open(model_dir)?;
@@ -312,7 +311,6 @@ impl Qwen3MoeModel {
         })
     }
 
-    /// Load through the WPC v3 backend (v2's quantization, codes bit-packed).
     pub fn load_wpc_v3(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Self> {
         let (n_exp, top_k, moe_inter, norm_topk) = moe_dims(&config)?;
         let st = ShardedSafetensors::open(model_dir)?;
@@ -353,11 +351,6 @@ impl Qwen3MoeModel {
         })
     }
 
-    /// Load through the WPC v4 backend (affine 4-bit, two codes per byte).
-    ///
-    /// The routers stay dense, as they do for every scheme: they make a
-    /// discrete choice between experts, and 4-bit noise there would change
-    /// which expert runs rather than merely perturb a value.
     pub fn load_wpc_v4(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Self> {
         let (n_exp, top_k, moe_inter, norm_topk) = moe_dims(&config)?;
         let st = ShardedSafetensors::open(model_dir)?;
@@ -399,18 +392,20 @@ impl Qwen3MoeModel {
     }
 
     pub fn new_cache(&self) -> MoeKvCache {
-        MoeKvCache::new(
+        let mut cache = MoeKvCache::new(
             self.config.num_hidden_layers,
             self.config.num_key_value_heads,
             self.config.head_dim(),
-        )
+        );
+        if matches!(
+            std::env::var("AIONS_KV_PROBE").as_deref(),
+            Ok("1") | Ok("sample")
+        ) {
+            cache.set_kv_probe(Some(StatsKvProbe::from_env()));
+        }
+        cache
     }
 
-    /// Pick the `top_k` highest-scoring experts and their routing weights.
-    ///
-    /// `scores` must already be a softmax over *all* experts. Selection is a
-    /// partial scan rather than a sort: k is 8 against 128 experts, done 48
-    /// times per token, so an O(n*k) scan beats an O(n log n) sort.
     fn route(&self, scores: &[f32], chosen: &mut Vec<(usize, f32)>) {
         chosen.clear();
         let mut taken = vec![false; scores.len()];
@@ -439,8 +434,6 @@ impl Qwen3MoeModel {
         }
     }
 
-    /// Run one token through the full stack, updating `cache` in place, and
-    /// return the logits over the vocabulary for the *next* token.
     pub fn forward_token(&self, token_id: u32, cache: &mut MoeKvCache) -> Vec<f32> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
@@ -453,12 +446,9 @@ impl Qwen3MoeModel {
 
         let mut residual = vec![0.0f32; h];
         self.embed.embed(token_id, &mut residual);
-
-        // Reused across layers so the per-token allocation count stays flat.
         let mut chosen: Vec<(usize, f32)> = Vec::with_capacity(self.top_k);
 
         for (li, layer) in self.layers.iter().enumerate() {
-            // --- attention block (identical to dense Qwen3) ---
             let mut normed = vec![0.0f32; h];
             rms_norm(&residual, &layer.input_layernorm, eps, &mut normed);
 
@@ -496,11 +486,24 @@ impl Qwen3MoeModel {
                 );
             }
 
+            let probe = cache.probe.as_ref().cloned();
             let lc = &mut cache.layers[li];
             for hd in 0..num_kv_heads {
                 lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);
                 lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);
             }
+            if let Some(probe) = probe.as_ref() {
+                for hd in 0..num_kv_heads {
+                    probe.observe(
+                        li,
+                        pos,
+                        hd,
+                        &k[hd * head_dim..(hd + 1) * head_dim],
+                        &v[hd * head_dim..(hd + 1) * head_dim],
+                    );
+                }
+            }
+
             let seq_len = pos + 1;
             let scale = 1.0f32 / (head_dim as f32).sqrt();
 
@@ -543,7 +546,6 @@ impl Qwen3MoeModel {
                 residual[i] += attn_proj[i];
             }
 
-            // --- sparse MLP block: route, then run only the chosen experts ---
             let mut normed2 = vec![0.0f32; h];
             rms_norm(
                 &residual,
@@ -586,7 +588,6 @@ impl Qwen3MoeModel {
         let mut final_normed = vec![0.0f32; h];
         rms_norm(&residual, &self.final_norm, eps, &mut final_normed);
 
-        // Untied head: a real matrix, not the embedding table reused.
         let mut logits = vec![0.0f32; cfg.vocab_size];
         self.lm_head.matvec(&final_normed, &mut logits);
         logits
@@ -595,12 +596,13 @@ impl Qwen3MoeModel {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn kv_probe_can_be_installed_on_qwen_cache() {
+    fn kv_probe_can_be_disabled() {
         let mut cache = MoeKvCache::new(1, 1, 2);
         cache.set_kv_probe(None);
     }
-    use super::*;
 
     fn cfg_with(n_exp: usize, top_k: usize, norm: bool) -> Config {
         let json = format!(
@@ -684,11 +686,7 @@ mod tests {
         let mut chosen = Vec::new();
         m.route(&[0.1, 0.5, 0.2, 0.9, 0.05], &mut chosen);
         let sum: f32 = chosen.iter().map(|&(_, w)| w).sum();
-        assert!(
-            (sum - 1.0).abs() < 1e-6,
-            "top-k weights sum to 1, got {sum}"
-        );
-        // 0.9 / (0.9 + 0.5) = 0.642857...
+        assert!((sum - 1.0).abs() < 1e-6, "top-k weights sum to 1, got {sum}");
         assert!((chosen[0].1 - 0.642_857).abs() < 1e-4);
     }
 
