@@ -1,13 +1,13 @@
-// AIONS KV probe
+// AIONS Qwen3-MoE KV probe
 // 2026-08-24 — maintained by ChatGPT in this session.
 // Reason: activate the already-defined read-only KV observation contract for
-// real-model Qwen statistics, without changing the normal generation path.
+// real-model Qwen3-Coder-30B-A3B statistics, without changing normal generation.
 
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Read-only observation hook for K/V states produced by the Gemma/Qwen runtime.
+/// Read-only observation hook for K/V states produced by the Qwen3-MoE runtime.
 ///
 /// The hook is disabled by default and therefore adds no callback work to the
 /// normal generation path. Implementations may copy or compress the borrowed
@@ -20,10 +20,10 @@ pub type KvProbeHandle = Arc<dyn KvProbe>;
 
 /// Bounded read-only resident-KV statistics collector.
 ///
-/// When `AIONS_KV_PROBE=1` is enabled by the runtime, every K/V vector is
+/// When `AIONS_KV_PROBE=1` is enabled by the Qwen runtime, every K/V vector is
 /// counted and its raw f32 byte volume is accumulated exactly. Value samples
 /// are scanned only at the configured stride (default 64), keeping the probe
-/// cheap enough to leave attached during a real generation run.
+/// cheap enough to leave attached during a real Qwen generation run.
 ///
 /// The probe writes no files and never mutates the resident cache. Final
 /// statistics are emitted to stderr when the probe is dropped.
