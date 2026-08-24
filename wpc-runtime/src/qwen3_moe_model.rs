@@ -587,6 +587,13 @@ impl Qwen3MoeModel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn kv_probe_can_be_installed_on_qwen_cache() {
+        let mut cache = MoeKvCache::new(1, 1, 2);
+        cache.set_kv_probe(None);
+    }
+
+
     use super::*;
 
     fn cfg_with(n_exp: usize, top_k: usize, norm: bool) -> Config {
