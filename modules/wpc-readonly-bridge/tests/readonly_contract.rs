@@ -9,7 +9,8 @@ fn tensor_views_are_bounded_and_metadata_is_preserved() {
         r#"{"layers":[{"name":"tensor.a","shape":[2,4],"offset_bytes":0,"size_bytes":8},{"name":"tensor.b","shape":[1,4],"offset_bytes":8,"size_bytes":4}],"block_size":128}"#,
     )
     .expect("meta");
-    fs::write(dir.path().join("model_v3.wpc"), 0u8..12u8).expect("payload");
+    let payload: Vec<u8> = (0..12u8).collect();
+    fs::write(dir.path().join("model_v3.wpc"), &payload).expect("payload");
 
     let artifact = ReadonlyWpcArtifact::open(dir.path(), "model_v3").expect("open");
     assert_eq!(artifact.tensor_info("tensor.a").unwrap().shape, vec![2, 4]);
@@ -27,6 +28,10 @@ fn overlapping_ranges_are_rejected_before_exposing_bytes() {
     .expect("meta");
     fs::write(dir.path().join("model_v3.wpc"), [0u8; 8]).expect("payload");
 
-    let error = ReadonlyWpcArtifact::open(dir.path(), "model_v3").expect_err("must reject overlap");
+    let result = ReadonlyWpcArtifact::open(dir.path(), "model_v3");
+    let error = match result {
+        Ok(_) => panic!("must reject overlap"),
+        Err(error) => error,
+    };
     assert!(error.to_string().contains("overlapping tensor ranges"));
 }
