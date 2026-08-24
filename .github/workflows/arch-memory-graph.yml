@@ -1,0 +1,21 @@
+name: AIONS Architecture - Memory Graph
+on:
+  push:
+    branches: ["arch/memory-graph"]
+  pull_request:
+    branches: [main]
+    paths: ["CLAUDE.md", "docs/**", ".github/workflows/arch-memory-graph.yml"]
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify contract
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          test -f docs/IMPLEMENTATION-STAGE-1.md
+          grep -q "System Graph" docs/MODULE-CONTRACT.md
+          grep -q "stable ID" docs/IMPLEMENTATION-STAGE-1.md
