@@ -27,6 +27,8 @@ fn wpc_kv_gate_reports_real_metrics() {
     })
     .expect("WPC KV compression gate");
 
+    println!("WPC_KV_METRICS={}", serde_json::to_string_pretty(&metrics).expect("serialize metrics"));
+
     assert!(!metrics.generation_critical);
     assert!(metrics.original_bytes_f16 > metrics.compressed_bytes);
     assert!(metrics.compression_ratio_vs_f16 > 1.0);
