@@ -1,5 +1,7 @@
 name: Memory KV Compression Experiment
 
+timeout-minutes: 20
+
 on:
   push:
     branches: ["feature/memory-kv-compression-experiment"]
