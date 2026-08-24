@@ -1,0 +1,156 @@
+name: One-shot Qwen KV wiring
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to patch
+        required: true
+        default: feature/memory-kv-real-model-bridge
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch }}
+          fetch-depth: 1
+
+      - name: Patch Qwen KV statistics probe
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          branch = Path('wpc-runtime/src/qwen3_moe_model.rs')
+          kv = Path('wpc-runtime/src/kv_probe.rs')
+
+          k = kv.read_text()
+          if 'pub struct StatsKvProbe' not in k:
+              k = k.replace('use std::sync::Arc;\n', 'use std::sync::{Arc, Mutex};\nuse std::sync::atomic::{AtomicU64, Ordering};\nuse std::env;\n', 1)
+              k += r'''
+
+/// Bounded read-only KV statistics collector. Disabled unless AIONS_KV_PROBE=1.
+pub struct StatsKvProbe {
+    calls: AtomicU64,
+    raw_bytes: AtomicU64,
+    max_position: AtomicU64,
+    sampled_values: AtomicU64,
+    stride: usize,
+    stats: Mutex<SampleStats>,
+}
+
+#[derive(Default)]
+struct SampleStats { sum: f64, sumsq: f64, min: f32, max: f32 }
+
+impl StatsKvProbe {
+    pub fn from_env() -> Self {
+        let stride = env::var("AIONS_KV_PROBE_STRIDE")
+            .ok().and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0).unwrap_or(64);
+        Self {
+            calls: AtomicU64::new(0), raw_bytes: AtomicU64::new(0),
+            max_position: AtomicU64::new(0), sampled_values: AtomicU64::new(0),
+            stride,
+            stats: Mutex::new(SampleStats { min: f32::INFINITY, max: f32::NEG_INFINITY, ..Default::default() }),
+        }
+    }
+    fn observe_values(&self, values: &[f32]) {
+        let mut s = self.stats.lock().expect("KV probe stats mutex poisoned");
+        for &v in values { s.sum += v as f64; s.sumsq += (v as f64) * (v as f64); s.min = s.min.min(v); s.max = s.max.max(v); }
+        self.sampled_values.fetch_add(values.len() as u64, Ordering::Relaxed);
+    }
+}
+
+impl KvProbe for StatsKvProbe {
+    fn observe(&self, _layer: usize, position: usize, _kv_head: usize, key: &[f32], value: &[f32]) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.raw_bytes.fetch_add(((key.len() + value.len()) * 4) as u64, Ordering::Relaxed);
+        self.max_position.fetch_max((position + 1) as u64, Ordering::Relaxed);
+        if position % self.stride == 0 { self.observe_values(key); self.observe_values(value); }
+    }
+}
+
+impl Drop for StatsKvProbe {
+    fn drop(&mut self) {
+        let calls = self.calls.load(Ordering::Relaxed);
+        let raw = self.raw_bytes.load(Ordering::Relaxed);
+        let sampled = self.sampled_values.load(Ordering::Relaxed);
+        let positions = self.max_position.load(Ordering::Relaxed);
+        let s = self.stats.lock().expect("KV probe stats mutex poisoned");
+        let mean = if sampled == 0 { 0.0 } else { s.sum / sampled as f64 };
+        let variance = if sampled == 0 { 0.0 } else { (s.sumsq / sampled as f64) - mean * mean };
+        let rms = (variance.max(0.0) + mean * mean).sqrt();
+        eprintln!("kv-probe: calls={} positions={} raw_kv_bytes={} sampled_values={} sample_min={:.6} sample_max={:.6} sample_mean={:.6} sample_rms={:.6}", calls, positions, raw, sampled, s.min, s.max, mean, rms);
+    }
+}
+'''
+              kv.write_text(k)
+
+          s = branch.read_text()
+          if 'KvProbeHandle' not in s:
+              s = s.replace('use crate::config::Config;\n', 'use crate::config::Config;\nuse crate::kv_probe::KvProbeHandle;\n', 1)
+
+          struct_anchor = '    pub len: usize,\n'
+          if 'probe: Option<KvProbeHandle>' not in s:
+              s = s.replace(struct_anchor, struct_anchor + '    probe: Option<KvProbeHandle>,\n', 1)
+
+          if 'probe: None,' not in s:
+              # constructor initialization: place after len field wherever present
+              s = re.sub(r'(            len: 0,\n)(        }\n    }\n)', r'\1            probe: None,\n\2', s, count=1)
+
+          if 'pub fn set_kv_probe' not in s:
+              ctor_end = s.find('    pub fn new_cache(&self)')
+              if ctor_end == -1:
+                  raise SystemExit('new_cache anchor missing')
+              insert_at = s.rfind('\n', 0, ctor_end)
+              method = '''\n    /// Install or remove the optional read-only K/V observation hook.\n    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {\n        self.probe = probe;\n    }\n'''
+              s = s[:insert_at] + method + s[insert_at:]
+
+          # Wire observation into the existing append-to-cache block if absent.
+          if 'probe.observe(' not in s:
+              pat = re.compile(r'(let lc = &mut cache\.layers\[li\];\n)(.*?)(let seq_len = pos \+ 1;)', re.S)
+              m = pat.search(s)
+              if not m:
+                  raise SystemExit('KV append block not found')
+              block = m.group(0)
+              inject = '''let probe = cache.probe.as_ref().cloned();\n            '''
+              block2 = block.replace(m.group(1), inject + m.group(1), 1)
+              needle = '''            }\n            let seq_len = pos + 1;'''
+              replacement = '''            }\n            if let Some(probe) = probe.as_ref() {\n                for hd in 0..num_kv_heads {\n                    probe.observe(li, pos, hd,\n                        &k[hd * head_dim..(hd + 1) * head_dim],\n                        &v[hd * head_dim..(hd + 1) * head_dim]);\n                }\n            }\n            let seq_len = pos + 1;'''
+              block2 = block2.replace(needle, replacement, 1)
+              s = s[:m.start()] + block2 + s[m.end():]
+
+          branch.write_text(s)
+          print('KV probe core wired')
+          PY
+
+      - name: Add CLI opt-in
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('wpc-runtime/src/main.rs')
+          s=p.read_text()
+          if '--kv-probe' not in s:
+              s=s.replace('    /// Number of tokens to generate.\n    #[arg(long, default_value_t = 40)]\n    max_tokens: usize\n', '    /// Enable bounded resident-KV statistics. Disabled by default.\n    #[arg(long, default_value_t = false)]\n    kv_probe: bool,\n\n    /// Number of tokens to generate.\n    #[arg(long, default_value_t = 40)]\n    max_tokens: usize\n',1)
+              s=s.replace('    let args = Args::parse();\n', '    let args = Args::parse();\n    if args.kv_probe { std::env::set_var("AIONS_KV_PROBE", "1"); }\n',1)
+              p.write_text(s)
+          PY
+
+      - name: Verify and commit
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          cargo fmt --all
+          cargo test --manifest-path wpc-runtime/Cargo.toml --lib
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wpc-runtime/src/kv_probe.rs wpc-runtime/src/qwen3_moe_model.rs wpc-runtime/src/main.rs
+          git commit -m "feat(memory-kv): add opt-in Qwen KV statistics probe"
+          git push origin HEAD:${TARGET_BRANCH}
