@@ -2,7 +2,7 @@ name: Memory KV Compression Experiment
 
 on:
   push:
-    branches: ["feature/memory-kv-compression-experiment"]
+    branches: ["feature/memory-kv-compression-experiment", "feature/memory-kv-metrics-evidence"]
   pull_request:
     branches: ["integration/full-organism-v2"]
   workflow_dispatch:
@@ -17,4 +17,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p aions-memory-kv --test compression_experiment --release
+      - name: Run WPC-KV gate and capture metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p aions-memory-kv --test compression_experiment --release -- --nocapture 2>&1 | tee wpc-kv-test.log
+          grep '^WPC_KV_METRICS=' wpc-kv-test.log | tail -n 1 | sed 's/^WPC_KV_METRICS=//' > wpc-kv-metrics.json
+          test -s wpc-kv-metrics.json
+      - name: Publish metrics summary
+        shell: bash
+        run: |
+          {
+            echo '## WPC-KV Compression Gate'
+            echo ''
+            echo '```json'
+            cat wpc-kv-metrics.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload metrics evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpc-kv-metrics-evidence
+          path: |
+            wpc-kv-metrics.json
+            wpc-kv-test.log
