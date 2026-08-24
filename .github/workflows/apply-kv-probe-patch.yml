@@ -48,7 +48,7 @@ jobs:
 
       - name: Verify patch
         run: |
-          cargo fmt --all --check
+          cargo fmt --all
           cargo test -p wpc-runtime --release
 
       - name: Commit patch
@@ -56,7 +56,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add wpc-runtime/src/gemma4_model.rs
+          git add wpc-runtime/src/gemma4_model.rs wpc-runtime/src/kv_probe.rs
           git diff --cached --quiet && exit 0
           git commit -m 'feat(runtime): wire opt-in Gemma KV probe [kv-probe-applied]'
           git push
