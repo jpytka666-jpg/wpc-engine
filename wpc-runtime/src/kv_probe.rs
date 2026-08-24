@@ -5,6 +5,7 @@
 // resident-KV snapshot for the next reload/restore stage, without changing
 // normal generation when capture is disabled.
 
+use crate::kv_memory_bridge;
 use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -247,6 +248,30 @@ impl Drop for StatsKvProbe {
                     capture.path.display(),
                     if capture.truncated { " (TRUNCATED)" } else { "" }
                 );
+
+                if capture.truncated {
+                    eprintln!("kv-memory: envelope suppressed because capture is truncated");
+                } else if let Some(first) = capture.records.first() {
+                    let sequence_length = capture
+                        .records
+                        .iter()
+                        .map(|record| record.position as usize + 1)
+                        .max()
+                        .unwrap_or(0);
+                    match kv_memory_bridge::write_envelope_sidecar(
+                        &capture.path,
+                        first.key.len(),
+                        sequence_length,
+                    ) {
+                        Ok(path) => eprintln!(
+                            "kv-memory: canonical envelope written to {}",
+                            path.display()
+                        ),
+                        Err(err) => eprintln!(
+                            "kv-memory: canonical envelope not written: {err}"
+                        ),
+                    }
+                }
             }
         }
 
