@@ -19,11 +19,13 @@ jobs:
           from pathlib import Path
           p = Path('wpc-runtime/src/qwen3_moe_model.rs')
           s = p.read_text()
-          marker = '#[cfg(test)]\nmod tests {'
-          test = '''#[test]\n    fn kv_probe_can_be_installed_on_qwen_cache() {\n        let mut cache = MoeKvCache::new(1, 1, 2);\n        cache.set_kv_probe(None);\n    }\n\n'''
-          if 'fn kv_probe_can_be_installed_on_qwen_cache' in s:\n              raise SystemExit('test already present')
-          if marker not in s:\n              raise SystemExit('test module anchor not found')
-          s = s.replace(marker, marker + '\n    ' + test, 1)
+          marker = "#[cfg(test)]\nmod tests {"
+          test = "#[test]\n    fn kv_probe_can_be_installed_on_qwen_cache() {\n        let mut cache = MoeKvCache::new(1, 1, 2);\n        cache.set_kv_probe(None);\n    }\n\n"
+          if 'fn kv_probe_can_be_installed_on_qwen_cache' in s:
+              raise SystemExit('test already present')
+          if marker not in s:
+              raise SystemExit('test module anchor not found')
+          s = s.replace(marker, marker + "\n    " + test, 1)
           p.write_text(s)
       - name: Commit RED test
         shell: bash
