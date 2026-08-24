@@ -39,6 +39,7 @@
 //! checkpoint in `--model`, alongside the 1D norms.
 
 use crate::config::Config;
+use crate::kv_probe::KvProbeHandle;
 use crate::norm::{rms_norm, softmax_inplace};
 use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, ShardedSafetensors};
@@ -64,6 +65,7 @@ pub struct MoeKvCache {
     head_dim: usize,
     /// Number of positions appended so far.
     pub len: usize,
+    probe: Option<KvProbeHandle>,
 }
 
 impl MoeKvCache {
@@ -77,7 +79,13 @@ impl MoeKvCache {
                 .collect(),
             head_dim,
             len: 0,
+            probe: None,
         }
+    }
+
+    /// Install or remove the optional read-only K/V observation hook.
+    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {
+        self.probe = probe;
     }
 
     pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
@@ -488,10 +496,22 @@ impl Qwen3MoeModel {
                 );
             }
 
+            let probe = cache.probe.as_ref().cloned();
             let lc = &mut cache.layers[li];
             for hd in 0..num_kv_heads {
                 lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);
                 lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);
+            }
+            if let Some(probe) = probe.as_ref() {
+                for hd in 0..num_kv_heads {
+                    probe.observe(
+                        li,
+                        pos,
+                        hd,
+                        &k[hd * head_dim..(hd + 1) * head_dim],
+                        &v[hd * head_dim..(hd + 1) * head_dim],
+                    );
+                }
             }
             let seq_len = pos + 1;
             let scale = 1.0f32 / (head_dim as f32).sqrt();
