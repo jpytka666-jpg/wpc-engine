@@ -496,22 +496,10 @@ impl Qwen3MoeModel {
                 );
             }
 
-            let probe = cache.probe.as_ref().cloned();
             let lc = &mut cache.layers[li];
             for hd in 0..num_kv_heads {
                 lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);
                 lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);
-            }
-            if let Some(probe) = probe.as_ref() {
-                for hd in 0..num_kv_heads {
-                    probe.observe(
-                        li,
-                        pos,
-                        hd,
-                        &k[hd * head_dim..(hd + 1) * head_dim],
-                        &v[hd * head_dim..(hd + 1) * head_dim],
-                    );
-                }
             }
             let seq_len = pos + 1;
             let scale = 1.0f32 / (head_dim as f32).sqrt();
@@ -612,8 +600,6 @@ mod tests {
         let mut cache = MoeKvCache::new(1, 1, 2);
         cache.set_kv_probe(None);
     }
-
-
     use super::*;
 
     fn cfg_with(n_exp: usize, top_k: usize, norm: bool) -> Config {
