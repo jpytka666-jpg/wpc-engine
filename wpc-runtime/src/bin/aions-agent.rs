@@ -15,7 +15,9 @@ struct Args {
     #[arg(long, default_value = "qwen3-moe")] arch: String,
     #[arg(long, default_value_t = 6)] max_turns: usize,
     #[arg(long, default_value_t = 120)] max_tokens: usize,
-    #[arg(long, default_value = "/home/aions/wpc-workspace/target/release/wpc-runtime")] runtime: PathBuf,
+    /// The engine binary used for the small helper. Unset means "the wpc-runtime sitting
+    /// next to this agent", which is right on both platforms and survives being copied.
+    #[arg(long)] runtime: Option<PathBuf>,
     #[arg(long)] mcp_command: Option<String>,
     #[arg(long)] mcp_arg: Vec<String>,
     /// Only expose tools whose name contains one of these. Repeatable.
@@ -30,6 +32,10 @@ struct Args {
     #[arg(long, default_value = "/home/aions/qwen-src")] maly_model: PathBuf,
     /// Compression scheme of the helper.
     #[arg(long, default_value = "v3")] maly_scheme: String,
+
+    /// Directory that FINAL checks and programs run in. Defaults to where you started
+    /// the agent, so it is not tied to one machine's layout.
+    #[arg(long)] workdir: Option<PathBuf>,
 
     /// Print each proposed call and require a typed y before running it.
     #[arg(long, default_value_t = false)] ask: bool,
@@ -316,8 +322,55 @@ fn action(s: &str) -> Result<Action> {
 /// completion without a command that backs it. The model proposes the check,
 /// we run it, and a non-zero exit means it is simply not finished yet - the
 /// output goes back so it can see what is still wrong.
+/// Hand a command to whichever shell this machine actually has.
+///
+/// `sh -c` does not exist on Windows and `cmd /C` exists nowhere else. Everything else
+/// about a check stays the same: it runs, and its exit status alone decides whether the
+/// agent is allowed to declare itself finished.
+fn shell(cmd: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(cmd);
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    }
+}
+
+/// Where checks and programs are run.
+///
+/// This used to be the literal path of one WSL workspace, which made the agent unable to
+/// work anywhere else, this machine's own Windows side included. Unset means "the
+/// directory the agent was started in", which is what a person would expect.
+fn workdir(a: &Args) -> std::path::PathBuf {
+    a.workdir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+}
+
+/// The engine binary to run the small helper with.
+///
+/// Looking beside this executable rather than at a fixed path means a built pair can be
+/// copied anywhere and still find each other, and the `.exe` suffix is handled for free
+/// by asking the operating system what this program is called.
+fn runtime_path(a: &Args) -> std::path::PathBuf {
+    if let Some(p) = &a.runtime {
+        return p.clone();
+    }
+    let name = if cfg!(windows) { "wpc-runtime.exe" } else { "wpc-runtime" };
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(name)))
+        .unwrap_or_else(|| name.into())
+}
+
 fn verify(cmd: &str, dir: &std::path::Path) -> (bool, String) {
-    match Command::new("sh").arg("-c").arg(cmd).current_dir(dir).output() {
+    match shell(cmd).current_dir(dir).output() {
         Ok(o) => {
             let mut text = String::from_utf8_lossy(&o.stdout).to_string();
             text.push_str(&String::from_utf8_lossy(&o.stderr));
@@ -337,7 +390,7 @@ fn verify(cmd: &str, dir: &std::path::Path) -> (bool, String) {
 /// PROGRAM exists, so it has to be visible.
 fn model(args:&Args, p:&str)->Result<String>{
     let zegar = std::time::Instant::now();
-    let o=Command::new(&args.runtime).args(["--model"]).arg(&args.model).args(["--wpc"]).arg(&args.wpc).args(["--scheme",&args.scheme,"--arch",&args.arch,"--prompt",p,"--max-tokens"]).arg(args.max_tokens.to_string()).output()?;
+    let o=Command::new(runtime_path(args)).args(["--model"]).arg(&args.model).args(["--wpc"]).arg(&args.wpc).args(["--scheme",&args.scheme,"--arch",&args.arch,"--prompt",p,"--max-tokens"]).arg(args.max_tokens.to_string()).output()?;
     if !o.status.success(){bail!("wpc-runtime failed: {}",String::from_utf8_lossy(&o.stderr))}
 
     let err = String::from_utf8_lossy(&o.stderr);
@@ -379,7 +432,26 @@ fn main()->Result<()>{
         eprintln!("PODANE MODELOWI: {}", names.join(", "));
     }
     let tools=manifest(&tools); let mut transcript=format!("TASK: {}\n",a.task);
-    for turn in 1..=a.max_turns { eprintln!("=== AIONS AGENT TURN {turn}/{} ===",a.max_turns); let r=model(&a,&prompt(&tools,&transcript))?; eprintln!("MODEL: {r}"); match action(&r)? {
+    for turn in 1..=a.max_turns { eprintln!("=== AIONS AGENT TURN {turn}/{} ===",a.max_turns); let r=model(&a,&prompt(&tools,&transcript))?; eprintln!("MODEL: {r}");
+        // A turn that parses into neither an action nor a completion used to kill the
+        // agent outright. That is the one case where giving up is least justified: the
+        // model has simply drifted off the format, which is exactly what the other
+        // refusals in this loop already know how to correct. Observed on Qwen3-4B, which
+        // answered an arithmetic task with pages of half-finished unit conversions and
+        // never emitted a single TOOL_CALL. Now it is told so and gets its next turn.
+        let parsed = match action(&r) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("BRAMKA: nieczytelna odpowiedz - {e}");
+                transcript.push_str(
+                    "\nREJECTED: that turn contained neither a TOOL_CALL nor a FINAL. \
+Do not explain and do not calculate anything yourself. Output ONE line, nothing else, \
+in exactly this shape:\nTOOL_CALL {\"name\":\"tool\",\"arguments\":{}}\n",
+                );
+                continue;
+            }
+        };
+        match parsed {
         Action::Final(x,proof)=>{
             match proof {
                 None => {
@@ -388,7 +460,7 @@ fn main()->Result<()>{
                 }
                 Some(cmd) => {
                     eprintln!("sprawdzam dowod: {cmd}");
-                    let (ok, out) = verify(&cmd, std::path::Path::new("/home/aions/wpc-workspace"));
+                    let (ok, out) = verify(&cmd, &workdir(&a));
                     if ok {
                         println!("{x}");
                         println!("\n--- DOWOD ---\nkomenda: {cmd}\n{out}");
@@ -406,7 +478,7 @@ fn main()->Result<()>{
             // is cheaper than doing the work in the big model directly.
             eprintln!("ZLECAM MALEMU: {zadanie}");
             let zegar = std::time::Instant::now();
-            let o = Command::new(&a.runtime)
+            let o = Command::new(runtime_path(&a))
                 .args(["--model"]).arg(&a.maly_model)
                 .args(["--wpc"]).arg(&a.maly_wpc)
                 .args(["--scheme", &a.maly_scheme, "--chat", "--prompt", &zadanie, "--max-tokens", "120"])
@@ -440,8 +512,7 @@ fn main()->Result<()>{
                     continue;
                 }
             }
-            let out = std::process::Command::new("bash").arg("-c").arg(&prog)
-                .current_dir("/home/aions/wpc-workspace").output();
+            let out = shell(&prog).current_dir(workdir(&a)).output();
             let text = match out {
                 Ok(o) => {
                     let mut t = String::from_utf8_lossy(&o.stdout).to_string();
