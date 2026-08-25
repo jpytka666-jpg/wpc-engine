@@ -46,6 +46,8 @@ impl WeightSetManager {
         Self { architecture, mounted: HashMap::new() }
     }
 
+    pub fn architecture(&self) -> &ArchitectureId { &self.architecture }
+
     pub fn mount(&mut self, mut backend: Box<dyn WeightBackend>) -> Result<WeightSetId, WeightSetError> {
         self.validate_manifest(backend.manifest())?;
         let id = backend.manifest().name().clone();
@@ -76,6 +78,8 @@ impl WeightSetManager {
     }
 
     pub fn active(&self, id: &WeightSetId) -> Option<&MountedWeightSet> { self.mounted.get(id) }
+
+    pub(crate) fn mounted_sets(&self) -> impl Iterator<Item = &MountedWeightSet> { self.mounted.values() }
 
     fn validate_manifest(&self, manifest: &WeightSetManifest) -> Result<(), WeightSetError> {
         if manifest.architecture() != &self.architecture {
@@ -121,6 +125,15 @@ mod tests {
         manager.mount(Box::new(MemoryWeightBackend::from_manifest(manifest("coding", "noworodek-v0")))).unwrap();
         let result = manager.mount(Box::new(MemoryWeightBackend::from_manifest(manifest("coding", "noworodek-v0"))));
         assert!(matches!(result, Err(WeightSetError::DuplicateId(_))));
+    }
+
+    #[test]
+    fn incompatible_replacement_leaves_current_set_loaded() {
+        let mut manager = WeightSetManager::new(ArchitectureId::new("noworodek-v0"));
+        let id = manager.mount(Box::new(MemoryWeightBackend::from_manifest(manifest("coding", "noworodek-v0")))).unwrap();
+        let result = manager.replace(&id, Box::new(MemoryWeightBackend::from_manifest(manifest("coding", "other-model"))));
+        assert!(matches!(result, Err(WeightSetError::IncompatibleArchitecture { .. })));
+        assert!(manager.active(&id).unwrap().is_loaded());
     }
 
     #[test]
