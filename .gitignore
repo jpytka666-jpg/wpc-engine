@@ -5,3 +5,7 @@
 /qwen_wpc_output/
 /qwen_wpc_v1_output/
 /qwen_wpc_v2_output/
+
+# Local cargo home used to build offline in this throwaway checkout. 80 MB of
+# downloaded crate sources and caches -- build output, not project source.
+/.cargo-home/
