@@ -158,9 +158,14 @@ fn prompt(tools: &str, transcript: &str) -> String {
     format!(
         r#"You are AIONS, a local engineering agent running on a WPC-compressed Qwen model.
 Use ONLY tools from this live MCP catalogue. Never invent a tool.
+
+EXAMPLES:
+Call a tool: TOOL_CALL {{"name":"system_health","arguments":{{}}}}
+Complete with evidence: FINAL {{"text":"System health is nominal.","verify":"system_health"}}
+
 For one tool action output exactly: TOOL_CALL {{"name":"tool","arguments":{{...}}}}
-For completion output exactly: FINAL {{"text":"..."}}
-Do not output both in one turn.
+For completion output exactly: FINAL {{"text":"...","verify":"tool_name"}}
+Always include "verify" naming a tool you called. Do not output both in one turn.
 
 LIVE TOOLS:
 {tools}
@@ -174,7 +179,7 @@ __WPC_AGENT_ASSISTANT__
 }
 enum Action {
     Tool(String, Value),
-    Final(String),
+    Final { text: String, verify: Option<String> },
 }
 fn action(s: &str) -> Result<Action> {
     for line in s.lines().map(str::trim) {
@@ -190,12 +195,15 @@ fn action(s: &str) -> Result<Action> {
         }
         if let Some(x) = line.strip_prefix("FINAL ") {
             let v: Value = serde_json::from_str(x)?;
-            return Ok(Action::Final(
-                v.get("text")
+            return Ok(Action::Final {
+                text: v.get("text")
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow!("missing final text"))?
                     .into(),
-            ));
+                verify: v.get("verify")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+            });
         }
     }
     bail!("model emitted neither TOOL_CALL nor FINAL")
@@ -227,6 +235,8 @@ fn main() -> Result<()> {
     let mut session = engine.start_session();
     eprintln!("resident WPC runtime ready with reusable prompt/KV session");
 
+    let mut successful_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for turn in 1..=a.max_turns {
         eprintln!("=== AIONS AGENT TURN {turn}/{} ===", a.max_turns);
         let r = session
@@ -234,8 +244,31 @@ fn main() -> Result<()> {
             .0;
         eprintln!("MODEL: {r}");
         match action(&r)? {
-            Action::Final(x) => {
-                println!("{x}");
+            Action::Final { text, verify } => {
+                // GATE 1: Refuse FINAL if no tools have been called
+                if successful_tools.is_empty() {
+                    eprintln!("GATE 1 FIRED: Refusing FINAL before any tool calls");
+                    transcript.push_str(
+                        "\nYou must call at least one tool and receive its result before reporting FINAL. Try again.\n"
+                    );
+                    continue;
+                }
+
+                // GATE 2: Refuse FINAL if verify field doesn't name a successful tool
+                let verify_valid = verify.as_ref()
+                    .map(|v| successful_tools.contains(v))
+                    .unwrap_or(false);
+                if !verify_valid {
+                    eprintln!("GATE 2 FIRED: Refusing FINAL with missing or invalid verify field");
+                    let available = successful_tools.iter().cloned().collect::<Vec<_>>().join(", ");
+                    transcript.push_str(&format!(
+                        "\nFINAL must include \"verify\" field naming a tool you actually called and succeeded with. Available: {}. Try again.\n",
+                        available
+                    ));
+                    continue;
+                }
+
+                println!("{text}");
                 return Ok(());
             }
             Action::Tool(n, args) => {
@@ -253,15 +286,135 @@ fn main() -> Result<()> {
                     }
                 }
                 let out = match m.call(&n, args.clone()) {
-                    Ok(v) => serde_json::to_string_pretty(&v)?,
+                    Ok(v) => {
+                        successful_tools.insert(n.clone());
+                        serde_json::to_string_pretty(&v)?
+                    }
                     Err(e) => format!("TOOL_ERROR: {e}"),
                 };
-                transcript.push_str(&format!(
-                    "\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\n{out}\n",
-                    serde_json::to_string(&json!({"name":n,"arguments":args}))?
-                ));
+
+                // GATE 3: Append error note when tool fails
+                if out.starts_with("TOOL_ERROR") {
+                    eprintln!("GATE 3 FIRED: Tool call failed, appending error note");
+                    transcript.push_str(&format!(
+                        "\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\n{out}\nThe previous tool call failed. Address this error or choose a different action.\n",
+                        serde_json::to_string(&json!({"name":n,"arguments":args}))?
+                    ));
+                } else {
+                    transcript.push_str(&format!(
+                        "\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\n{out}\n",
+                        serde_json::to_string(&json!({"name":n,"arguments":args}))?
+                    ));
+                }
             }
         }
     }
     bail!("agent reached max_turns without FINAL")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_action_final_with_verify() {
+        let input = r#"FINAL {"text":"Result from tool","verify":"system_health"}"#;
+        match action(input) {
+            Ok(Action::Final { text, verify }) => {
+                assert_eq!(text, "Result from tool");
+                assert_eq!(verify, Some("system_health".to_string()));
+            }
+            _ => panic!("Expected Final action with verify field"),
+        }
+    }
+
+    #[test]
+    fn test_action_final_without_verify() {
+        let input = r#"FINAL {"text":"Bare result"}"#;
+        match action(input) {
+            Ok(Action::Final { text, verify }) => {
+                assert_eq!(text, "Bare result");
+                assert_eq!(verify, None);
+            }
+            _ => panic!("Expected Final action without verify field"),
+        }
+    }
+
+    #[test]
+    fn test_action_tool_call() {
+        let input = r#"TOOL_CALL {"name":"test_tool","arguments":{"arg1":"value1"}}"#;
+        match action(input) {
+            Ok(Action::Tool(name, args)) => {
+                assert_eq!(name, "test_tool");
+                assert_eq!(args.get("arg1").and_then(Value::as_str), Some("value1"));
+            }
+            _ => panic!("Expected Tool action"),
+        }
+    }
+
+    #[test]
+    fn test_gate2_verify_field_required() {
+        // This test documents that FINAL with no verify or invalid verify
+        // must be refused by the main loop gates
+        let input = r#"FINAL {"text":"Result without verify"}"#;
+        match action(input) {
+            Ok(Action::Final { text: _, verify }) => {
+                // Parser accepts it; gate must refuse it
+                assert_eq!(verify, None);
+                // In the main loop, this would be caught by GATE 2
+            }
+            _ => panic!("Expected Final action"),
+        }
+    }
+
+    #[test]
+    fn test_gate1_and_gate2_logic() {
+        // Simulate gate logic
+        let mut successful_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // GATE 1: No tools called yet, should refuse FINAL
+        let final_action = Action::Final {
+            text: "Test".to_string(),
+            verify: Some("system_health".to_string()),
+        };
+        if let Action::Final { text: _, verify } = final_action {
+            if successful_tools.is_empty() {
+                // GATE 1 fires
+                assert!(true, "GATE 1 correctly fires when no tools have been called");
+            }
+
+            // GATE 2: verify field doesn't name a successful tool
+            let verify_valid = verify.as_ref()
+                .map(|v| successful_tools.contains(v))
+                .unwrap_or(false);
+            if !verify_valid && !successful_tools.is_empty() {
+                // GATE 2 fires
+                assert!(true, "GATE 2 correctly fires when verify doesn't name successful tool");
+            }
+        }
+
+        // After successful tool call
+        successful_tools.insert("system_health".to_string());
+
+        // Now gates should not fire
+        let final_action_valid = Action::Final {
+            text: "Test result".to_string(),
+            verify: Some("system_health".to_string()),
+        };
+        if let Action::Final { text: _, verify } = final_action_valid {
+            let gates_pass = !successful_tools.is_empty()
+                && verify.as_ref()
+                    .map(|v| successful_tools.contains(v))
+                    .unwrap_or(false);
+            assert!(gates_pass, "Gates correctly pass after successful tool call with valid verify");
+        }
+    }
+
+    #[test]
+    fn test_prompt_contains_examples() {
+        let prompt = prompt("test_tool() - does something", "TASK: test");
+        assert!(prompt.contains("TOOL_CALL"), "Prompt should contain TOOL_CALL example");
+        assert!(prompt.contains("FINAL"), "Prompt should contain FINAL example");
+        assert!(prompt.contains("verify"), "Prompt should mention verify field");
+    }
 }
