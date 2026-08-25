@@ -431,18 +431,13 @@ int main(int argc, char **argv)
         close(fd);
         return 2;
     }
+    max_out_needed = (max_tensor_bytes / (uint64_t)WPC4_BLOCK_BYTES)
+                     * (uint64_t)WPC4_BLOCK_VALUES * sizeof(float);
     {
-        uint64_t needed = (max_tensor_bytes / (uint64_t)WPC4_BLOCK_BYTES)
-                          * (uint64_t)WPC4_BLOCK_VALUES * sizeof(float);
         uint64_t cap = (uint64_t)MAX_OUT_MIB * 1024ull * 1024ull;
-        max_out_bytes = needed < cap ? needed : cap;
-        chunk_cap_blocks = max_out_bytes
-                           / ((uint64_t)WPC4_BLOCK_VALUES * sizeof(float));
-        printf("largest tensor  : %.1f MiB packed, %.1f MiB decoded\n",
-               (double)max_tensor_bytes / MIB, (double)needed / MIB);
-        printf("output buffer   : %.1f MiB (%llu blocks per chunk)\n",
-               (double)max_out_bytes / MIB, (unsigned long long)chunk_cap_blocks);
+        max_out_bytes = max_out_needed < cap ? max_out_needed : cap;
     }
+    chunk_cap_blocks = max_out_bytes / ((uint64_t)WPC4_BLOCK_VALUES * sizeof(float));
 
     printf("=== WPC v4 GPU decode -- real Qwen3-4B weights ===\n");
     printf("model file      : %s\n", model_path);
