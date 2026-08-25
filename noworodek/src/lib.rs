@@ -1,4 +1,6 @@
-pub const VERSION: &str = "0.0.0";
+pub const VERSION: &str = "0.1.0";
+
+pub mod weightset;
 
 #[cfg(test)]
 mod tests {
