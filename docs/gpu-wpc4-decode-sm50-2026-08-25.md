@@ -174,5 +174,8 @@ Build notes that cost time and are worth recording:
 - Working directory: `/home/aions/gpu-wpc4-decode-2026-08-25`
 - Host binary SHA256: `68621d3e0731c0b77061c0019aa4c3430af582a7549e32448d4352b3835a040b`
 - PTX SHA256: `f3321aae8c41df620053d21af67dbb7d8cdabf01b3723a2381c2b38cb933f3fd`
-- Run log: `gpu/wpc4-decode/runs/run_2026-08-25_0500.log`
+- Sweep binary SHA256: `15f9d62e5d577045a7e7c3d0506714cd344eeb2928af51cdbacce29bdec145b2`
+- Run logs: `gpu/wpc4-decode/runs/run_2026-08-25_0500.log` (three tensors),
+  `gpu/wpc4-decode/runs/sweep_2026-08-25_0522.log` (all 253)
+- Tensor manifest: `gpu/wpc4-decode/tensors_all.txt`, generated from `model_v4.meta`
 - Model inputs, unmodified: `/home/aions/qwen3-4b-wpc4/model_v4.wpc`, `model_v4.meta`
