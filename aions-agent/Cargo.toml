@@ -1,0 +1,8 @@
+[package]
+name = "aions-agent"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aions-agent"
+path = "src/main.rs"

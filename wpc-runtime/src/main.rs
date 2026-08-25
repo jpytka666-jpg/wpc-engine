@@ -47,6 +47,7 @@ struct Args {
     arch: Arch,
 
     /// WPC compression scheme: "v3" (packed affine 6-bit, 6.25 bits/weight - recommended),
+    /// "v5" (packed affine 2-bit, 2.25 bits/weight - smallest, quality unverified),
     /// "v4" (packed affine 4-bit, 4.25 bits/weight - for cards too small for v3),
     /// "v2" (byte-aligned affine, 8.25 bits/weight) or "v1" (VQ-codebook, superseded).
     /// Only used when --wpc is provided.
@@ -60,6 +61,15 @@ struct Args {
     /// Number of tokens to generate.
     #[arg(long, default_value_t = 40)]
     max_tokens: usize,
+
+    /// Wrap the prompt in the model's own conversation markers.
+    ///
+    /// Without them a base-style model treats the prompt as an unfinished
+    /// document and continues writing it. Asked "how many bits does v4 use",
+    /// the raw path answered "How many bits per weight does scheme v3 use?" -
+    /// a plausible next sentence of the same document, not an answer.
+    #[arg(long, default_value_t = false)]
+    chat: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -150,7 +160,14 @@ fn run_qwen3(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) 
 
     let t0 = Instant::now();
     let model = if let Some(wpc_dir) = &args.wpc {
-        if args.scheme == "v4" {
+        if args.scheme == "v5" {
+            eprintln!(
+                "loading model weights (WPC v5-compressed, 2-bit packed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            qwen3_model::load_wpc_v5(&args.model, wpc_dir, config)?
+        } else if args.scheme == "v4" {
             eprintln!(
                 "loading model weights (WPC v4-compressed, 4-bit packed) from {} (norms from {}) ...",
                 wpc_dir.display(),
@@ -208,7 +225,14 @@ fn run_qwen3_moe(
 
     let t0 = Instant::now();
     let model = if let Some(wpc_dir) = &args.wpc {
-        if args.scheme == "v4" {
+        if args.scheme == "v5" {
+            eprintln!(
+                "loading MoE weights (WPC v5-compressed, 2-bit packed) from {} (norms from {}) ...",
+                wpc_dir.display(),
+                args.model.display()
+            );
+            Qwen3MoeModel::load_wpc_v5(&args.model, wpc_dir, config)?
+        } else if args.scheme == "v4" {
             eprintln!(
                 "loading MoE weights (WPC v4-compressed, 4-bit packed) from {} (norms from {}) ...",
                 wpc_dir.display(),
@@ -231,7 +255,7 @@ fn run_qwen3_moe(
             Qwen3MoeModel::load_wpc_v2(&args.model, wpc_dir, config)?
         } else {
             anyhow::bail!(
-                "--scheme {} is not supported for Qwen3-MoE; use v2, v3 or v4",
+                "--scheme {} is not supported for Qwen3-MoE; use v2, v3, v4 or v5",
                 args.scheme
             );
         }
@@ -250,16 +274,15 @@ fn run_qwen3_moe(
 
 /// Same loop as [`generate`], against the MoE model and its own cache type.
 fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> anyhow::Result<()> {
-    let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
+    let prompt_ids = encode_prompt(tokenizer, &if args.chat { as_chat(&args.prompt) } else { args.prompt.clone() }, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
     let mut next_logits: Vec<f32> = Vec::new();
 
     let t1 = Instant::now();
-    for &tok in &prompt_ids {
-        next_logits = model.forward_token(tok, &mut cache);
-    }
-    eprintln!("prefill ({} tokens) in {:?}", prompt_ids.len(), t1.elapsed());
+    // One pass over the weights for the whole prompt instead of one per token.
+    next_logits = model.prefill_batch(&prompt_ids, &mut cache);
+    eprintln!("prefill ({} tokens, batched) in {:?}", prompt_ids.len(), t1.elapsed());
 
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
@@ -282,7 +305,7 @@ fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> an
 /// Prefill the prompt, then greedily decode up to `--max-tokens`. Shared by the
 /// Qwen2 and Qwen3 paths, which run the identical decoder stack.
 fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result<()> {
-    let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
+    let prompt_ids = encode_prompt(tokenizer, &if args.chat { as_chat(&args.prompt) } else { args.prompt.clone() }, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
     let mut next_logits: Vec<f32> = Vec::new();
@@ -350,7 +373,7 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     };
     eprintln!("model loaded in {:?}", t0.elapsed());
 
-    let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
+    let prompt_ids = encode_prompt(tokenizer, &if args.chat { as_chat(&args.prompt) } else { args.prompt.clone() }, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
     let mut next_logits: Vec<f32> = Vec::new();
@@ -408,6 +431,19 @@ fn config_bos(model_dir: &std::path::Path) -> Option<u32> {
 /// So the caller states what BOS is (from config.json) and this adds it only
 /// when it is genuinely missing. Passing `None`, or a prompt that already
 /// starts with BOS, leaves the token stream byte-identical to before.
+/// Wrap a prompt in the conversation markers this model was trained on.
+///
+/// Taken verbatim from `chat_template.jinja` shipped beside the weights, not
+/// guessed: system turn, user turn, then an opened assistant turn that the
+/// model is expected to complete.
+fn as_chat(prompt: &str) -> String {
+    format!(
+        "<|im_start|>system\nYou are Qwen, a helpful AI assistant.<|im_end|>\n\
+         <|im_start|>user\n{prompt}<|im_end|>\n\
+         <|im_start|>assistant\n"
+    )
+}
+
 fn encode_prompt(tokenizer: &Tokenizer, prompt: &str, bos: Option<u32>) -> anyhow::Result<Vec<u32>> {
     let encoding = tokenizer
         .encode(prompt, true)

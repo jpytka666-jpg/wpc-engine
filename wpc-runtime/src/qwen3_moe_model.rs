@@ -45,6 +45,7 @@ use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, Sharde
 use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
 use crate::wpc_weights_v3::{WpcEmbeddingV3, WpcLinearV3, WpcModelDataV3};
 use crate::wpc_weights_v4::{WpcEmbeddingV4, WpcLinearV4, WpcModelDataV4};
+use crate::wpc_weights_v5::{WpcEmbeddingV5, WpcLinearV5, WpcModelDataV5};
 use rayon::prelude::*;
 use std::path::Path;
 
@@ -364,6 +365,51 @@ impl Qwen3MoeModel {
         })
     }
 
+    /// Load through the WPC v4 backend (affine 2-bit, two codes per byte).
+    ///
+    /// The routers stay dense, as they do for every scheme: they make a
+    /// discrete choice between experts, and 2-bit noise there would change
+    /// which expert runs rather than merely perturb a value.
+    pub fn load_wpc_v5(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Self> {
+        let (n_exp, top_k, moe_inter, norm_topk) = moe_dims(&config)?;
+        let st = ShardedSafetensors::open(model_dir)?;
+        let wpc = WpcModelDataV5::open(wpc_dir)?;
+        let embed: Box<dyn EmbeddingTable> = Box::new(WpcEmbeddingV5::new(
+            wpc.clone(),
+            "model.embed_tokens.weight",
+            config.vocab_size,
+            config.hidden_size,
+        ));
+        let lm_head: Box<dyn Linear> = Box::new(WpcLinearV5::new(
+            wpc.clone(),
+            "lm_head.weight",
+            config.vocab_size,
+            config.hidden_size,
+            None,
+        ));
+        let layers = build_layers(
+            &st,
+            &config,
+            n_exp,
+            moe_inter,
+            |name: &str, out, inp| -> Box<dyn Linear> {
+                Box::new(WpcLinearV5::new(wpc.clone(), name, out, inp, None))
+            },
+            "Qwen3-MoE WPC v4",
+        );
+        let final_norm = st.read_f32("model.norm.weight");
+        Ok(Qwen3MoeModel {
+            config,
+            embed,
+            lm_head,
+            layers,
+            final_norm,
+            top_k,
+            norm_topk,
+            moe_inter,
+        })
+    }
+
     pub fn new_cache(&self) -> MoeKvCache {
         MoeKvCache::new(self.config.num_hidden_layers, self.config.num_key_value_heads)
     }
@@ -403,6 +449,233 @@ impl Qwen3MoeModel {
 
     /// Run one token through the full stack, updating `cache` in place, and
     /// return the logits over the vocabulary for the *next* token.
+    /// Read a whole prompt in one pass instead of one token at a time.
+    ///
+    /// The four attention projections are the part that can share work across
+    /// tokens: their weights are the same for every position, so they are read
+    /// once and applied to all of them. On a memory-bound machine that is the
+    /// whole game - `prefill (28 tokens) in 65.2s` was 28 separate journeys over
+    /// the same 15 GB.
+    ///
+    /// The experts are deliberately left per-token. Each token routes to its own
+    /// eight of 128, so batching them first requires grouping tokens by expert.
+    /// That is where the remaining two thirds of the traffic is, and it is a
+    /// larger change than this one.
+    ///
+    /// Attention itself also stays per-token: it works on small data, it is not
+    /// the bottleneck, and rewriting it batched needs a causal mask - an easy
+    /// place to introduce a silent wrong answer.
+    ///
+    /// Returns the logits for the final position only, which is all generation
+    /// needs.
+    pub fn prefill_batch(&self, tokens: &[u32], cache: &mut MoeKvCache) -> Vec<f32> {
+        let cfg = &self.config;
+        let h = cfg.hidden_size;
+        let head_dim = cfg.head_dim();
+        let num_heads = cfg.num_attention_heads;
+        let num_kv_heads = cfg.num_key_value_heads;
+        let n_rep = num_heads / num_kv_heads;
+        let eps = cfg.rms_norm_eps as f32;
+        let base = cache.len;
+        let n = tokens.len();
+        assert!(n > 0, "prefill_batch called with no tokens");
+
+        let qd = num_heads * head_dim;
+        let kd = num_kv_heads * head_dim;
+
+        // Residual stream for every position, laid out token by token.
+        let mut residual = vec![0.0f32; n * h];
+        for (i, &t) in tokens.iter().enumerate() {
+            self.embed.embed(t, &mut residual[i * h..(i + 1) * h]);
+        }
+
+        let mut chosen: Vec<(usize, f32)> = Vec::with_capacity(self.top_k);
+
+        for (li, layer) in self.layers.iter().enumerate() {
+            let mut normed = vec![0.0f32; n * h];
+            for i in 0..n {
+                let (src, dst) = (i * h, i * h);
+                let mut tmp = vec![0.0f32; h];
+                rms_norm(&residual[src..src + h], &layer.input_layernorm, eps, &mut tmp);
+                normed[dst..dst + h].copy_from_slice(&tmp);
+            }
+
+            // One pass over each projection's weights for all n positions.
+            // `matmul` writes feature-major: value for feature f, token i at [f * n + i].
+            let mut q_fm = vec![0.0f32; qd * n];
+            let mut k_fm = vec![0.0f32; kd * n];
+            let mut v_fm = vec![0.0f32; kd * n];
+            layer.q_proj.matmul(&normed, n, &mut q_fm);
+            layer.k_proj.matmul(&normed, n, &mut k_fm);
+            layer.v_proj.matmul(&normed, n, &mut v_fm);
+
+            let mut attn_all = vec![0.0f32; n * qd];
+
+            for i in 0..n {
+                let pos = base + i;
+
+                // Back to per-token order for the head-wise work below.
+                let mut q: Vec<f32> = (0..qd).map(|f| q_fm[f * n + i]).collect();
+                let mut k: Vec<f32> = (0..kd).map(|f| k_fm[f * n + i]).collect();
+                let v: Vec<f32> = (0..kd).map(|f| v_fm[f * n + i]).collect();
+
+                let mut tmp = vec![0.0f32; head_dim];
+                for hd in 0..num_heads {
+                    let slice = &q[hd * head_dim..(hd + 1) * head_dim];
+                    rms_norm(slice, &layer.q_norm, eps, &mut tmp);
+                    q[hd * head_dim..(hd + 1) * head_dim].copy_from_slice(&tmp);
+                }
+                for hd in 0..num_kv_heads {
+                    let slice = &k[hd * head_dim..(hd + 1) * head_dim];
+                    rms_norm(slice, &layer.k_norm, eps, &mut tmp);
+                    k[hd * head_dim..(hd + 1) * head_dim].copy_from_slice(&tmp);
+                }
+                for hd in 0..num_heads {
+                    apply_rope(&mut q[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
+                }
+                for hd in 0..num_kv_heads {
+                    apply_rope(&mut k[hd * head_dim..(hd + 1) * head_dim], pos, cfg.rope_theta);
+                }
+
+                // Append before attending, so position i sees itself and nothing later.
+                let lc = &mut cache.layers[li];
+                for hd in 0..num_kv_heads {
+                    lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);
+                    lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);
+                }
+
+                let seq_len = pos + 1;
+                let scale = 1.0f32 / (head_dim as f32).sqrt();
+                let out = &mut attn_all[i * qd..(i + 1) * qd];
+                out.par_chunks_mut(head_dim).enumerate().for_each(|(qh, out_slice)| {
+                    let kv_head = qh / n_rep;
+                    let q_head = &q[qh * head_dim..(qh + 1) * head_dim];
+                    let k_cache = &lc.k[kv_head];
+                    let v_cache = &lc.v[kv_head];
+
+                    let mut scores = vec![0.0f32; seq_len];
+                    for t in 0..seq_len {
+                        let k_t = &k_cache[t * head_dim..(t + 1) * head_dim];
+                        let mut dot = 0.0f32;
+                        for d in 0..head_dim {
+                            dot += q_head[d] * k_t[d];
+                        }
+                        scores[t] = dot * scale;
+                    }
+                    softmax_inplace(&mut scores);
+
+                    for d in 0..head_dim {
+                        out_slice[d] = 0.0;
+                    }
+                    for t in 0..seq_len {
+                        let v_t = &v_cache[t * head_dim..(t + 1) * head_dim];
+                        let w = scores[t];
+                        for d in 0..head_dim {
+                            out_slice[d] += w * v_t[d];
+                        }
+                    }
+                });
+            }
+
+            // Second batched projection: attention output back to hidden width.
+            let mut proj_fm = vec![0.0f32; h * n];
+            layer.o_proj.matmul(&attn_all, n, &mut proj_fm);
+            for i in 0..n {
+                for f in 0..h {
+                    residual[i * h + f] += proj_fm[f * n + i];
+                }
+            }
+
+            // Experts, grouped by expert rather than by token.
+            //
+            // One token at a time means an expert's weights are fetched once per
+            // token that routed to it - 30 tokens times 8 experts is 240 fetches
+            // per layer, many of them for the same expert. Grouping first means
+            // each expert is fetched once and serves its whole group, which is
+            // the only way the batched path pays for a sparse model.
+            let mi = self.moe_inter;
+
+            let mut normed2_all = vec![0.0f32; n * h];
+            for i in 0..n {
+                let mut tmp = vec![0.0f32; h];
+                rms_norm(&residual[i * h..(i + 1) * h], &layer.post_attention_layernorm, eps, &mut tmp);
+                normed2_all[i * h..(i + 1) * h].copy_from_slice(&tmp);
+            }
+
+            // Who routed where. `grupy_ekspertow[e]` holds (token, weight) pairs.
+            let mut grupy_ekspertow: Vec<Vec<(usize, f32)>> = vec![Vec::new(); layer.experts.len()];
+            for i in 0..n {
+                let mut router_scores = vec![0.0f32; layer.experts.len()];
+                layer.router.matvec(&normed2_all[i * h..(i + 1) * h], &mut router_scores);
+                softmax_inplace(&mut router_scores);
+                self.route(&router_scores, &mut chosen);
+                for &(e, weight) in chosen.iter() {
+                    grupy_ekspertow[e].push((i, weight));
+                }
+            }
+
+            let mut mlp_all = vec![0.0f32; n * h];
+            for (e, grupa) in grupy_ekspertow.iter().enumerate() {
+                if grupa.is_empty() {
+                    continue;
+                }
+                let expert = &layer.experts[e];
+                let g = grupa.len();
+
+                // Gather this expert's tokens into one contiguous batch.
+                let mut wejscie = vec![0.0f32; g * h];
+                for (slot, &(i, _)) in grupa.iter().enumerate() {
+                    wejscie[slot * h..(slot + 1) * h]
+                        .copy_from_slice(&normed2_all[i * h..(i + 1) * h]);
+                }
+
+                // Three passes over this expert's weights for the whole group,
+                // instead of three per token in it.
+                let mut gate_fm = vec![0.0f32; mi * g];
+                let mut up_fm = vec![0.0f32; mi * g];
+                expert.gate_proj.matmul(&wejscie, g, &mut gate_fm);
+                expert.up_proj.matmul(&wejscie, g, &mut up_fm);
+
+                for idx in 0..mi * g {
+                    let a = gate_fm[idx];
+                    let silu = a / (1.0 + (-a).exp());
+                    gate_fm[idx] = silu * up_fm[idx];
+                }
+
+                // down_proj wants token-major input; gate_fm is feature-major.
+                let mut posrednie = vec![0.0f32; g * mi];
+                for slot in 0..g {
+                    for f in 0..mi {
+                        posrednie[slot * mi + f] = gate_fm[f * g + slot];
+                    }
+                }
+
+                let mut out_fm = vec![0.0f32; h * g];
+                expert.down_proj.matmul(&posrednie, g, &mut out_fm);
+
+                for (slot, &(i, weight)) in grupa.iter().enumerate() {
+                    for f in 0..h {
+                        mlp_all[i * h + f] += weight * out_fm[f * g + slot];
+                    }
+                }
+            }
+
+            for idx in 0..n * h {
+                residual[idx] += mlp_all[idx];
+            }
+        }
+
+        cache.len += n;
+
+        // Only the last position matters for what comes next.
+        let last = (n - 1) * h;
+        let mut final_normed = vec![0.0f32; h];
+        rms_norm(&residual[last..last + h], &self.final_norm, eps, &mut final_normed);
+        let mut logits = vec![0.0f32; cfg.vocab_size];
+        self.lm_head.matvec(&final_normed, &mut logits);
+        logits
+    }
+
     pub fn forward_token(&self, token_id: u32, cache: &mut MoeKvCache) -> Vec<f32> {
         let cfg = &self.config;
         let h = cfg.hidden_size;

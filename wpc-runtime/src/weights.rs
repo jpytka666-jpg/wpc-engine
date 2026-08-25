@@ -19,6 +19,35 @@ pub trait Linear: Send + Sync {
     fn out_features(&self) -> usize;
     /// y = W x (+ bias if present). `x.len() == in_features`, `y.len() == out_features`.
     fn matvec(&self, x: &[f32], y: &mut [f32]);
+
+    /// Y = W X for `n` input vectors at once.
+    ///
+    /// `xs` holds the inputs back to back: vector `i` starts at `i * in_features`.
+    /// `ys` is written **feature-major**: the `n` results for output feature `f`
+    /// occupy `ys[f * n .. f * n + n]`. That layout is deliberate - it gives each
+    /// row of the weight matrix a contiguous slice to write, so rows parallelise
+    /// without any aliasing games.
+    ///
+    /// Why this exists at all: reading one token at a time means the whole weight
+    /// matrix crosses the memory bus once per token, and this machine is limited
+    /// by that bus, not by arithmetic. Decoding a row once and reusing it for `n`
+    /// vectors raises the work done per byte fetched from 2 FLOPs to 2n.
+    ///
+    /// The default implementation is correct but buys nothing - it just loops
+    /// `matvec`. Backends override it to get the reuse.
+    fn matmul(&self, xs: &[f32], n: usize, ys: &mut [f32]) {
+        let inf = self.in_features();
+        let outf = self.out_features();
+        debug_assert_eq!(xs.len(), inf * n);
+        debug_assert_eq!(ys.len(), outf * n);
+        let mut scratch = vec![0f32; outf];
+        for i in 0..n {
+            self.matvec(&xs[i * inf..(i + 1) * inf], &mut scratch);
+            for f in 0..outf {
+                ys[f * n + i] = scratch[f];
+            }
+        }
+    }
 }
 
 /// Token embedding / (possibly tied) LM head table: `[vocab_size, hidden_size]`.

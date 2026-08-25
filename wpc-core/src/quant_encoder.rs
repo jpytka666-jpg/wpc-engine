@@ -1,5 +1,6 @@
 use wpc_format::{
-    QuantBlockV2, QuantBlockV3, QuantBlockV4, BLOCK_SIZE_V2, BLOCK_SIZE_V4, MAX_CODE_V4,
+    QuantBlockV2, QuantBlockV3, QuantBlockV4, QuantBlockV5, BLOCK_SIZE_V2, BLOCK_SIZE_V4,
+    BLOCK_SIZE_V5, MAX_CODE_V4, MAX_CODE_V5,
 };
 use rayon::prelude::*;
 
@@ -92,6 +93,44 @@ pub fn encode_tensor_v4(data: &[f32]) -> Vec<QuantBlockV4> {
         let mut block = [0.0f32; BLOCK_SIZE_V4];
         block.copy_from_slice(&data[i*BLOCK_SIZE_V4..(i+1)*BLOCK_SIZE_V4]);
         affine_quant_block_v4(&block)
+    }).collect()
+}
+
+/// Quantize a block of 128 f32 values to v5 format (2-bit affine).
+///
+/// Four levels per block, from the same min/max fit. This is the coarsest the
+/// scheme goes: a weight is placed at min, max, or one of two points between,
+/// so the step is a third of the block's range. Whether that is still enough
+/// to compute with is exactly the open question v5 exists to answer.
+pub fn affine_quant_block_v5(weights: &[f32; BLOCK_SIZE_V5]) -> QuantBlockV5 {
+    let mut min_v = f32::MAX;
+    let mut max_v = f32::MIN;
+    for &w in weights {
+        if w < min_v { min_v = w; }
+        if w > max_v { max_v = w; }
+    }
+    let levels = MAX_CODE_V5 as f32; // 2^2 - 1
+    let scale = if max_v > min_v { (max_v - min_v) / levels } else { 1.0 };
+    let mut codes = [0u8; BLOCK_SIZE_V5];
+    for i in 0..BLOCK_SIZE_V5 {
+        let code = ((weights[i] - min_v) / scale).round().clamp(0.0, levels);
+        codes[i] = code as u8;
+    }
+    QuantBlockV5 {
+        zero_point: half::f16::from_f32(min_v),
+        scale: half::f16::from_f32(scale),
+        packed: QuantBlockV5::pack_codes(&codes),
+    }
+}
+
+/// Encode a flat tensor into v5 packed blocks.
+pub fn encode_tensor_v5(data: &[f32]) -> Vec<QuantBlockV5> {
+    assert_eq!(data.len() % BLOCK_SIZE_V5, 0, "tensor length must be a multiple of {BLOCK_SIZE_V5}");
+    let n_blocks = data.len() / BLOCK_SIZE_V5;
+    (0..n_blocks).into_par_iter().map(|i| {
+        let mut block = [0.0f32; BLOCK_SIZE_V5];
+        block.copy_from_slice(&data[i*BLOCK_SIZE_V5..(i+1)*BLOCK_SIZE_V5]);
+        affine_quant_block_v5(&block)
     }).collect()
 }
 
@@ -326,6 +365,134 @@ mod tests {
             let mut chunk = [0.0f32; BLOCK_SIZE_V4];
             chunk.copy_from_slice(&data[bi * BLOCK_SIZE_V4..(bi + 1) * BLOCK_SIZE_V4]);
             assert_eq!(*b, affine_quant_block_v4(&chunk), "block {bi} differs");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // v5
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn v5_block_is_thirty_six_bytes() {
+        assert_eq!(QuantBlockV5::SIZE, 36);
+        // 36 bytes / 128 values = 2.25 bits per value, against v4's 4.25.
+        assert_eq!(QuantBlockV4::SIZE, 68);
+    }
+
+    #[test]
+    fn v5_packing_round_trips_every_code_value() {
+        for v in 0u8..=MAX_CODE_V5 {
+            let uniform = [v; BLOCK_SIZE_V5];
+            let p = QuantBlockV5::pack_codes(&uniform);
+            assert_eq!(QuantBlockV5::unpack_codes(&p), uniform, "code value {v} failed");
+        }
+
+        let mut codes = [0u8; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            codes[i] = ((i * 3 + i / 8) % 4) as u8;
+        }
+        let packed = QuantBlockV5::pack_codes(&codes);
+        assert_eq!(QuantBlockV5::unpack_codes(&packed), codes);
+    }
+
+    #[test]
+    fn v5_encoder_never_emits_a_code_above_three() {
+        // A code out of range would be silently truncated by pack_codes and
+        // decode as a different weight, so the clamp is checked directly.
+        let mut weights = [0.0f32; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            weights[i] = (i as f32 * 0.91).sin() * 12.5 - 3.0;
+        }
+        let block = affine_quant_block_v5(&weights);
+        let packed = block.packed;
+        for &c in QuantBlockV5::unpack_codes(&packed).iter() {
+            assert!(c <= MAX_CODE_V5, "code {c} out of range");
+        }
+    }
+
+    #[test]
+    fn v5_reconstruction_error_stays_within_one_step() {
+        // The affine contract still holds at two bits: every weight is within
+        // half a step of its reconstruction. The step is just much larger.
+        let mut weights = [0.0f32; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            weights[i] = (i as f32 * 0.37).sin() * 0.05;
+        }
+        let block = affine_quant_block_v5(&weights);
+        let (zp, sc, packed) = (block.zero_point, block.scale, block.packed);
+        let zp = zp.to_f32();
+        let sc = sc.to_f32();
+        let codes = QuantBlockV5::unpack_codes(&packed);
+
+        for i in 0..BLOCK_SIZE_V5 {
+            let decoded = zp + codes[i] as f32 * sc;
+            let err = (decoded - weights[i]).abs();
+            assert!(
+                err <= sc * 0.5 + sc * 0.05 + 1e-6,
+                "value {i}: |{decoded} - {}| = {err} exceeds half a step ({})",
+                weights[i],
+                sc * 0.5
+            );
+        }
+    }
+
+    #[test]
+    fn v5_is_coarser_than_v4_but_still_bounded() {
+        // v5 must cost accuracy against v4 (4 levels, not 16) and must not
+        // beat it. Roughly 5x the step means roughly 5x the RMSE, so 10x is a
+        // generous ceiling that still fails loudly on a wrong code path.
+        let mut weights = [0.0f32; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            weights[i] = (i as f32 * 0.13).sin() * 0.04 + (i as f32 * 0.7).cos() * 0.01;
+        }
+
+        let v4 = affine_quant_block_v4(&weights);
+        let v5 = affine_quant_block_v5(&weights);
+
+        let (v4_zp, v4_sc, v4_packed) = (v4.zero_point, v4.scale, v4.packed);
+        let (v5_zp, v5_sc, v5_packed) = (v5.zero_point, v5.scale, v5.packed);
+        let v4_codes = QuantBlockV4::unpack_codes(&v4_packed);
+        let v5_codes = QuantBlockV5::unpack_codes(&v5_packed);
+
+        let mut e4 = 0.0f32;
+        let mut e5 = 0.0f32;
+        for i in 0..BLOCK_SIZE_V5 {
+            let d4 = v4_zp.to_f32() + v4_codes[i] as f32 * v4_sc.to_f32() - weights[i];
+            let d5 = v5_zp.to_f32() + v5_codes[i] as f32 * v5_sc.to_f32() - weights[i];
+            e4 += d4 * d4;
+            e5 += d5 * d5;
+        }
+        let rmse4 = (e4 / BLOCK_SIZE_V5 as f32).sqrt();
+        let rmse5 = (e5 / BLOCK_SIZE_V5 as f32).sqrt();
+
+        assert!(rmse5 >= rmse4, "v5 RMSE {rmse5} should not beat v4's {rmse4}");
+        assert!(rmse5 < rmse4 * 10.0, "v5 RMSE {rmse5} is far worse than 5x v4's {rmse4}");
+    }
+
+    #[test]
+    fn v5_survives_the_disk_round_trip() {
+        let mut weights = [0.0f32; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            weights[i] = i as f32 * 0.05 - 3.2;
+        }
+        let block = affine_quant_block_v5(&weights);
+        let bytes = block.to_le_bytes();
+        assert_eq!(bytes.len(), 36);
+        assert_eq!(QuantBlockV5::from_le_bytes(&bytes), block);
+    }
+
+    #[test]
+    fn v5_tensor_encode_matches_block_encode() {
+        // encode_tensor_v5 runs in parallel over rayon; a block-boundary bug
+        // there would not show up in any single-block test.
+        let n = BLOCK_SIZE_V5 * 5;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32 * 0.017).sin() * 0.3).collect();
+        let blocks = encode_tensor_v5(&data);
+        assert_eq!(blocks.len(), 5);
+        for (bi, b) in blocks.iter().enumerate() {
+            let mut chunk = [0.0f32; BLOCK_SIZE_V5];
+            chunk.copy_from_slice(&data[bi * BLOCK_SIZE_V5..(bi + 1) * BLOCK_SIZE_V5]);
+            assert_eq!(*b, affine_quant_block_v5(&chunk), "block {bi} differs");
         }
     }
 }

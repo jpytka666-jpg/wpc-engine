@@ -1,8 +1,8 @@
 use std::arch::x86_64::*;
 use half::f16;
 use wpc_format::{
-    CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, BLOCK_SIZE, BLOCK_SIZE_V2,
-    BLOCK_SIZE_V4, PACKED_BYTES_V4,
+    CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, QuantBlockV5, BLOCK_SIZE,
+    BLOCK_SIZE_V2, BLOCK_SIZE_V4, BLOCK_SIZE_V5, PACKED_BYTES_V4, PACKED_BYTES_V5,
 };
 
 /// Sum of horizontal adds of a __m256. Standard AVX2 trick.
@@ -288,6 +288,99 @@ pub fn matvec_v4_scalar(blocks: &[QuantBlockV4], x: &[f32]) -> f32 {
             let hi = (byte >> 4) as f32;
             acc += (zp + lo * scale) * x[row_base + j];
             acc += (zp + hi * scale) * x[row_base + PACKED_BYTES_V4 + j];
+        }
+    }
+    acc
+}
+
+/// Fused-SIMD v5 matvec: affine 2-bit codes, four per byte, decoded in
+/// registers.
+///
+/// v4's trick taken one level down. Byte j carries codes j, j+32, j+64 and
+/// j+96, so one 8-byte load widened by `_mm256_cvtepu8_epi32` yields four full
+/// YMM registers of codes after a mask and three shifts -- and the four runs of
+/// activations they pair with are each contiguous in `x`. No shuffles, no
+/// buffer, four FMAs per 8 bytes read.
+///
+/// The top slot needs no mask: the byte was zero-extended into a 32-bit lane,
+/// so `>> 6` leaves nothing above the two bits wanted.
+///
+/// # Safety
+/// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
+/// floats.
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn matvec_v5_fused(
+    blocks: &[QuantBlockV5],
+    x: *const f32,
+    n_blocks: usize,
+) -> f32 {
+    let mut acc = _mm256_setzero_ps();
+    let code_mask = _mm256_set1_epi32(0x03);
+    for i in 0..n_blocks {
+        let b = blocks.get_unchecked(i);
+        let zp = _mm256_set1_ps(b.zero_point.to_f32());
+        let scl = _mm256_set1_ps(b.scale.to_f32());
+        let packed_ptr = b.packed.as_ptr();
+        let row = x.add(i * BLOCK_SIZE_V5);
+
+        // 32 payload bytes in 4 groups of 8; each group covers 32 weights.
+        for g in 0..PACKED_BYTES_V5 / 8 {
+            let raw = _mm_loadl_epi64(packed_ptr.add(g * 8) as *const __m128i);
+            let widened = _mm256_cvtepu8_epi32(raw);
+
+            // Slot 0 -> codes g*8 .. g*8+8, activations at the same offset.
+            let c0 = _mm256_cvtepi32_ps(_mm256_and_si256(widened, code_mask));
+            let w0 = _mm256_fmadd_ps(c0, scl, zp);
+            let x0 = _mm256_loadu_ps(row.add(g * 8));
+            acc = _mm256_fmadd_ps(w0, x0, acc);
+
+            // Slot 1 -> codes 32+g*8 ..
+            let c1 = _mm256_cvtepi32_ps(_mm256_and_si256(
+                _mm256_srli_epi32(widened, 2),
+                code_mask,
+            ));
+            let w1 = _mm256_fmadd_ps(c1, scl, zp);
+            let x1 = _mm256_loadu_ps(row.add(PACKED_BYTES_V5 + g * 8));
+            acc = _mm256_fmadd_ps(w1, x1, acc);
+
+            // Slot 2 -> codes 64+g*8 ..
+            let c2 = _mm256_cvtepi32_ps(_mm256_and_si256(
+                _mm256_srli_epi32(widened, 4),
+                code_mask,
+            ));
+            let w2 = _mm256_fmadd_ps(c2, scl, zp);
+            let x2 = _mm256_loadu_ps(row.add(2 * PACKED_BYTES_V5 + g * 8));
+            acc = _mm256_fmadd_ps(w2, x2, acc);
+
+            // Slot 3 -> codes 96+g*8 .. ; the lane holds only the byte, so the
+            // shift alone leaves the two bits clean.
+            let c3 = _mm256_cvtepi32_ps(_mm256_srli_epi32(widened, 6));
+            let w3 = _mm256_fmadd_ps(c3, scl, zp);
+            let x3 = _mm256_loadu_ps(row.add(3 * PACKED_BYTES_V5 + g * 8));
+            acc = _mm256_fmadd_ps(w3, x3, acc);
+        }
+    }
+    hsum_avx2(acc)
+}
+
+/// Scalar v5 matvec: the same arithmetic, for CPUs without AVX2+FMA.
+///
+/// Walks the payload in the stored order (slot by slot within each byte), which
+/// is the SIMD kernel's order too, so the two agree term by term and not merely
+/// in the final sum.
+pub fn matvec_v5_scalar(blocks: &[QuantBlockV5], x: &[f32]) -> f32 {
+    let mut acc = 0.0f32;
+    for (block_idx, b) in blocks.iter().enumerate() {
+        let zp = b.zero_point.to_f32();
+        let scale = b.scale.to_f32();
+        let row_base = block_idx * BLOCK_SIZE_V5;
+        let packed = b.packed;
+        for j in 0..PACKED_BYTES_V5 {
+            let byte = packed[j];
+            for slot in 0..4 {
+                let code = ((byte >> (2 * slot)) & 0x03) as f32;
+                acc += (zp + code * scale) * x[row_base + slot * PACKED_BYTES_V5 + j];
+            }
         }
     }
     acc
@@ -680,5 +773,177 @@ mod tests {
         let e3 = (y3 - exact).abs() / scale;
         let e4 = (y4 - exact).abs() / scale;
         assert!(e4 < 0.02, "v4 dot product off by {e4} of term magnitude (v3: {e3})");
+    }
+
+    // -------------------------------------------------------------------------
+    // v5
+    // -------------------------------------------------------------------------
+
+    /// v5 blocks with a distinct code pattern per block, and activations that
+    /// differ at every position. A kernel that read the wrong 2-bit slot -- or
+    /// restarted `x` at each block -- would still pass a single-block,
+    /// constant-activation test; it cannot pass this one.
+    fn multi_block_fixture_v5(n_blocks: usize) -> (Vec<QuantBlockV5>, Vec<f32>) {
+        let mut blocks = Vec::with_capacity(n_blocks);
+        for bi in 0..n_blocks {
+            let mut codes = [0u8; BLOCK_SIZE_V5];
+            for i in 0..BLOCK_SIZE_V5 {
+                codes[i] = ((i * 3 + bi * 5 + i / 32) % 4) as u8;
+            }
+            blocks.push(QuantBlockV5 {
+                zero_point: f16::from_f32(-0.4 + bi as f32 * 0.1),
+                scale: f16::from_f32(0.017 + bi as f32 * 0.003),
+                packed: QuantBlockV5::pack_codes(&codes),
+            });
+        }
+        let x: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V5)
+            .map(|i| ((i as f32) * 0.013).sin() + 0.5)
+            .collect();
+        (blocks, x)
+    }
+
+    /// Reference dot product straight from the documented decode formula, in
+    /// natural weight order -- deliberately NOT in the packed order the kernels
+    /// walk, so an agreement means the layout is right and not just consistent.
+    fn reference_dot_v5(blocks: &[QuantBlockV5], x: &[f32]) -> f32 {
+        let mut acc = 0.0f32;
+        for (bi, b) in blocks.iter().enumerate() {
+            let zp = b.zero_point.to_f32();
+            let sc = b.scale.to_f32();
+            let packed = b.packed;
+            let codes = QuantBlockV5::unpack_codes(&packed);
+            for i in 0..BLOCK_SIZE_V5 {
+                acc += (zp + codes[i] as f32 * sc) * x[bi * BLOCK_SIZE_V5 + i];
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn scalar_v5_matches_the_reference_formula() {
+        let (blocks, x) = multi_block_fixture_v5(5);
+        let expected = reference_dot_v5(&blocks, &x);
+        let got = matvec_v5_scalar(&blocks, &x);
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v5 {got} vs reference {expected}");
+    }
+
+    #[test]
+    fn scalar_v5_walks_the_whole_row_not_just_the_first_block() {
+        let (blocks, x) = multi_block_fixture_v5(7);
+        let expected = reference_dot_v5(&blocks, &x);
+        let got = matvec_v5_scalar(&blocks, &x);
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v5 multi-block: got {got}, expected {expected}");
+    }
+
+    #[test]
+    fn fused_v5_agrees_with_scalar_v5_over_many_blocks() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            eprintln!("skipping: CPU lacks AVX2+FMA");
+            return;
+        }
+        let (blocks, x) = multi_block_fixture_v5(13);
+        let s = matvec_v5_scalar(&blocks, &x);
+        let f = unsafe { matvec_v5_fused(&blocks, x.as_ptr(), blocks.len()) };
+        let rel = (s - f).abs() / f.abs().max(1e-6);
+        assert!(rel < 1e-4, "scalar v5 {s} vs fused v5 {f}");
+    }
+
+    #[test]
+    fn fused_v5_matches_the_reference_formula() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let (blocks, x) = multi_block_fixture_v5(9);
+        let expected = reference_dot_v5(&blocks, &x);
+        let got = unsafe { matvec_v5_fused(&blocks, x.as_ptr(), blocks.len()) };
+        let rel = (got - expected).abs() / expected.abs().max(1e-6);
+        assert!(rel < 1e-4, "fused v5 {got} vs reference {expected}");
+    }
+
+    /// Every code value in every one of the four 2-bit slots, checked through
+    /// the kernel rather than only through pack/unpack: a mask or shift applied
+    /// to the wrong slot shows up here as a wrong dot product.
+    #[test]
+    fn fused_v5_handles_every_code_value() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        for v in 0u8..=3 {
+            let codes = [v; BLOCK_SIZE_V5];
+            let block = QuantBlockV5 {
+                zero_point: f16::from_f32(-0.25),
+                scale: f16::from_f32(0.03125), // exact in f16, so the check is tight
+                packed: QuantBlockV5::pack_codes(&codes),
+            };
+            let x: Vec<f32> = (0..BLOCK_SIZE_V5).map(|i| (i as f32) * 0.01 - 0.6).collect();
+
+            let got = unsafe { matvec_v5_fused(std::slice::from_ref(&block), x.as_ptr(), 1) };
+            let expected = reference_dot_v5(std::slice::from_ref(&block), &x);
+            let rel = (got - expected).abs() / expected.abs().max(1e-6);
+            assert!(rel < 1e-4, "code {v}: fused {got} vs reference {expected}");
+        }
+    }
+
+    /// Each quarter of the block set to a different constant, so a kernel that
+    /// paired slot 1's codes with slot 2's activations cannot pass. That swap is
+    /// the specific failure the 32-apart layout exists to avoid, and a
+    /// uniform-code test is blind to it.
+    #[test]
+    fn fused_v5_pairs_each_slot_with_the_right_activations() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let mut codes = [0u8; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            codes[i] = (i / 32) as u8; // quarter 0 -> 0, quarter 1 -> 1, ...
+        }
+        let block = QuantBlockV5 {
+            zero_point: f16::from_f32(0.0),
+            scale: f16::from_f32(1.0),
+            packed: QuantBlockV5::pack_codes(&codes),
+        };
+        // Activations distinct per quarter too, so a swap changes the sum.
+        let x: Vec<f32> = (0..BLOCK_SIZE_V5).map(|i| (i / 32) as f32 + 1.0).collect();
+
+        let got = unsafe { matvec_v5_fused(std::slice::from_ref(&block), x.as_ptr(), 1) };
+        // Per quarter q: 32 weights of value q against activations of q+1.
+        // 32 * (0*1 + 1*2 + 2*3 + 3*4) = 32 * 20 = 640.
+        let expected = 640.0f32;
+        assert!(
+            (got - expected).abs() < 1e-3,
+            "fused v5 {got} vs hand-computed {expected}: slots paired with wrong activations"
+        );
+    }
+
+    /// The end-to-end shape of the claim: encode real-looking weights at v4 and
+    /// at v5 and check the v5 dot product still tracks the exact one. The bound
+    /// is looser than v4's on purpose -- four levels is genuinely coarse -- but
+    /// a broken code path leaves the result nowhere near.
+    #[test]
+    fn fused_v5_tracks_the_exact_dot_product() {
+        if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+            return;
+        }
+        let n_blocks = 11;
+        let weights: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V5)
+            .map(|i| ((i as f32) * 0.011).sin() * 0.04)
+            .collect();
+        let x: Vec<f32> = (0..n_blocks * BLOCK_SIZE_V5)
+            .map(|i| ((i as f32) * 0.019).cos())
+            .collect();
+
+        let v4_blocks = wpc_core::quant_encoder::encode_tensor_v4(&weights);
+        let v5_blocks = wpc_core::quant_encoder::encode_tensor_v5(&weights);
+
+        let exact = unsafe { matvec_fp32_baseline(weights.as_ptr(), x.as_ptr(), weights.len()) };
+        let y4 = unsafe { matvec_v4_fused(&v4_blocks, x.as_ptr(), v4_blocks.len()) };
+        let y5 = unsafe { matvec_v5_fused(&v5_blocks, x.as_ptr(), v5_blocks.len()) };
+
+        let scale: f32 = weights.iter().zip(x.iter()).map(|(w, a)| (w * a).abs()).sum();
+        let e4 = (y4 - exact).abs() / scale;
+        let e5 = (y5 - exact).abs() / scale;
+        assert!(e5 < 0.15, "v5 dot product off by {e5} of term magnitude (v4: {e4})");
     }
 }

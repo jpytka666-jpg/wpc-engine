@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "aions-agent",
     "wpc-format",
     "wpc-eval", "wpc-core", "wpc-compiler",
     "wpc-runtime",

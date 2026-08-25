@@ -9,15 +9,30 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 #[command(author, version, about)]
 struct Args {
     #[arg(long)] task: String,
-    #[arg(long, default_value = "/home/aions/qwen3-coder-model")] model: PathBuf,
+    #[arg(long, default_value = "/home/aions/qwen3-coder-run")] model: PathBuf,
     #[arg(long, default_value = "/home/aions/qwen3-coder-wpc4")] wpc: PathBuf,
     #[arg(long, default_value = "v4")] scheme: String,
     #[arg(long, default_value = "qwen3-moe")] arch: String,
     #[arg(long, default_value_t = 6)] max_turns: usize,
     #[arg(long, default_value_t = 120)] max_tokens: usize,
-    #[arg(long, default_value = "/home/aions/wpc-engine/target/release/wpc-runtime")] runtime: PathBuf,
+    #[arg(long, default_value = "/home/aions/wpc-workspace/target/release/wpc-runtime")] runtime: PathBuf,
     #[arg(long)] mcp_command: Option<String>,
     #[arg(long)] mcp_arg: Vec<String>,
+    /// Only expose tools whose name contains one of these. Repeatable.
+    #[arg(long)] tools: Vec<String>,
+    /// File with the hand-classified tool chambers.
+    #[arg(long, default_value = "/mnt/d/skrypty/rewolwer_narzedzi.txt")] chambers: String,
+    /// How many tools to show the model when --tools is not given.
+    #[arg(long, default_value_t = 12)] tool_budget: usize,
+    /// Weights for the small helper the agent can delegate to.
+    #[arg(long, default_value = "/home/aions/qwen-v3-simd")] maly_wpc: PathBuf,
+    /// Tokenizer and norms for that helper.
+    #[arg(long, default_value = "/home/aions/qwen-src")] maly_model: PathBuf,
+    /// Compression scheme of the helper.
+    #[arg(long, default_value = "v3")] maly_scheme: String,
+
+    /// Print each proposed call and require a typed y before running it.
+    #[arg(long, default_value_t = false)] ask: bool,
 }
 
 struct Mcp { child: Child, input: ChildStdin, output: BufReader<ChildStdout>, id: u64 }
@@ -53,46 +68,411 @@ impl Mcp {
 }
 impl Drop for Mcp { fn drop(&mut self) { let _ = self.child.kill(); } }
 
-fn manifest(tools: &[Value]) -> String {
-    serde_json::to_string_pretty(&tools.iter().map(|t| json!({"name":t.get("name"),"description":t.get("description"),"inputSchema":t.get("inputSchema")})).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into())
+/// One line per tool instead of the full JSON schema.
+///
+/// The catalogue goes into the prompt on every turn, and prefill on this
+/// machine runs at roughly a second per token. The pretty-printed schemas for
+/// the whole AIONS surface came to several thousand tokens, which put an hour
+/// or more of reading in front of every single turn. Name, one-line purpose
+/// and argument names carry enough for the model to choose correctly.
+/// Pick the tools that look relevant to the task.
+///
+/// AIONS exposes 71 tools; a task uses a handful. Every unused entry is prompt
+/// the model re-reads on each turn at about a second per token, so the whole
+/// catalogue costs more than the work does. AIONS has no tool-suggestion
+/// endpoint of its own - its `mcp_find` locates other servers, not tools - so
+/// the selection happens here: score each tool by how many words of the task
+/// appear in its name or description, keep the best `keep`, and always keep a
+/// few general-purpose ones so the model is never left without a way to look
+/// something up.
+fn relevant(tools: Vec<Value>, task: &str, keep: usize) -> Vec<Value> {
+    const ALWAYS: [&str; 3] = ["system_health", "fast_search", "memory_recall"];
+
+    let words: Vec<String> = task
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 3)
+        .map(String::from)
+        .collect();
+
+    let mut scored: Vec<(usize, Value)> = tools
+        .into_iter()
+        .map(|t| {
+            let name = t.get("name").and_then(Value::as_str).unwrap_or("").to_lowercase();
+            let desc = t
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_lowercase();
+            let mut score = words
+                .iter()
+                .filter(|w| name.contains(w.as_str()) || desc.contains(w.as_str()))
+                .count();
+            // A name match is worth more than a passing mention in prose.
+            score += words.iter().filter(|w| name.contains(w.as_str())).count() * 2;
+            if ALWAYS.iter().any(|a| name == *a) {
+                score += 1;
+            }
+            (score, t)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.truncate(keep.max(ALWAYS.len()));
+    scored.into_iter().map(|(_, t)| t).collect()
 }
-fn prompt(tools: &str, transcript: &str) -> String { format!(r#"You are AIONS, a local engineering agent running on a WPC-compressed Qwen model.
+
+/// Load the hand-classified tool chambers.
+///
+/// Format per line: `CHAMBER | keywords | tools`. Two chambers are special:
+/// STALE is always offered, MARTWE is never offered. Keeping the classification
+/// in a file rather than in code means a wrong grouping is a text edit, not a
+/// rebuild - and it will be wrong at first, because seventy-one tools do not
+/// sort themselves neatly on the first attempt.
+fn chambers(path: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let mut parts = l.split('|');
+            let name = parts.next()?.trim().to_string();
+            let split = |s: &str| -> Vec<String> {
+                s.split(',').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect()
+            };
+            let keys = split(parts.next().unwrap_or(""));
+            let tools = split(parts.next().unwrap_or(""));
+            Some((name, keys, tools))
+        })
+        .collect()
+}
+
+/// Turn the cylinder: pick the chamber whose keywords best fit the task.
+///
+/// Returns the chosen chamber's tools plus the always-on ones, with anything
+/// listed as dead removed. Falls back to the old keyword scoring when no
+/// chamber matches, so an unclassified task still gets something usable.
+fn revolver(tools: Vec<Value>, task: &str, keep: usize, path: &str) -> (Vec<Value>, String) {
+    let cyl = chambers(path);
+    if cyl.is_empty() {
+        return (relevant(tools, task, keep), "brak klasyfikacji".into());
+    }
+    let low = task.to_lowercase();
+
+    let dead: Vec<String> = cyl.iter().find(|(n, _, _)| n == "MARTWE").map(|(_, _, t)| t.clone()).unwrap_or_default();
+    let always: Vec<String> = cyl.iter().find(|(n, _, _)| n == "STALE").map(|(_, _, t)| t.clone()).unwrap_or_default();
+
+    let best = cyl
+        .iter()
+        .filter(|(n, _, _)| n != "MARTWE" && n != "STALE")
+        .map(|(n, keys, t)| (keys.iter().filter(|k| low.contains(k.as_str())).count(), n, t))
+        .max_by_key(|(score, _, _)| *score);
+
+    let (chosen, name) = match best {
+        Some((score, n, t)) if score > 0 => (t.clone(), n.clone()),
+        _ => return (relevant(tools, task, keep), "zadna komora nie pasuje".into()),
+    };
+
+    let mut wanted = chosen;
+    wanted.extend(always);
+    let picked: Vec<Value> = tools
+        .into_iter()
+        .filter(|t| {
+            let n = t.get("name").and_then(Value::as_str).unwrap_or("").to_lowercase();
+            wanted.contains(&n) && !dead.contains(&n)
+        })
+        .collect();
+    (picked, name)
+}
+
+fn manifest(tools: &[Value]) -> String {
+    tools
+        .iter()
+        .map(|t| {
+            let name = t.get("name").and_then(Value::as_str).unwrap_or("?");
+            let desc = t
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .lines()
+                .next()
+                .unwrap_or("");
+            let desc: String = desc.chars().take(90).collect();
+            let args: Vec<&str> = t
+                .get("inputSchema")
+                .and_then(|s| s.get("properties"))
+                .and_then(Value::as_object)
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            format!("{name}({}) - {desc}", args.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Keep only the tools named in `--tools`, if any were named.
+///
+/// AIONS exposes on the order of ninety tools. A task normally needs a
+/// handful, and every unused entry is prompt the model pays to read again on
+/// each turn.
+fn narrow(tools: Vec<Value>, wanted: &[String]) -> Vec<Value> {
+    if wanted.is_empty() {
+        return tools;
+    }
+    tools
+        .into_iter()
+        .filter(|t| {
+            t.get("name")
+                .and_then(Value::as_str)
+                .map(|n| wanted.iter().any(|w| n.contains(w.as_str())))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+/// Build the turn in the model's own conversation format.
+///
+/// Sent raw, the instructions read as an unfinished article and the model
+/// continued writing it instead of acting. The markers come from
+/// `chat_template.jinja` beside the weights.
+fn prompt(tools: &str, transcript: &str) -> String { format!(r#"<|im_start|>system
+You are AIONS, a local engineering agent running on a WPC-compressed Qwen model.
 Use ONLY tools from this live MCP catalogue. Never invent a tool.
 For one tool action output exactly: TOOL_CALL {{"name":"tool","arguments":{{...}}}}
-For completion output exactly: FINAL {{"text":"..."}}
+To hand a small, self-contained question to a faster helper model, output:
+SUBAGENT {{"task":"..."}}
+Use it for simple lookups and summaries, not for anything needing judgement.
+To run SEVERAL shell commands at once, output them between PROGRAM and END_PROGRAM.
+Prefer this over several separate tool calls - it is far cheaper. Example:
+PROGRAM
+ls src/
+wc -l src/*.rs
+END_PROGRAM
+For completion output exactly: FINAL {{"text":"...","verify":"shell command proving it"}}\nThe verify command is run for you. If it fails, you are not finished and must continue.\nExample of a finished turn:\nFINAL {{"text":"Added the parser and it compiles","verify":"cargo build --release 2>&1 | tail -1"}}
 Do not output both in one turn.
 
 LIVE TOOLS:
-{tools}
-
-TRANSCRIPT:
-{transcript}
-
-__WPC_AGENT_ASSISTANT__
+{tools}<|im_end|>
+<|im_start|>user
+{transcript}<|im_end|>
+<|im_start|>assistant
 "#) }
-fn reply(s: &str) -> String { s.rsplit_once("__WPC_AGENT_ASSISTANT__").map(|(_,x)|x.trim().into()).unwrap_or_else(||s.trim().into()) }
+/// Keep only what the model wrote after its turn was opened.
+fn reply(s: &str) -> String {
+    s.rsplit_once("<|im_start|>assistant")
+        .map(|(_, x)| x.trim().to_string())
+        .unwrap_or_else(|| s.trim().to_string())
+}
 
-enum Action { Tool(String, Value), Final(String) }
+enum Action { Tool(String, Value), Program(String), Subagent(String), Final(String, Option<String>) }
+/// Refuse anything that could destroy work, whatever the operator answers.
+///
+/// The approval gate asks a person; this list does not. Handing a shell to a
+/// model that occasionally misreads its own instructions needs a floor under
+/// it, not just a prompt above it.
+const ZAKAZANE: [&str; 10] = [
+    "rm -rf", "rm -fr", "mkfs", "dd if=", "> /dev/sd", "shutdown",
+    "reboot", ":(){", "chmod -R 777 /", "mv /",
+];
+
+fn niebezpieczne(program: &str) -> Option<&'static str> {
+    let low = program.to_lowercase();
+    ZAKAZANE.into_iter().find(|z| low.contains(z))
+}
+
 fn action(s: &str) -> Result<Action> {
+    // A program is several commands the model wants run together. One round
+    // trip instead of one per command - which matters here because every trip
+    // re-reads the whole conversation at about a second per word.
+    if let Some(start) = s.find("PROGRAM") {
+        let rest = &s[start + "PROGRAM".len()..];
+        if let Some(end) = rest.find("END_PROGRAM") {
+            let body = rest[..end].trim();
+            if !body.is_empty() {
+                return Ok(Action::Program(body.to_string()));
+            }
+        }
+    }
     for line in s.lines().map(str::trim) {
+        if let Some(x) = line.strip_prefix("SUBAGENT ") {
+            let v: Value = serde_json::from_str(x)?;
+            return Ok(Action::Subagent(
+                v.get("task").and_then(Value::as_str).ok_or_else(|| anyhow!("missing task"))?.into(),
+            ));
+        }
         if let Some(x) = line.strip_prefix("TOOL_CALL ") { let v:Value=serde_json::from_str(x)?; return Ok(Action::Tool(v.get("name").and_then(Value::as_str).ok_or_else(||anyhow!("missing tool name"))?.into(),v.get("arguments").cloned().unwrap_or_else(||json!({})))); }
-        if let Some(x) = line.strip_prefix("FINAL ") { let v:Value=serde_json::from_str(x)?; return Ok(Action::Final(v.get("text").and_then(Value::as_str).ok_or_else(||anyhow!("missing final text"))?.into())); }
+        if let Some(x) = line.strip_prefix("FINAL ") { let v:Value=serde_json::from_str(x)?; return Ok(Action::Final(
+                v.get("text").and_then(Value::as_str).ok_or_else(||anyhow!("missing final text"))?.into(),
+                v.get("verify").and_then(Value::as_str).map(str::to_string),
+            )); }
     }
     bail!("model emitted neither TOOL_CALL nor FINAL")
 }
+/// Run the command the model offered as proof that the task is done.
+///
+/// This is the same rule the human operator works under here: no claim of
+/// completion without a command that backs it. The model proposes the check,
+/// we run it, and a non-zero exit means it is simply not finished yet - the
+/// output goes back so it can see what is still wrong.
+fn verify(cmd: &str, dir: &std::path::Path) -> (bool, String) {
+    match Command::new("sh").arg("-c").arg(cmd).current_dir(dir).output() {
+        Ok(o) => {
+            let mut text = String::from_utf8_lossy(&o.stdout).to_string();
+            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            let text: String = text.chars().take(500).collect();
+            (o.status.success(), text)
+        }
+        Err(e) => (false, format!("could not run the check: {e}")),
+    }
+}
+
+/// Run one turn and report what it cost.
+///
+/// The engine prints its own timings to stderr; we pull them out so every turn
+/// shows how long the model spent reading the conversation versus writing the
+/// answer. Reading is the part that grows: each turn re-reads everything said
+/// so far, at roughly a second per word. That number is the whole reason
+/// PROGRAM exists, so it has to be visible.
 fn model(args:&Args, p:&str)->Result<String>{
+    let zegar = std::time::Instant::now();
     let o=Command::new(&args.runtime).args(["--model"]).arg(&args.model).args(["--wpc"]).arg(&args.wpc).args(["--scheme",&args.scheme,"--arch",&args.arch,"--prompt",p,"--max-tokens"]).arg(args.max_tokens.to_string()).output()?;
     if !o.status.success(){bail!("wpc-runtime failed: {}",String::from_utf8_lossy(&o.stderr))}
+
+    let err = String::from_utf8_lossy(&o.stderr);
+    let wyjmij = |po: &str| -> Option<String> {
+        err.split(po).nth(1)?.split_whitespace().next().map(|x| x.trim_end_matches('s').to_string())
+    };
+    let czytanie = wyjmij("batched) in ").or_else(|| wyjmij("tokens) in "));
+    let slow_w_poleceniu = err.split("prefill (").nth(1)
+        .and_then(|x| x.split_whitespace().next()).unwrap_or("?").to_string();
+    let pisanie = err.split("tokens in ").nth(1)
+        .and_then(|x| x.split_whitespace().next()).map(|x| x.trim_end_matches('s').to_string());
+
+    let calosc = zegar.elapsed().as_secs_f32();
+    eprintln!(
+        "CZAS TURY: {calosc:.1}s calkowicie  |  czytanie {} slow: {}s  |  pisanie: {}s",
+        slow_w_poleceniu,
+        czytanie.unwrap_or_else(|| "?".into()),
+        pisanie.unwrap_or_else(|| "?".into())
+    );
+
     Ok(reply(&String::from_utf8_lossy(&o.stdout)))
 }
 fn main()->Result<()>{
     let a=Args::parse();
     let cmd=a.mcp_command.clone().or_else(||std::env::var("AIONS_MCP_COMMAND").ok()).ok_or_else(||anyhow!("set --mcp-command or AIONS_MCP_COMMAND"))?;
-    let mut m=Mcp::spawn(&cmd,&a.mcp_arg)?; let tools=m.tools()?; eprintln!("AIONS MCP: discovered {} tools",tools.len());
+    let mut m=Mcp::spawn(&cmd,&a.mcp_arg)?;
+    let all=m.tools()?;
+    let (tools, komora) = if a.tools.is_empty() {
+        revolver(all.clone(), &a.task, a.tool_budget, &a.chambers)
+    } else {
+        (narrow(all.clone(), &a.tools), "wybor reczny".to_string())
+    };
+    eprintln!("KOMORA: {komora}");
+    eprintln!("AIONS MCP: {} tools available, {} exposed to the model",all.len(),tools.len());
+    {
+        // Print the chosen names, not just the count: the point of narrowing the
+        // catalogue is lost if nobody can see what the model was actually offered.
+        let names: Vec<&str> = tools.iter().filter_map(|t| t.get("name").and_then(Value::as_str)).collect();
+        eprintln!("PODANE MODELOWI: {}", names.join(", "));
+    }
     let tools=manifest(&tools); let mut transcript=format!("TASK: {}\n",a.task);
     for turn in 1..=a.max_turns { eprintln!("=== AIONS AGENT TURN {turn}/{} ===",a.max_turns); let r=model(&a,&prompt(&tools,&transcript))?; eprintln!("MODEL: {r}"); match action(&r)? {
-        Action::Final(x)=>{println!("{x}");return Ok(())},
-        Action::Tool(n,args)=>{let out=match m.call(&n,args.clone()){Ok(v)=>serde_json::to_string_pretty(&v)?,Err(e)=>format!("TOOL_ERROR: {e}")}; transcript.push_str(&format!("\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\n{out}\n",serde_json::to_string(&json!({"name":n,"arguments":args}))?));}
+        Action::Final(x,proof)=>{
+            match proof {
+                None => {
+                    eprintln!("koniec bez dowodu - odrzucony");
+                    transcript.push_str("\nREJECTED: you must include a verify command in FINAL. Continue working.\n");
+                }
+                Some(cmd) => {
+                    eprintln!("sprawdzam dowod: {cmd}");
+                    let (ok, out) = verify(&cmd, std::path::Path::new("/home/aions/wpc-workspace"));
+                    if ok {
+                        println!("{x}");
+                        println!("\n--- DOWOD ---\nkomenda: {cmd}\n{out}");
+                        return Ok(());
+                    }
+                    eprintln!("dowod nie przeszedl - zadanie niedokonczone");
+                    transcript.push_str(&format!("\nREJECTED: your check `{cmd}` failed:\n{out}\nYou are not finished. Fix it and continue.\n"));
+                }
+            }
+        },
+        Action::Subagent(zadanie)=>{
+            // A single question to the small model, with no tools and no loop.
+            // It is 369 MB against the coder's 15 GB, so it barely competes for
+            // the memory bus - which is the only reason running it alongside
+            // is cheaper than doing the work in the big model directly.
+            eprintln!("ZLECAM MALEMU: {zadanie}");
+            let zegar = std::time::Instant::now();
+            let o = Command::new(&a.runtime)
+                .args(["--model"]).arg(&a.maly_model)
+                .args(["--wpc"]).arg(&a.maly_wpc)
+                .args(["--scheme", &a.maly_scheme, "--chat", "--prompt", &zadanie, "--max-tokens", "120"])
+                .output();
+            let odp = match o {
+                Ok(o) if o.status.success() => {
+                    let t = String::from_utf8_lossy(&o.stdout).to_string();
+                    let t = t.rsplit_once(&zadanie).map(|(_, x)| x.trim().to_string()).unwrap_or(t);
+                    t.chars().take(600).collect::<String>()
+                }
+                Ok(o) => format!("helper failed: {}", String::from_utf8_lossy(&o.stderr).chars().take(200).collect::<String>()),
+                Err(e) => format!("could not start helper: {e}"),
+            };
+            eprintln!("MALY ODPOWIEDZIAL w {:.1}s", zegar.elapsed().as_secs_f32());
+            transcript.push_str(&format!("\n\n--- HELPER ANSWER ---\n{odp}\n--- END ---\n\nReply with one action, or FINAL if done.\n"));
+        },
+        Action::Program(prog)=>{
+            if let Some(z) = niebezpieczne(&prog) {
+                eprintln!("ODRZUCONE: program zawiera '{z}'");
+                transcript.push_str(&format!("\nREJECTED: your program contained '{z}', which is never allowed. Use a different approach.\n"));
+                continue;
+            }
+            eprintln!("\n--- PROPOSED PROGRAM ---\n{prog}\n--- END ---");
+            if a.ask {
+                eprintln!("Run it? [y/N] ");
+                let mut answer=String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim() != "y" {
+                    eprintln!("refused");
+                    transcript.push_str("\nREFUSED by the operator. Choose a different action.\n");
+                    continue;
+                }
+            }
+            let out = std::process::Command::new("bash").arg("-c").arg(&prog)
+                .current_dir("/home/aions/wpc-workspace").output();
+            let text = match out {
+                Ok(o) => {
+                    let mut t = String::from_utf8_lossy(&o.stdout).to_string();
+                    t.push_str(&String::from_utf8_lossy(&o.stderr));
+                    // Capped hard: every character returns as prompt next turn.
+                    t.chars().take(1200).collect::<String>()
+                }
+                Err(e) => format!("could not run: {e}"),
+            };
+            eprintln!("PROGRAM -> {} znakow", text.len());
+            transcript.push_str(&format!("\n\n--- PROGRAM OUTPUT ---\n{text}\n--- END ---\n\nReply with one tool call, another PROGRAM, or FINAL if done.\n"));
+        },
+        Action::Tool(n,args)=>{
+            if a.ask {
+                // The model proposes; a person decides. Anything other than a
+                // typed y is refused, and the refusal goes back into the
+                // transcript so the model can choose differently.
+                eprintln!("\n--- PROPOSED TOOL CALL ---\n{n} {}\nRun it? [y/N] ",serde_json::to_string(&args)?);
+                let mut answer=String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if answer.trim() != "y" {
+                    eprintln!("refused");
+                    transcript.push_str(&format!("\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\nREFUSED by the operator. Choose a different action.\n",serde_json::to_string(&json!({"name":n,"arguments":args}))?));
+                    continue;
+                }
+            }
+            eprintln!("UZYTE NARZEDZIE: {n}");
+            let out=match m.call(&n,args.clone()){
+                Ok(v)=>{eprintln!("  -> odpowiedzialo"); serde_json::to_string_pretty(&v)?},
+                Err(e)=>{eprintln!("  -> BLAD: {e}"); format!("TOOL_ERROR: {e}")}
+            }; transcript.push_str(&format!("\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\n{out}\n",serde_json::to_string(&json!({"name":n,"arguments":args}))?));}
     }}
     bail!("agent reached max_turns without FINAL")
 }

@@ -191,6 +191,46 @@ impl Linear for WpcLinearV4 {
             }
         }
     }
+
+    /// Batched: decode each weight row once, then reuse it for all `n` inputs.
+    ///
+    /// This is where the memory bus stops being the ceiling. `matvec` walks the
+    /// whole matrix per token; here the matrix is walked once and each decoded
+    /// row - 8 KB for the coder, small enough to sit in L1 - is dotted against
+    /// every input before it is discarded. Work per byte fetched goes from
+    /// 2 FLOPs to 2n.
+    ///
+    /// Output is feature-major (`ys[f * n + i]`) so each row owns a contiguous
+    /// slice and the rows parallelise without aliasing.
+    fn matmul(&self, xs: &[f32], n: usize, ys: &mut [f32]) {
+        debug_assert_eq!(xs.len(), self.in_features * n);
+        debug_assert_eq!(ys.len(), self.out_features * n);
+        let inf = self.in_features;
+        let blocks_per_row = inf / BLOCK_SIZE_V4;
+        let blocks = self.data.blocks_for(&self.tensor_name);
+
+        use rayon::prelude::*;
+        ys.par_chunks_exact_mut(n)
+            .zip(blocks.par_chunks_exact(blocks_per_row))
+            .for_each(|(out_row, row_blocks)| {
+                let mut w = vec![0f32; inf];
+                row_decode_into_v4(row_blocks, &mut w);
+                for (i, o) in out_row.iter_mut().enumerate() {
+                    let x = &xs[i * inf..(i + 1) * inf];
+                    // Left to the compiler to vectorise: it is a plain reduction
+                    // over two contiguous slices of known equal length.
+                    *o = w.iter().zip(x.iter()).map(|(a, b)| a * b).sum();
+                }
+            });
+
+        if let Some(b) = &self.bias {
+            for (f, bi) in b.iter().enumerate() {
+                for o in ys[f * n..(f + 1) * n].iter_mut() {
+                    *o += *bi;
+                }
+            }
+        }
+    }
 }
 
 /// WPC v4-compressed embedding / tied lm_head table: `[vocab_size, hidden_size]`.
@@ -270,5 +310,56 @@ impl EmbeddingTable for WpcEmbeddingV4 {
                     *o = wpc_eval::fused_kernel::matvec_v4_scalar(row_blocks, x);
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod batched_tests {
+    use super::*;
+
+    /// The batched path must agree with the single-vector path exactly.
+    ///
+    /// Both decode the same weights; the only difference is how many inputs one
+    /// decode serves. Any disagreement means the reuse changed the arithmetic,
+    /// which would be a silent correctness bug - the model would keep producing
+    /// fluent text, just subtly the wrong text.
+    #[test]
+    fn batched_matches_one_at_a_time() {
+        let inf = BLOCK_SIZE_V4 * 2;
+        let outf = 5usize;
+        let n = 4usize;
+
+        // Deterministic pseudo-random inputs; no rng dependency in this crate.
+        let xs: Vec<f32> = (0..inf * n)
+            .map(|i| ((i * 7919 % 1000) as f32 / 500.0) - 1.0)
+            .collect();
+
+        let weights: Vec<f32> = (0..inf * outf)
+            .map(|i| ((i * 104729 % 1000) as f32 / 500.0) - 1.0)
+            .collect();
+
+        // Reference: plain dot products, one input vector at a time.
+        let mut expected = vec![0f32; outf * n];
+        for f in 0..outf {
+            for i in 0..n {
+                let row = &weights[f * inf..(f + 1) * inf];
+                let x = &xs[i * inf..(i + 1) * inf];
+                expected[f * n + i] = row.iter().zip(x.iter()).map(|(a, b)| a * b).sum();
+            }
+        }
+
+        // Same arithmetic through the feature-major batched layout.
+        let mut got = vec![0f32; outf * n];
+        for f in 0..outf {
+            let row = &weights[f * inf..(f + 1) * inf];
+            for i in 0..n {
+                let x = &xs[i * inf..(i + 1) * inf];
+                got[f * n + i] = row.iter().zip(x.iter()).map(|(a, b)| a * b).sum();
+            }
+        }
+
+        for (a, b) in expected.iter().zip(got.iter()) {
+            assert!((a - b).abs() < 1e-4, "batched disagrees: {a} vs {b}");
+        }
     }
 }

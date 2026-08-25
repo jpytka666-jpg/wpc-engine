@@ -31,6 +31,7 @@ use crate::wpc_weights::{WpcEmbedding, WpcLinear, WpcModelData};
 use crate::wpc_weights_v2::{WpcEmbeddingV2, WpcLinearV2, WpcModelDataV2};
 use crate::wpc_weights_v3::{WpcEmbeddingV3, WpcLinearV3, WpcModelDataV3};
 use crate::wpc_weights_v4::{WpcEmbeddingV4, WpcLinearV4, WpcModelDataV4};
+use crate::wpc_weights_v5::{WpcEmbeddingV5, WpcLinearV5, WpcModelDataV5};
 use std::path::Path;
 
 /// Build the decoder stack. `make_linear(tensor_name, out_features,
@@ -198,6 +199,32 @@ pub fn load_wpc_v4(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::
         &config,
         |name: &str, out, inp| -> Box<dyn Linear> {
             Box::new(WpcLinearV4::new(wpc.clone(), name, out, inp, None))
+        },
+        "Qwen3 WPC v4",
+    );
+    let final_norm = st.read_f32("model.norm.weight");
+    Ok(Model { config, embed, layers, final_norm })
+}
+
+/// Load through the WPC v4 backend (affine 2-bit, two codes per byte).
+///
+/// Same decode formula as v2/v3 with 16 levels per block instead of 64: the
+/// model is ~32% smaller than v3 and measurably coarser. Norms still come from
+/// the dense checkpoint in `model_dir`.
+pub fn load_wpc_v5(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Result<Model> {
+    let st = ShardedSafetensors::open(model_dir)?;
+    let wpc = WpcModelDataV5::open(wpc_dir)?;
+    let embed: Box<dyn EmbeddingTable> = Box::new(WpcEmbeddingV5::new(
+        wpc.clone(),
+        "model.embed_tokens.weight",
+        config.vocab_size,
+        config.hidden_size,
+    ));
+    let layers = build_layers(
+        &st,
+        &config,
+        |name: &str, out, inp| -> Box<dyn Linear> {
+            Box::new(WpcLinearV5::new(wpc.clone(), name, out, inp, None))
         },
         "Qwen3 WPC v4",
     );

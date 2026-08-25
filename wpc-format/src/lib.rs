@@ -390,6 +390,115 @@ impl QuantBlockV4 {
 #[allow(dead_code)]
 const _QUANT_BLOCK_V4_SIZE_CHECK: [(); 68] = [(); QuantBlockV4::SIZE];
 
+// =============================================================================
+// v5 format: the same affine scheme at 2 bits, four codes per byte
+// =============================================================================
+// v4 answered "does 4 bits still work?" with yes -- the same tokens as v3, at
+// 52% of the time. v5 asks the next question rather than assuming the answer:
+// two bits is four levels per 128-weight block, and four levels is where an
+// affine scheme is expected to stop describing a bell-shaped weight
+// distribution at all. This exists to find out where that wall is, and the
+// measurement is the point whether it passes or fails.
+//
+// The quantization is v2/v3/v4's with one number changed again: codes run 0..3,
+// so scale = (max - min) / 3. Reconstruction is the same single FMA,
+// `w = zero_point + code * scale`.
+//
+// The layout follows v4's reasoning one level down. Byte j holds four codes
+// spaced 32 apart, NOT four neighbours:
+//
+//   bits 0-1 : code j        bits 4-5 : code j+64
+//   bits 2-3 : code j+32     bits 6-7 : code j+96
+//
+// so `_mm256_cvtepu8_epi32` over 8 bytes yields, after `& 0x03` and shifts of
+// 2, 4 and 6, four full YMM registers of codes -- and all four runs of
+// activations (`x[j..j+8]`, `x[j+32..j+40]`, `x[j+64..]`, `x[j+96..]`) are
+// contiguous. Neighbouring codes would come out interleaved 4-ways and every
+// load of `x` would need a deinterleave.
+//
+// 128 codes / 4 = 32 bytes, plus the same 4-byte header: 36 bytes per 128
+// values = 2.25 bits/value, against v4's 4.25 and v3's 6.25.
+
+pub const BLOCK_SIZE_V5: usize = 128;
+/// 128 codes * 2 bits / 8 = 32 bytes of payload.
+pub const PACKED_BYTES_V5: usize = BLOCK_SIZE_V5 * 2 / 8;
+/// Highest 2-bit code. The encoder's `levels`, spelled once.
+pub const MAX_CODE_V5: u8 = 3;
+
+/// v5 on-disk block: affine 2-bit quantization, four codes per byte.
+///
+/// offset layout (repr(C, packed)):
+///   offset 0-1  : f16  zero_point (LE, stores min(block))
+///   offset 2-3  : f16  scale      (LE, stores (max-min)/3)
+///   offset 4-35 : u8[32]  packed 2-bit codes; byte j is
+///                 `codes[j] | codes[j+32] << 2 | codes[j+64] << 4 | codes[j+96] << 6`
+///
+/// total size: 4 + 32 = 36 bytes per 128 values.
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuantBlockV5 {
+    pub zero_point: f16,
+    pub scale: f16,
+    pub packed: [u8; PACKED_BYTES_V5],
+}
+
+impl QuantBlockV5 {
+    pub const SIZE: usize = 4 + PACKED_BYTES_V5;
+
+    /// Pack 128 codes into 32 bytes. Values are masked to 2 bits, matching the
+    /// encoder's own clamp to 0..3 -- a code outside that range is an encoder
+    /// bug, and truncating keeps decode total.
+    #[inline]
+    pub fn pack_codes(codes: &[u8; BLOCK_SIZE_V5]) -> [u8; PACKED_BYTES_V5] {
+        let mut out = [0u8; PACKED_BYTES_V5];
+        for j in 0..PACKED_BYTES_V5 {
+            let c0 = codes[j] & 0x03;
+            let c1 = codes[j + PACKED_BYTES_V5] & 0x03;
+            let c2 = codes[j + 2 * PACKED_BYTES_V5] & 0x03;
+            let c3 = codes[j + 3 * PACKED_BYTES_V5] & 0x03;
+            out[j] = c0 | (c1 << 2) | (c2 << 4) | (c3 << 6);
+        }
+        out
+    }
+
+    /// Exact inverse of `pack_codes`.
+    #[inline]
+    pub fn unpack_codes(packed: &[u8; PACKED_BYTES_V5]) -> [u8; BLOCK_SIZE_V5] {
+        let mut codes = [0u8; BLOCK_SIZE_V5];
+        for j in 0..PACKED_BYTES_V5 {
+            let b = packed[j];
+            codes[j] = b & 0x03;
+            codes[j + PACKED_BYTES_V5] = (b >> 2) & 0x03;
+            codes[j + 2 * PACKED_BYTES_V5] = (b >> 4) & 0x03;
+            codes[j + 3 * PACKED_BYTES_V5] = b >> 6;
+        }
+        codes
+    }
+
+    pub fn to_le_bytes(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        let zp = self.zero_point.to_le_bytes();
+        out[0] = zp[0];
+        out[1] = zp[1];
+        let sc = self.scale.to_le_bytes();
+        out[2] = sc[0];
+        out[3] = sc[1];
+        out[4..Self::SIZE].copy_from_slice(&self.packed);
+        out
+    }
+
+    pub fn from_le_bytes(b: &[u8; Self::SIZE]) -> Self {
+        let zero_point = f16::from_le_bytes([b[0], b[1]]);
+        let scale = f16::from_le_bytes([b[2], b[3]]);
+        let mut packed = [0u8; PACKED_BYTES_V5];
+        packed.copy_from_slice(&b[4..Self::SIZE]);
+        QuantBlockV5 { zero_point, scale, packed }
+    }
+}
+
+#[allow(dead_code)]
+const _QUANT_BLOCK_V5_SIZE_CHECK: [(); 36] = [(); QuantBlockV5::SIZE];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +591,73 @@ mod tests {
         for j in 0..PACKED_BYTES_V4 {
             assert_eq!(packed[j] & 0x0F, codes[j]);
             assert_eq!(packed[j] >> 4, codes[j + PACKED_BYTES_V4]);
+        }
+    }
+
+    #[test]
+    fn v5_block_is_thirty_six_bytes() {
+        assert_eq!(QuantBlockV5::SIZE, 36);
+        assert_eq!(core::mem::size_of::<QuantBlockV5>(), 36);
+        // 36 bytes / 128 values = 2.25 bits per value.
+        assert_eq!(PACKED_BYTES_V5, 32);
+    }
+
+    #[test]
+    fn v5_round_trips_through_le_bytes() {
+        let mut codes = [0u8; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            codes[i] = (i % 4) as u8;
+        }
+        let block = QuantBlockV5 {
+            zero_point: f16::from_f32(-1.5),
+            scale: f16::from_f32(0.025),
+            packed: QuantBlockV5::pack_codes(&codes),
+        };
+        let bytes = block.to_le_bytes();
+        assert_eq!(bytes.len(), 36);
+        assert_eq!(QuantBlockV5::from_le_bytes(&bytes), block);
+    }
+
+    #[test]
+    fn v5_packing_round_trips_every_code_in_every_slot() {
+        // All four 2-bit slots of every byte, for every legal code value: a
+        // shift off by two cannot hide in a slot the test never uses.
+        for v in 0u8..=MAX_CODE_V5 {
+            let uniform = [v; BLOCK_SIZE_V5];
+            let p = QuantBlockV5::pack_codes(&uniform);
+            assert_eq!(QuantBlockV5::unpack_codes(&p), uniform, "code value {v} failed");
+        }
+
+        // A pattern where all four quarters of the block differ, so no two
+        // slots can be confused for one another.
+        let mut codes = [0u8; BLOCK_SIZE_V5];
+        for i in 0..BLOCK_SIZE_V5 {
+            codes[i] = ((i * 5 + i / 32) % 4) as u8;
+        }
+        let packed = QuantBlockV5::pack_codes(&codes);
+        assert_eq!(QuantBlockV5::unpack_codes(&packed), codes);
+
+        // The documented byte layout itself, not just the round trip.
+        for j in 0..PACKED_BYTES_V5 {
+            assert_eq!(packed[j] & 0x03, codes[j]);
+            assert_eq!((packed[j] >> 2) & 0x03, codes[j + PACKED_BYTES_V5]);
+            assert_eq!((packed[j] >> 4) & 0x03, codes[j + 2 * PACKED_BYTES_V5]);
+            assert_eq!(packed[j] >> 6, codes[j + 3 * PACKED_BYTES_V5]);
+        }
+    }
+
+    /// Every one of the 256 possible payload bytes decoded and re-encoded. With
+    /// only four values per slot the whole space is small enough to check
+    /// exhaustively, so nothing is left to a chosen pattern.
+    #[test]
+    fn v5_every_possible_byte_survives_pack_unpack() {
+        for b in 0u16..=255 {
+            let packed = [b as u8; PACKED_BYTES_V5];
+            let codes = QuantBlockV5::unpack_codes(&packed);
+            for &c in codes.iter() {
+                assert!(c <= MAX_CODE_V5, "byte {b} unpacked to out-of-range code {c}");
+            }
+            assert_eq!(QuantBlockV5::pack_codes(&codes), packed, "byte {b} failed");
         }
     }
 }
