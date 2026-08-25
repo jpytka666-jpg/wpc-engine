@@ -2,17 +2,18 @@ import { describe, expect, it } from "vitest";
 import { composeSurfaces, promoteFocus } from "./compositor";
 import type { Surface } from "./protocol";
 
-const surface = (id: string, priority: number): Surface & { title: string } => ({
+const surface = (id: string, priority: number): Surface => ({
   id,
   title: id,
-  kind: "graph",
-  state: "active",
+  kind: "Graph",
+  state: "Active",
   x: 1,
   y: 1,
   width: 20,
   height: 20,
   priority,
   z_index: 1,
+  data: null,
 });
 
 describe("surface compositor", () => {
