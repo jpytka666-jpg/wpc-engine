@@ -29,8 +29,9 @@
  *   the same split that made the 2026-08-25 sm_50 probe build cleanly.
  * LOCAL WORKSPACE: gpu/wpc4-decode/ inside the wpc-engine checkout; built and run in
  *   WSL Ubuntu.
- * GIT COMMIT: PENDING
- * GITHUB METADATA: jpytka666-jpg/wpc-engine, branch feature/gpu-wpc4-decode-sm50
+ * GIT COMMIT: 85be400
+ * GITHUB METADATA: jpytka666-jpg/wpc-engine, branch feature/gpu-wpc4-decode-sm50 (pushed
+ *   2026-08-25); no PR opened yet
  * ==========================================
  */
 
