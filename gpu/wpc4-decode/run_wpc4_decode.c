@@ -444,8 +444,10 @@ int main(int argc, char **argv)
     printf("model bytes     : %llu (%.1f MiB)\n",
            (unsigned long long)model_bytes, (double)model_bytes / MIB);
     printf("mode            : %s\n", sweep ? "sweep (manifest)" : "single tensor");
-    printf("largest tensor  : %.1f MiB packed, %.1f MiB decoded\n",
-           (double)max_tensor_bytes / MIB, (double)max_out_bytes / MIB);
+    printf("largest tensor  : %.1f MiB packed, %.1f MiB decoded as f32\n",
+           (double)max_tensor_bytes / MIB, (double)max_out_needed / MIB);
+    printf("output buffer   : %.1f MiB, %llu blocks per chunk\n",
+           (double)max_out_bytes / MIB, (unsigned long long)chunk_cap_blocks);
     printf("\n");
 
     /* ---- device ---- */
