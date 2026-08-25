@@ -1,4 +1,5 @@
-use crate::weightset::WeightSetError;
+use crate::observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
+use crate::weightset::{WeightSetError, WeightSetId};
 
 #[derive(Clone, Debug)]
 pub struct BigramLanguageModel {
@@ -65,6 +66,27 @@ impl BigramLanguageModel {
         for (weight, delta) in self.output_weights.iter_mut().zip(gradient) {
             *weight -= scale * delta;
         }
+        Ok(loss)
+    }
+
+    pub fn train_step_observed(
+        &mut self,
+        pairs: &[(usize, usize)],
+        step: u64,
+        experience_id: impl Into<String>,
+        weight_set: WeightSetId,
+        observatory: &mut TrainingObservatory,
+    ) -> Result<f32, WeightSetError> {
+        let before = self.output_weights.clone();
+        let loss = self.train_step(pairs)?;
+        let delta: Vec<f32> = before.iter().zip(&self.output_weights).map(|(old, new)| new - old).collect();
+        observatory.record(TrainingObservation {
+            step,
+            experience_id: experience_id.into(),
+            weight_set,
+            loss: Some(loss),
+            deltas: vec![TensorDeltaSummary::from_delta("output.weights", &delta)],
+        });
         Ok(loss)
     }
 
