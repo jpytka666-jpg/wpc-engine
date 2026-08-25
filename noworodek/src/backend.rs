@@ -7,33 +7,52 @@ pub trait WeightBackend {
     fn load(&mut self) -> Result<(), WeightSetError>;
     fn unload(&mut self) -> Result<(), WeightSetError>;
     fn is_loaded(&self) -> bool;
+    fn tensor(&self, name: &str) -> Result<Vec<f32>, WeightSetError>;
+    fn tensor_mut(&mut self, name: &str) -> Result<&mut Vec<f32>, WeightSetError>;
 }
 
 pub struct MemoryWeightBackend {
     manifest: WeightSetManifest,
     loaded: bool,
+    tensors: HashMap<String, Vec<f32>>,
 }
 
 impl MemoryWeightBackend {
     pub fn from_manifest(manifest: WeightSetManifest) -> Self {
-        Self { manifest, loaded: false }
+        let tensors = manifest.tensors().iter().map(|spec| (spec.name.clone(), vec![0.0; element_count(&spec.shape)])).collect();
+        Self { manifest, loaded: false, tensors }
+    }
+
+    pub fn with_tensor_data<I>(manifest: WeightSetManifest, data: I) -> Self
+    where I: IntoIterator<Item = (&'static str, Vec<f32>)> {
+        let mut backend = Self::from_manifest(manifest);
+        for (name, values) in data { backend.tensors.insert(name.to_owned(), values); }
+        backend
     }
 }
+
+fn element_count(shape: &[usize]) -> usize { shape.iter().copied().product() }
 
 impl WeightBackend for MemoryWeightBackend {
     fn manifest(&self) -> &WeightSetManifest { &self.manifest }
     fn load(&mut self) -> Result<(), WeightSetError> { self.loaded = true; Ok(()) }
     fn unload(&mut self) -> Result<(), WeightSetError> { self.loaded = false; Ok(()) }
     fn is_loaded(&self) -> bool { self.loaded }
+    fn tensor(&self, name: &str) -> Result<Vec<f32>, WeightSetError> {
+        self.tensors.get(name).cloned().ok_or_else(|| WeightSetError::Backend(format!("tensor not found: {name}")))
+    }
+    fn tensor_mut(&mut self, name: &str) -> Result<&mut Vec<f32>, WeightSetError> {
+        self.tensors.get_mut(name).ok_or_else(|| WeightSetError::Backend(format!("tensor not found: {name}")))
+    }
 }
 
-pub struct MountedWeightSet {
-    backend: Box<dyn WeightBackend>,
-}
+pub struct MountedWeightSet { backend: Box<dyn WeightBackend> }
 
 impl MountedWeightSet {
     pub fn manifest(&self) -> &WeightSetManifest { self.backend.manifest() }
     pub fn is_loaded(&self) -> bool { self.backend.is_loaded() }
+    pub fn backend(&self) -> &dyn WeightBackend { self.backend.as_ref() }
+    pub fn backend_mut(&mut self) -> &mut dyn WeightBackend { self.backend.as_mut() }
 }
 
 pub struct WeightSetManager {
@@ -42,10 +61,7 @@ pub struct WeightSetManager {
 }
 
 impl WeightSetManager {
-    pub fn new(architecture: ArchitectureId) -> Self {
-        Self { architecture, mounted: HashMap::new() }
-    }
-
+    pub fn new(architecture: ArchitectureId) -> Self { Self { architecture, mounted: HashMap::new() } }
     pub fn architecture(&self) -> &ArchitectureId { &self.architecture }
 
     pub fn mount(&mut self, mut backend: Box<dyn WeightBackend>) -> Result<WeightSetId, WeightSetError> {
@@ -64,27 +80,20 @@ impl WeightSetManager {
 
     pub fn replace(&mut self, id: &WeightSetId, mut backend: Box<dyn WeightBackend>) -> Result<(), WeightSetError> {
         self.validate_manifest(backend.manifest())?;
-        if backend.manifest().name() != id {
-            return Err(WeightSetError::ReplacementIdMismatch { expected: id.clone(), actual: backend.manifest().name().clone() });
-        }
+        if backend.manifest().name() != id { return Err(WeightSetError::ReplacementIdMismatch { expected: id.clone(), actual: backend.manifest().name().clone() }); }
         let mounted = self.mounted.get_mut(id).ok_or_else(|| WeightSetError::NotMounted(id.clone()))?;
         backend.load()?;
-        if let Err(error) = mounted.backend.unload() {
-            let _ = backend.unload();
-            return Err(error);
-        }
+        if let Err(error) = mounted.backend.unload() { let _ = backend.unload(); return Err(error); }
         mounted.backend = backend;
         Ok(())
     }
 
     pub fn active(&self, id: &WeightSetId) -> Option<&MountedWeightSet> { self.mounted.get(id) }
-
+    pub(crate) fn active_mut(&mut self, id: &WeightSetId) -> Option<&mut MountedWeightSet> { self.mounted.get_mut(id) }
     pub(crate) fn mounted_sets(&self) -> impl Iterator<Item = &MountedWeightSet> { self.mounted.values() }
 
     fn validate_manifest(&self, manifest: &WeightSetManifest) -> Result<(), WeightSetError> {
-        if manifest.architecture() != &self.architecture {
-            return Err(WeightSetError::IncompatibleArchitecture { expected: self.architecture.clone(), actual: manifest.architecture().clone() });
-        }
+        if manifest.architecture() != &self.architecture { return Err(WeightSetError::IncompatibleArchitecture { expected: self.architecture.clone(), actual: manifest.architecture().clone() }); }
         Ok(())
     }
 }
