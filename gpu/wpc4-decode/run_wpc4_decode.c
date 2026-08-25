@@ -178,6 +178,7 @@ static int decode_one(CUfunction fn,
                       uint64_t bytes,
                       float *gpu_out,
                       float *ref_out,
+                      uint64_t chunk_cap_blocks,
                       int verbose,
                       struct totals *acc)
 {
