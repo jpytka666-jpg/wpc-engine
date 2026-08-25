@@ -33,5 +33,7 @@ jobs:
           cache-dependency-path: studio-ui/package.json
       - name: Install frontend dependencies
         run: npm install
+      - name: Run frontend tests
+        run: npm test
       - name: Typecheck and build frontend
         run: npm run build
