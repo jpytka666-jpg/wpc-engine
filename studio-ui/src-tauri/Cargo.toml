@@ -1,0 +1,19 @@
+[package]
+name = "aions-studio"
+version = "0.1.0"
+description = "AIONS Studio desktop shell"
+authors = ["M. Szul via GPT-5.6 Luna"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+studio-core = { path = "../../studio-core" }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+default = ["custom-protocol"]
