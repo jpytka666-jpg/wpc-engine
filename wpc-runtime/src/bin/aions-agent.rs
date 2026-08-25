@@ -38,6 +38,11 @@ struct Args {
     /// the agent, so it is not tied to one machine's layout.
     #[arg(long)] workdir: Option<PathBuf>,
 
+    /// Speak to the model in its own trained tool-calling idiom instead of this agent's
+    /// hand-written one: tools as json inside <tools>, calls inside <tool_call>, and a
+    /// FINAL whose verify names the tool that proved it rather than a shell command.
+    #[arg(long, default_value_t = false)] native_tools: bool,
+
     /// Print each proposed call and require a typed y before running it.
     #[arg(long, default_value_t = false)] ask: bool,
 }
@@ -195,6 +200,32 @@ fn revolver(tools: Vec<Value>, task: &str, keep: usize, path: &str) -> (Vec<Valu
     (picked, name)
 }
 
+/// The tool catalogue written the way this model's own chat template writes it.
+///
+/// Taken verbatim from `chat_template` in tokenizer_config.json beside the weights, not
+/// guessed: a `# Tools` heading, the signatures as json inside `<tools></tools>`, then
+/// the sentence telling the model to answer inside `<tool_call></tool_call>`.
+///
+/// One format instead of five. The hand-written prompt offers TOOL_CALL, SUBAGENT,
+/// PROGRAM/END_PROGRAM and FINAL all at once, which a four-billion-parameter model
+/// visibly cannot hold: it produced hybrids of them for four turns running.
+fn native_catalogue(tools: &[Value]) -> String {
+    let mut s = String::from(
+        "# Tools\n\nYou may call one or more functions to assist with the user query.\n\n\
+         You are provided with function signatures within <tools></tools> XML tags:\n<tools>",
+    );
+    for t in tools {
+        s.push('\n');
+        s.push_str(&serde_json::to_string(t).unwrap_or_else(|_| "{}".into()));
+    }
+    s.push_str(
+        "\n</tools>\n\nFor each function call, return a json object with function name \
+         and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n\
+         {\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>",
+    );
+    s
+}
+
 fn manifest(tools: &[Value]) -> String {
     tools
         .iter()
@@ -244,6 +275,29 @@ fn narrow(tools: Vec<Value>, wanted: &[String]) -> Vec<Value> {
 /// Sent raw, the instructions read as an unfinished article and the model
 /// continued writing it instead of acting. The markers come from
 /// `chat_template.jinja` beside the weights.
+/// The whole instruction, in the model's own idiom, with nothing else competing.
+///
+/// The hand-written prompt below offers four output shapes at once. This one offers two:
+/// call a tool the way you were trained to, or say you are finished and name the tool
+/// that proves it. The name is one word copied from a list the model has just been shown,
+/// which is a far smaller ask than inventing a shell command that must also pass.
+fn prompt_native(catalogue: &str, transcript: &str) -> String {
+    format!(
+        r#"<|im_start|>system
+You are AIONS, a local engineering agent. Use ONLY the tools listed below. Never invent one.
+Do not calculate or look anything up yourself. Call a tool instead.
+
+When a tool result has answered the task, and only then, reply with exactly one line:
+FINAL {{"text":"the answer","verify":"the_tool_you_used"}}
+
+{catalogue}<|im_end|>
+<|im_start|>user
+{transcript}<|im_end|>
+<|im_start|>assistant
+"#
+    )
+}
+
 fn prompt(tools: &str, transcript: &str) -> String { format!(r#"<|im_start|>system
 You are AIONS, a local engineering agent running on a WPC-compressed Qwen model.
 Use ONLY tools from this live MCP catalogue. Never invent a tool.
@@ -299,6 +353,30 @@ fn action(s: &str) -> Result<Action> {
             let body = rest[..end].trim();
             if !body.is_empty() {
                 return Ok(Action::Program(body.to_string()));
+            }
+        }
+    }
+    // The shape this model was actually trained to emit.
+    //
+    // Qwen's own chat template tells it to answer with a json object inside
+    // <tool_call></tool_call> tags. Our TOOL_CALL prefix is an invention, and the model
+    // kept drifting back toward what it knows -- writing TOGGLE_ACTION, mixing quote
+    // styles, wrapping json in markdown fences. Accepting its native form costs nothing
+    // and removes the fight. Multi-line on purpose: the template puts the json on its
+    // own line between the tags.
+    if let Some(start) = s.find("<tool_call>") {
+        let rest = &s[start + "<tool_call>".len()..];
+        let body = match rest.find("</tool_call>") {
+            Some(end) => &rest[..end],
+            None => rest, // the model ran out of room before closing the tag
+        };
+        let body = body.trim().trim_start_matches("```json").trim_matches('`').trim();
+        if let Ok(v) = serde_json::from_str::<Value>(body) {
+            if let Some(name) = v.get("name").and_then(Value::as_str) {
+                return Ok(Action::Tool(
+                    name.into(),
+                    v.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                ));
             }
         }
     }
@@ -432,7 +510,12 @@ fn main()->Result<()>{
         let names: Vec<&str> = tools.iter().filter_map(|t| t.get("name").and_then(Value::as_str)).collect();
         eprintln!("PODANE MODELOWI: {}", names.join(", "));
     }
-    let tools=manifest(&tools); let mut transcript=format!("TASK: {}\n",a.task);
+    let catalogue = if a.native_tools { native_catalogue(&tools) } else { manifest(&tools) };
+    let tools = catalogue;
+    let mut transcript=format!("TASK: {}\n",a.task);
+    // Which tools have actually run and come back without an error. In native mode this
+    // is what a FINAL has to point at, so that claiming success stays unprofitable.
+    let mut succeeded: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // The model stays loaded for the whole run and keeps its KV cache between turns.
     //
@@ -458,7 +541,7 @@ fn main()->Result<()>{
         let r = match session.as_mut() {
             Some(s) => {
                 let msg = if turn == 1 {
-                    prompt(&tools, &transcript)
+                    if a.native_tools { prompt_native(&tools, &transcript) } else { prompt(&tools, &transcript) }
                 } else {
                     // Only the new part, plus the reminder of what a turn must look like.
                     format!("{}\nReply with ONE action.\n__WPC_AGENT_ASSISTANT__\n", &transcript[sent.min(transcript.len())..])
@@ -471,7 +554,10 @@ fn main()->Result<()>{
                 );
                 text
             }
-            None => model(&a, &prompt(&tools, &transcript))?,
+            None => {
+                let p = if a.native_tools { prompt_native(&tools, &transcript) } else { prompt(&tools, &transcript) };
+                model(&a, &p)?
+            }
         };
         eprintln!("MODEL: {r}");
         // A turn that parses into neither an action nor a completion used to kill the
@@ -494,6 +580,28 @@ in exactly this shape:\nTOOL_CALL {\"name\":\"tool\",\"arguments\":{}}\n",
         };
         match parsed {
         Action::Final(x,proof)=>{
+            // In native mode the proof is the name of a tool that actually ran and came
+            // back without an error, not a shell command. Asking a four-billion-parameter
+            // model to invent a command that must also pass is a second task on top of
+            // the first; copying one word from a list it was just shown is not.
+            if a.native_tools {
+                let named = proof.as_deref().unwrap_or("");
+                if succeeded.contains(named) {
+                    println!("{x}");
+                    println!("\n--- DOWOD ---\nnarzedzie: {named} (wywolane i zakonczone powodzeniem)");
+                    return Ok(());
+                }
+                eprintln!("BRAMKA: koniec bez potwierdzonego narzedzia (verify={named:?})");
+                let lista = if succeeded.is_empty() {
+                    "none yet - you have not successfully called any tool".to_string()
+                } else {
+                    succeeded.iter().cloned().collect::<Vec<_>>().join(", ")
+                };
+                transcript.push_str(&format!(
+                    "\nREJECTED: FINAL must set \"verify\" to a tool you actually called and that succeeded. Succeeded so far: {lista}. Call a tool first.\n"
+                ));
+                continue;
+            }
             match proof {
                 None => {
                     eprintln!("koniec bez dowodu - odrzucony");
@@ -582,7 +690,7 @@ in exactly this shape:\nTOOL_CALL {\"name\":\"tool\",\"arguments\":{}}\n",
             }
             eprintln!("UZYTE NARZEDZIE: {n}");
             let out=match m.call(&n,args.clone()){
-                Ok(v)=>{eprintln!("  -> odpowiedzialo"); serde_json::to_string_pretty(&v)?},
+                Ok(v)=>{eprintln!("  -> odpowiedzialo"); succeeded.insert(n.clone()); serde_json::to_string_pretty(&v)?},
                 Err(e)=>{eprintln!("  -> BLAD: {e}"); format!("TOOL_ERROR: {e}")}
             }; transcript.push_str(&format!("\nASSISTANT_TOOL_CALL {}\nTOOL_RESULT {n}\n{out}\n",serde_json::to_string(&json!({"name":n,"arguments":args}))?));}
     }}
