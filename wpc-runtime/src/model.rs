@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::kv_probe::{KvProbeHandle, StatsKvProbe};
 use crate::norm::{rms_norm, softmax_inplace};
 use crate::rope::apply_rope;
 use crate::weights::{DenseEmbedding, DenseLinear, EmbeddingTable, Linear, SafetensorsFile};
@@ -45,10 +46,13 @@ struct LayerCache {
 pub struct KvCache {
     layers: Vec<LayerCache>,
     pub len: usize, // number of positions appended so far
+    head_dim: usize,
+    probe: Option<KvProbeHandle>,
+    expected_vocab_size: usize,
 }
 
 impl KvCache {
-    fn new(num_layers: usize, num_kv_heads: usize) -> Self {
+    fn new(num_layers: usize, num_kv_heads: usize, head_dim: usize) -> Self {
         KvCache {
             layers: (0..num_layers)
                 .map(|_| LayerCache {
@@ -57,7 +61,72 @@ impl KvCache {
                 })
                 .collect(),
             len: 0,
+            head_dim,
+            probe: None,
+            expected_vocab_size: 0,
         }
+    }
+
+    /// Install or remove the optional read-only K/V observation hook.
+    pub fn set_kv_probe(&mut self, probe: Option<KvProbeHandle>) {
+        self.probe = probe;
+    }
+
+    pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
+        if len > self.len {
+            anyhow::bail!("cannot extend KV cache with truncate");
+        }
+        let elems = len
+            .checked_mul(self.head_dim)
+            .ok_or_else(|| anyhow::anyhow!("KV truncate size overflow"))?;
+        for layer in &mut self.layers {
+            for head in &mut layer.k {
+                head.truncate(elems);
+            }
+            for head in &mut layer.v {
+                head.truncate(elems);
+            }
+        }
+        self.len = len;
+        Ok(())
+    }
+
+    /// Restore a complete resident-KV snapshot plus the final logits for that prefix.
+    /// KV alone cannot reconstruct the final residual state after a process restart,
+    /// so the matching logits sidecar is required for exact continuation.
+    pub fn restore_from_files(&mut self, snapshot_path: impl AsRef<Path>, logits_path: impl AsRef<Path>) -> anyhow::Result<Vec<f32>> {
+        let snapshot = crate::kv_probe::KvSnapshot::read_from_path(snapshot_path)?;
+        anyhow::ensure!(!snapshot.truncated, "KV snapshot is truncated and cannot be restored");
+        anyhow::ensure!(!snapshot.records.is_empty(), "KV snapshot contains no records");
+        let num_layers = self.layers.len();
+        let num_kv_heads = self.layers.first().map(|l| l.k.len()).unwrap_or(0);
+        let per_position = num_layers.checked_mul(num_kv_heads).ok_or_else(|| anyhow::anyhow!("KV restore count overflow"))?;
+        let sequence_length = snapshot.records.iter().map(|r| r.position as usize + 1).max().unwrap_or(0);
+        anyhow::ensure!(sequence_length > 0, "KV snapshot has zero sequence length");
+        anyhow::ensure!(snapshot.records.len() == per_position * sequence_length, "KV snapshot record count does not match runtime geometry");
+        for layer in &mut self.layers {
+            for head in &mut layer.k { head.clear(); head.resize(sequence_length * self.head_dim, 0.0); }
+            for head in &mut layer.v { head.clear(); head.resize(sequence_length * self.head_dim, 0.0); }
+        }
+        let mut seen = std::collections::HashSet::with_capacity(snapshot.records.len());
+        for record in snapshot.records {
+            let layer = record.layer as usize; let head = record.kv_head as usize; let position = record.position as usize;
+            anyhow::ensure!(layer < num_layers, "KV snapshot layer out of range");
+            anyhow::ensure!(head < num_kv_heads, "KV snapshot head out of range");
+            anyhow::ensure!(position < sequence_length, "KV snapshot position out of range");
+            anyhow::ensure!(record.key.len() == self.head_dim && record.value.len() == self.head_dim, "KV snapshot dimension mismatch");
+            anyhow::ensure!(seen.insert((layer, head, position)), "duplicate KV snapshot record");
+            let start = position * self.head_dim;
+            self.layers[layer].k[head][start..start+self.head_dim].copy_from_slice(&record.key);
+            self.layers[layer].v[head][start..start+self.head_dim].copy_from_slice(&record.value);
+        }
+        anyhow::ensure!(seen.len() == per_position * sequence_length, "KV snapshot has missing records");
+        self.len = sequence_length;
+        let bytes = std::fs::read(logits_path)?;
+        anyhow::ensure!(bytes.len() % 4 == 0, "logits sidecar length is not f32-aligned");
+        let logits: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        anyhow::ensure!(logits.len() == self.expected_vocab_size, "logits sidecar vocabulary size mismatch");
+        Ok(logits)
     }
 }
 
@@ -445,10 +514,19 @@ impl Model {
     }
 
     pub fn new_cache(&self) -> KvCache {
-        KvCache::new(
+        let mut cache = KvCache::new(
             self.config.num_hidden_layers,
             self.config.num_key_value_heads,
-        )
+            self.config.head_dim(),
+        );
+        cache.expected_vocab_size = self.config.vocab_size;
+        if matches!(
+            std::env::var("AIONS_KV_PROBE").as_deref(),
+            Ok("1") | Ok("sample")
+        ) {
+            cache.set_kv_probe(Some(StatsKvProbe::from_env()));
+        }
+        cache
     }
 
     /// Run one token through the full stack, updating `cache` in place, and
@@ -513,10 +591,22 @@ impl Model {
                 );
             }
 
+            let probe = cache.probe.as_ref().cloned();
             let lc = &mut cache.layers[li];
             for hd in 0..num_kv_heads {
                 lc.k[hd].extend_from_slice(&k[hd * head_dim..(hd + 1) * head_dim]);
                 lc.v[hd].extend_from_slice(&v[hd * head_dim..(hd + 1) * head_dim]);
+            }
+            if let Some(probe) = probe.as_ref() {
+                for hd in 0..num_kv_heads {
+                    probe.observe(
+                        li,
+                        pos,
+                        hd,
+                        &k[hd * head_dim..(hd + 1) * head_dim],
+                        &v[hd * head_dim..(hd + 1) * head_dim],
+                    );
+                }
             }
             let seq_len = pos + 1;
             let scale = 1.0f32 / (head_dim as f32).sqrt();
@@ -593,6 +683,33 @@ impl Model {
 
         let mut logits = vec![0.0f32; cfg.vocab_size];
         self.embed.logits(&final_normed, &mut logits);
+        if let Some(probe) = cache.probe.as_ref() {
+            probe.record_logits(&logits);
+        }
         logits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kv_probe_can_be_disabled() {
+        let mut cache = KvCache::new(1, 1, 2);
+        cache.set_kv_probe(None);
+    }
+
+    #[test]
+    fn cache_truncate_preserves_requested_prefix() {
+        let mut c = KvCache::new(1, 1, 2);
+        c.layers[0].k[0] = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        c.layers[0].v[0] = vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
+        c.len = 3;
+        c.truncate(2).unwrap();
+        assert_eq!(c.len, 2);
+        assert_eq!(c.layers[0].k[0], vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(c.layers[0].v[0], vec![6.0, 5.0, 4.0, 3.0]);
+        assert!(c.truncate(3).is_err());
     }
 }
