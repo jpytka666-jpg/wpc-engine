@@ -58,10 +58,16 @@ ran against the real on-disk v4 blocks straight out of that resident copy.
 | Measured | Result |
 |---|---|
 | Residency | 2037.8 MiB resident, 1372 MiB left for KV and activations |
-| Tensors verified | 3 of 253 (first, a small attention projection, and the last in the file) |
-| Values checked | 38 010 880 |
+| Tensors verified | **253 of 253 — the whole model** |
+| Values checked | **4 022 272 000** |
 | Mismatches vs CPU reference | **0**, bit-for-bit |
-| Decode throughput, peak | 9905.7 M values/s |
+| Whole-model decode | **891.966 ms** of GPU time |
+| Decode throughput | 4509.4 M values/s mean, 8949.0 M peak |
+
+One constraint surfaced and is now designed around: the token embedding is 197.1 MiB
+packed but 1483.8 MiB expanded to f32, so the model and a full expanded tensor cannot
+share the card. Decode runs in chunks bounded by a 128 MiB output buffer. A fused
+decode-and-multiply kernel avoids the issue entirely, which is what step 3 should build.
 
 Steps 3 and 4 remain open. Decode is not inference: matmul, attention, sampling and the KV
 cache are still CPU-side, and no token rate has been measured on the GPU.
