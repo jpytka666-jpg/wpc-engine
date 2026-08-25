@@ -339,7 +339,7 @@ int main(int argc, char **argv)
     struct stat st;
     unsigned char *model_map;
     uint64_t model_bytes;
-    uint64_t max_tensor_bytes = 0, max_out_bytes;
+    uint64_t max_tensor_bytes = 0, max_out_bytes, max_out_needed, chunk_cap_blocks;
 
     CUdevice dev;
     CUcontext ctx;
