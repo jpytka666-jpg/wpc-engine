@@ -202,47 +202,82 @@ static int decode_one(CUfunction fn,
     n_values  = n_blocks * (uint64_t)WPC4_BLOCK_VALUES;
     out_bytes = n_values * sizeof(float);
 
-    total_threads = n_blocks * (uint64_t)WPC4_PACKED_BYTES;
-    grid_blocks   = (total_threads + threads_per_block - 1) / threads_per_block;
+    /* Walk the tensor in chunks that fit the output buffer. A tensor smaller than the
+     * cap takes exactly one pass, so small tensors are unaffected. */
+    {
+        uint64_t done_blocks = 0;
+        uint64_t chunks = 0;
 
-    d_tensor  = d_model + (CUdeviceptr)offset;
-    params[0] = &d_tensor;
-    params[1] = &d_out;
-    params[2] = &n_blocks;
+        while (done_blocks < n_blocks) {
+            uint64_t chunk_blocks = n_blocks - done_blocks;
+            uint64_t chunk_values, k;
+            float chunk_ms = 0.0f;
 
-    r = cuEventCreate(&ev_start, CU_EVENT_DEFAULT);
-    if (r != CUDA_SUCCESS) return -1;
-    r = cuEventCreate(&ev_stop, CU_EVENT_DEFAULT);
-    if (r != CUDA_SUCCESS) return -1;
-
-    if (cuEventRecord(ev_start, 0) != CUDA_SUCCESS) return -1;
-    r = cuLaunchKernel(fn, (unsigned int)grid_blocks, 1u, 1u,
-                       threads_per_block, 1u, 1u, 0u, 0, params, NULL);
-    if (r != CUDA_SUCCESS) {
-        const char *msg = NULL;
-        cuGetErrorString(r, &msg);
-        fprintf(stderr, "FAIL %s: launch -> %s\n", name, msg ? msg : "(no message)");
-        return -1;
-    }
-    if (cuEventRecord(ev_stop, 0) != CUDA_SUCCESS) return -1;
-    if (cuCtxSynchronize() != CUDA_SUCCESS) return -1;
-    if (cuEventElapsedTime(&kernel_ms, ev_start, ev_stop) != CUDA_SUCCESS) return -1;
-    cuEventDestroy(ev_start);
-    cuEventDestroy(ev_stop);
-
-    if (cuMemcpyDtoH(gpu_out, d_out, (size_t)out_bytes) != CUDA_SUCCESS) return -1;
-
-    reference_decode(model_map + offset, ref_out, n_blocks);
-
-    for (i = 0; i < n_values; i++) {
-        if (bits_differ(gpu_out[i], ref_out[i])) {
-            if (mismatches == 0) {
-                first_bad = i;
+            if (chunk_blocks > chunk_cap_blocks) {
+                chunk_blocks = chunk_cap_blocks;
             }
-            mismatches++;
+            chunk_values = chunk_blocks * (uint64_t)WPC4_BLOCK_VALUES;
+
+            total_threads = chunk_blocks * (uint64_t)WPC4_PACKED_BYTES;
+            grid_blocks   = (total_threads + threads_per_block - 1) / threads_per_block;
+
+            d_tensor  = d_model + (CUdeviceptr)offset
+                        + (CUdeviceptr)(done_blocks * (uint64_t)WPC4_BLOCK_BYTES);
+            params[0] = &d_tensor;
+            params[1] = &d_out;
+            params[2] = &chunk_blocks;
+
+            r = cuEventCreate(&ev_start, CU_EVENT_DEFAULT);
+            if (r != CUDA_SUCCESS) return -1;
+            r = cuEventCreate(&ev_stop, CU_EVENT_DEFAULT);
+            if (r != CUDA_SUCCESS) return -1;
+
+            if (cuEventRecord(ev_start, 0) != CUDA_SUCCESS) return -1;
+            r = cuLaunchKernel(fn, (unsigned int)grid_blocks, 1u, 1u,
+                               threads_per_block, 1u, 1u, 0u, 0, params, NULL);
+            if (r != CUDA_SUCCESS) {
+                const char *msg = NULL;
+                cuGetErrorString(r, &msg);
+                fprintf(stderr, "FAIL %s: launch -> %s\n", name, msg ? msg : "(no message)");
+                return -1;
+            }
+            if (cuEventRecord(ev_stop, 0) != CUDA_SUCCESS) return -1;
+            if (cuCtxSynchronize() != CUDA_SUCCESS) return -1;
+            if (cuEventElapsedTime(&chunk_ms, ev_start, ev_stop) != CUDA_SUCCESS) return -1;
+            cuEventDestroy(ev_start);
+            cuEventDestroy(ev_stop);
+            kernel_ms += chunk_ms;
+
+            if (cuMemcpyDtoH(gpu_out, d_out,
+                             (size_t)(chunk_values * sizeof(float))) != CUDA_SUCCESS) {
+                return -1;
+            }
+
+            reference_decode(model_map + offset
+                                 + done_blocks * (uint64_t)WPC4_BLOCK_BYTES,
+                             ref_out, chunk_blocks);
+
+            for (k = 0; k < chunk_values; k++) {
+                if (bits_differ(gpu_out[k], ref_out[k])) {
+                    if (mismatches == 0) {
+                        first_bad = done_blocks * (uint64_t)WPC4_BLOCK_VALUES + k;
+                    }
+                    mismatches++;
+                }
+            }
+
+            done_blocks += chunk_blocks;
+            chunks++;
+        }
+
+        if (chunks > 1 && verbose) {
+            printf("chunks          : %llu (output capped at %u MiB)\n",
+                   (unsigned long long)chunks, MAX_OUT_MIB);
         }
     }
 
+    i = 0;
+    (void)i;
     rate = (double)n_values / ((double)kernel_ms * 1e-3) / 1e6;
 
     acc->tensors++;
