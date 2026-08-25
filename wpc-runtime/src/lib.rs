@@ -1,6 +1,10 @@
 pub mod config;
 pub mod gemma4_config;
 pub mod gemma4_model;
+// Linux only: the CUDA bridge reaches libcuda through dlopen, which Windows has no
+// equivalent of. Leaving it out elsewhere keeps the CPU-only build portable.
+#[cfg(target_os = "linux")]
+pub mod gpu;
 pub mod model;
 pub mod norm;
 pub mod qwen3_model;
