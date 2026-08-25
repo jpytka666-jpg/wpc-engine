@@ -47,6 +47,7 @@ pub const WPC4_BLOCK_BYTES: usize = 68;
 const GEMV_THREADS: u32 = 256;
 
 const CUDA_SUCCESS: c_int = 0;
+#[cfg(unix)]
 const RTLD_NOW: c_int = 2;
 
 const ATTR_CC_MAJOR: c_int = 75;
@@ -60,9 +61,56 @@ type CuModule = *mut c_void;
 type CuFunction = *mut c_void;
 type CuDevicePtr = u64;
 
+// Both platforms can reach the driver; only the way of asking differs. Windows talks to
+// nvcuda.dll directly, with no virtualisation layer between the process and the card --
+// which is the reason to prefer it here, see the note on cuCtxSynchronize below.
+#[cfg(unix)]
 extern "C" {
     fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn LoadLibraryA(name: *const c_char) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+}
+
+/// Names to try, most specific first. WSL keeps the driver outside the default search
+/// path, so the full path is tried before the bare name.
+#[cfg(unix)]
+const DRIVER_NAMES: &[&str] = &[
+    "/usr/lib/wsl/lib/libcuda.so.1",
+    "libcuda.so.1",
+    "libcuda.so",
+];
+#[cfg(windows)]
+const DRIVER_NAMES: &[&str] = &["nvcuda.dll"];
+
+unsafe fn load_driver(name: &str) -> *mut c_void {
+    let c = match CString::new(name) {
+        Ok(c) => c,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    #[cfg(unix)]
+    {
+        dlopen(c.as_ptr(), RTLD_NOW)
+    }
+    #[cfg(windows)]
+    {
+        LoadLibraryA(c.as_ptr())
+    }
+}
+
+unsafe fn find_symbol(handle: *mut c_void, name: &CStr) -> *mut c_void {
+    #[cfg(unix)]
+    {
+        dlsym(handle, name.as_ptr())
+    }
+    #[cfg(windows)]
+    {
+        GetProcAddress(handle, name.as_ptr())
+    }
 }
 
 type FnInit = unsafe extern "C" fn(u32) -> CuResult;
@@ -111,23 +159,29 @@ struct Api {
     get_error_string: FnGetErrorString,
 }
 
-/// Look a symbol up, trying the `_v2` spelling first.
+/// Look up exactly the symbol named. No guessing.
 ///
-/// The Driver API versioned several calls when 64-bit pointers arrived; the plain names
-/// still exist but are the old 32-bit forms on some drivers. Asking for `_v2` first and
-/// falling back keeps this correct on both.
+/// This used to try a `_v2` suffix first and fall back to the plain name, on the theory
+/// that the Driver API versioned its calls when 64-bit pointers arrived. That is true of
+/// the memory calls and false of the rest -- and the failure mode is silent. `cuCtxSynchronize_v2`
+/// exists and is not an equivalent of `cuCtxSynchronize`; binding to it made every
+/// synchronisation report CUDA error 709, "context is destroyed", on a context that was
+/// demonstrably alive, on both Linux and Windows. Hours went into suspecting WSL, the
+/// card, the kernel and the context type, when the truth was that the wrong function was
+/// being called.
+///
+/// So each binding below names the exact symbol it wants, `_v2` included where the
+/// versioned form is the correct one.
 unsafe fn sym(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
-    for candidate in [format!("{name}_v2"), name.to_string()] {
-        let c = match CString::new(candidate) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let p = dlsym(handle, c.as_ptr());
-        if !p.is_null() {
-            return Some(p);
-        }
+    let c = CString::new(name).ok()?;
+    let p = find_symbol(handle, &c);
+    if p.is_null() {
+        return None;
     }
-    None
+    if std::env::var("AIONS_GPU_TRACE").is_ok() {
+        eprintln!("cuda-bind: {name}");
+    }
+    Some(p)
 }
 
 macro_rules! bind {
@@ -193,13 +247,8 @@ impl Gpu {
             // Try the WSL location explicitly before the loader's search path: WSL puts
             // the driver in /usr/lib/wsl/lib, which is not always on the default path.
             let mut handle = std::ptr::null_mut();
-            for name in [
-                "/usr/lib/wsl/lib/libcuda.so.1",
-                "libcuda.so.1",
-                "libcuda.so",
-            ] {
-                let c = CString::new(name)?;
-                handle = dlopen(c.as_ptr(), RTLD_NOW);
+            for name in DRIVER_NAMES {
+                handle = load_driver(name);
                 if !handle.is_null() {
                     break;
                 }
@@ -225,17 +274,19 @@ impl Gpu {
                     "cuDeviceGetAttribute",
                     FnDeviceGetAttribute
                 ),
-                mem_get_info: bind!(handle, "cuMemGetInfo", FnMemGetInfo),
+                // The five memory calls genuinely are the versioned ones: their v1 forms
+                // take 32-bit sizes and would truncate a 2 GB model.
+                mem_get_info: bind!(handle, "cuMemGetInfo_v2", FnMemGetInfo),
                 module_load: bind!(handle, "cuModuleLoad", FnModuleLoad),
                 module_get_function: bind!(
                     handle,
                     "cuModuleGetFunction",
                     FnModuleGetFunction
                 ),
-                mem_alloc: bind!(handle, "cuMemAlloc", FnMemAlloc),
-                mem_free: bind!(handle, "cuMemFree", FnMemFree),
-                memcpy_htod: bind!(handle, "cuMemcpyHtoD", FnMemcpyHtoD),
-                memcpy_dtoh: bind!(handle, "cuMemcpyDtoH", FnMemcpyDtoH),
+                mem_alloc: bind!(handle, "cuMemAlloc_v2", FnMemAlloc),
+                mem_free: bind!(handle, "cuMemFree_v2", FnMemFree),
+                memcpy_htod: bind!(handle, "cuMemcpyHtoD_v2", FnMemcpyHtoD),
+                memcpy_dtoh: bind!(handle, "cuMemcpyDtoH_v2", FnMemcpyDtoH),
                 launch_kernel: bind!(handle, "cuLaunchKernel", FnLaunchKernel),
                 ctx_synchronize: bind!(handle, "cuCtxSynchronize", FnCtxSynchronize),
                 get_error_string: bind!(handle, "cuGetErrorString", FnGetErrorString),
@@ -458,20 +509,11 @@ impl Gpu {
                 "cuLaunchKernel(wpc4_gemv)",
             )?;
         }
-        // Deliberately no cuCtxSynchronize here.
-        //
-        // On this WSL + Maxwell setup cuCtxSynchronize returns 709 "context is
-        // destroyed" on a context that is demonstrably alive: the call before it and
-        // the call after it both succeed, and the failing rung moved between runs. The
-        // equivalent C program never calls it in the same place and works. A blocking
-        // cuMemcpyDtoH on the default stream is itself a full synchronisation point, so
-        // reading the result back is both the wait and the proof that the wait happened.
-        //
-        // AIONS_GPU_SYNC=1 restores the explicit call for anyone wanting to re-test it.
-        if std::env::var("AIONS_GPU_SYNC").is_ok() {
-            self.sync()?;
-        }
-        Ok(())
+        // A launch is asynchronous, so without this the caller could read `y` before the
+        // kernel has written it. The earlier version of this file skipped the call
+        // because it appeared to fail; that was a wrong symbol binding, not a driver
+        // fault -- see the note on `sym`.
+        self.sync()
     }
 }
 

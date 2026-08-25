@@ -1,9 +1,9 @@
 pub mod config;
 pub mod gemma4_config;
 pub mod gemma4_model;
-// Linux only: the CUDA bridge reaches libcuda through dlopen, which Windows has no
-// equivalent of. Leaving it out elsewhere keeps the CPU-only build portable.
-#[cfg(target_os = "linux")]
+// The CUDA bridge finds the driver at run time -- dlopen on Linux, LoadLibrary on
+// Windows -- so it builds on both and simply reports an error where there is no card.
+#[cfg(any(target_os = "linux", windows))]
 pub mod gpu;
 pub mod model;
 pub mod norm;

@@ -25,13 +25,13 @@
  * ==========================================
  */
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn main() {
-    eprintln!("gpu-selftest only runs on Linux; the CUDA bridge is dlopen-based.");
+    eprintln!("gpu-selftest runs on Linux and Windows; this platform has no CUDA bridge.");
     std::process::exit(1);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn main() -> anyhow::Result<()> {
     use wpc_runtime::gpu::{Gpu, WPC4_BLOCK_BYTES};
 
