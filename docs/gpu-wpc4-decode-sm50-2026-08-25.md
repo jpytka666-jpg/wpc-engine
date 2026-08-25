@@ -211,11 +211,11 @@ against 3410 MiB free with a 2037.8 MiB model already resident. Fused, it comput
 ## Next step
 
 1. ~~Sweep all 253 tensors in one process run.~~ **Done** — see the full sweep above.
-2. Fuse decode with the matmul so decoded weights never round-trip to global memory. The
-   present kernel writes f32 out, which a real forward pass would not do — and the
-   embedding tensor proves it cannot, since its expanded form does not fit beside the
-   model.
-3. Only then measure tokens/s for a real generation, per step 4 of the original plan.
+2. ~~Fuse decode with the matmul so decoded weights never round-trip to global memory.~~
+   **Done** — see step 3 above. `wpc4_gemv` keeps every decoded weight in a register.
+3. Wire the fused kernel into a real forward pass: attention, the MLP, the KV cache and
+   sampling are all still CPU-side. Only then does a tokens/s number mean anything, per
+   step 4 of the original plan.
 
 ## Artifacts
 
