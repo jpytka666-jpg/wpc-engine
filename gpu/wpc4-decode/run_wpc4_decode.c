@@ -543,7 +543,8 @@ int main(int argc, char **argv)
             return 2;
         }
         decode_one(fn, d_model, d_out, model_map, tensor_name,
-                   tensor_offset, tensor_bytes, gpu_out, ref_out, 1, &acc);
+                   tensor_offset, tensor_bytes, gpu_out, ref_out,
+                   chunk_cap_blocks, 1, &acc);
     }
     t1 = now_seconds();
     sweep_seconds = t1 - t0;
