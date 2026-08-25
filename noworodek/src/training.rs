@@ -80,6 +80,7 @@ impl BigramLanguageModel {
 #[cfg(test)]
 mod tests {
     use super::BigramLanguageModel;
+    use crate::{TrainingObservatory, WeightSetId};
 
     #[test]
     fn tiny_language_model_learns_a_repeated_transition() {
@@ -100,5 +101,18 @@ mod tests {
         model.train_step(&[(0, 2)]).unwrap();
         let after = model.output_weights();
         assert!(before.iter().zip(after).any(|(a, b)| (a - b).abs() > 0.0));
+    }
+
+    #[test]
+    fn observed_training_records_which_weights_changed() {
+        let mut model = BigramLanguageModel::new(3, 3, 0.25, 19);
+        let mut observatory = TrainingObservatory::new();
+        model.train_step_observed(&[(0, 2)], 1, "rust-transition", WeightSetId::new("coding"), &mut observatory).unwrap();
+        let observation = observatory.latest().unwrap();
+        assert_eq!(observation.step, 1);
+        assert_eq!(observation.experience_id, "rust-transition");
+        assert_eq!(observation.deltas.len(), 1);
+        assert!(observation.deltas[0].changed_elements > 0);
+        assert!(observation.deltas[0].max_abs > 0.0);
     }
 }
