@@ -1,0 +1,37 @@
+name: AIONS Studio CI
+
+on:
+  push:
+    branches:
+      - feature/gui
+  pull_request:
+    paths:
+      - 'studio-core/**'
+      - 'studio-ui/**'
+      - '.github/workflows/studio-ci.yml'
+
+jobs:
+  studio-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test studio-core
+        run: cargo test -p studio-core
+
+  studio-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: studio-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: studio-ui/package.json
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Typecheck and build frontend
+        run: npm run build
