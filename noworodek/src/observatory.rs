@@ -11,9 +11,9 @@ pub struct TensorDeltaSummary {
 
 impl TensorDeltaSummary {
     pub fn from_delta(tensor_name: impl Into<String>, delta: &[f32]) -> Self {
-        let mut l1 = 0.0;
-        let mut l2 = 0.0;
-        let mut max_abs = 0.0;
+        let mut l1: f32 = 0.0;
+        let mut l2: f32 = 0.0;
+        let mut max_abs: f32 = 0.0;
         let mut changed_elements = 0;
         for &value in delta {
             let abs = value.abs();
@@ -51,7 +51,7 @@ impl TrainingObservatory {
 
     pub fn latest(&self) -> Option<&TrainingObservation> { self.observations.last() }
 
-    pub fn for_experience(&self, experience_id: &str) -> impl Iterator<Item = &TrainingObservation> {
+    pub fn for_experience<'a>(&'a self, experience_id: &'a str) -> impl Iterator<Item = &'a TrainingObservation> + 'a {
         self.observations.iter().filter(move |item| item.experience_id == experience_id)
     }
 
