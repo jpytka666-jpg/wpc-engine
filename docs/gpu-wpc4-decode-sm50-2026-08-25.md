@@ -50,6 +50,45 @@ same documented rule independently.
 2 GB resident buffer, which exercises the 64-bit offset arithmetic rather than just the
 first megabyte.
 
+### Full sweep — all 253 tensors, same run
+
+The sample above was then replaced by complete coverage. The model is uploaded once, so
+sweeping every tensor costs barely more than sweeping one.
+
+| Measured | Result |
+|---|---|
+| Tensors decoded | **253 of 253** |
+| Values checked bit-for-bit | **4 022 272 000** |
+| Mismatches | **0** |
+| Failed tensors | **0** |
+| Total kernel time, whole model | **891.966 ms** |
+| Mean rate | 4509.4 M values/s |
+| Best tensor | 8949.0 M values/s (`model.layers.6.mlp.down_proj.weight`) |
+| Wall clock, decode + compare | 17.796 s (upload excluded) |
+
+Every weight in Qwen3-4B v4 decodes on the card to the same bits the CPU produces. The
+entire model's weights expand in **0.89 s of GPU time**.
+
+### The chunking constraint — found by hitting it
+
+The first sweep attempt refused to start:
+
+```text
+largest tensor  : 197.1 MiB packed, 1483.8 MiB decoded as f32
+RESIDENCY: NO -- 3410 MiB free, model plus output needs 3522 MiB.
+```
+
+The token embedding is 197.1 MiB packed and **1483.8 MiB expanded**, because f32 costs
+7.5x the packed form. Model plus that one output buffer exceeds the card. This is not a
+bug to work around, it is the shape of the problem: **a 4 GB card can hold the packed
+model or a big expanded tensor, never both.**
+
+The decoder therefore walks each tensor in chunks bounded by a 128 MiB output buffer
+(262 144 blocks). Tensors under the cap take exactly one pass, so nothing else changed.
+This is also what a fused decode-and-multiply kernel wants — it never needs the whole
+expanded tensor either, which makes the constraint an argument for fusion rather than
+against it.
+
 A third, independent implementation (NumPy, using its own float16) decodes block 0 to
 `0.005032` for value 0 — the same value the card returned. Agreement across three
 separately written decoders, rather than one checked against itself.
