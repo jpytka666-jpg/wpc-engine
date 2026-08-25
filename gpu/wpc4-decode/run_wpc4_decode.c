@@ -58,6 +58,17 @@
 #define MIB (1024.0 * 1024.0)
 #define MAX_NAME 512
 
+/* Cap on the decoded-output buffer, in MiB.
+ *
+ * Found the hard way: the largest tensor in Qwen3-4B v4 is 197.1 MiB packed and
+ * 1483.8 MiB once expanded to f32 -- the token embedding. Model (2037.8 MiB) plus that
+ * one tensor needs 3522 MiB, against 3410 MiB free. Materialising a whole big tensor as
+ * f32 does not fit on a 4 GB card and never will, because f32 costs 7.5x the packed
+ * form. So the decoder works a chunk at a time out of the resident weights, which is
+ * also what a fused decode-and-multiply kernel would do -- it never wants the whole
+ * expanded tensor either. */
+#define MAX_OUT_MIB 128u
+
 static const char *g_stage = "startup";
 
 #define CHECK(call)                                                            \
