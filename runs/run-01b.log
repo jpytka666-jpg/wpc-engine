@@ -1,0 +1,14 @@
+# AIONS Qwen KV Smoke Run 01B
+# Author: M. Szul via GPT-5.6 Luna
+# Repository: jpytka666-jpg/wpc-engine
+# PR: #27
+# Commit: cd6923bafe1240bcd95b1e80b91382985c009a4a
+# Created: 2026-08-24T20:22:00+01:00
+# Reason: detached smoke test to isolate Commander session timeout from runtime behavior.
+# Binary SHA256: cf7c9a2085394c14f9b0e36c9d7af9bfdbd5432c767e530c92f61d0ecfb4680a
+# Model: /home/aions/qwen3-coder-run
+# WPC: /home/aions/qwen3-coder-wpc4
+# Probe: AIONS_KV_PROBE=1, stride=64
+# Workload: max-tokens=1
+# Outcome: PENDING
+# Conclusion: PENDING

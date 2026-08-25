@@ -1,0 +1,14 @@
+# AIONS Qwen KV Experiment Run 01
+# Author: M. Szul via GPT-5.6 Luna
+# Repository: jpytka666-jpg/wpc-engine
+# PR: #27
+# Commit: cd6923bafe1240bcd95b1e80b91382985c009a4a
+# Created: 2026-08-24T20:10:00+01:00
+# Reason: Reproduce Qwen3-MoE KV statistics with exact cd6923ba runtime after recovered executable loss.
+# Binary: /mnt/c/temp/aions-qwen-kv-probe-rebuild-2026-08-24/target/release/wpc-runtime
+# Model: /home/aions/qwen3-coder-run
+# WPC: /home/aions/qwen3-coder-wpc4
+# Probe: AIONS_KV_PROBE=1, stride=64
+# Workload: max-tokens=8
+# Outcome: PENDING
+# Conclusion: PENDING

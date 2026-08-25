@@ -1,0 +1,14 @@
+# AIONS Qwen KV Benchmark Run 01
+# Author: M. Szul via GPT-5.6 Luna
+# Repository: jpytka666-jpg/wpc-engine
+# PR: #27
+# Commit: cd6923bafe1240bcd95b1e80b91382985c009a4a
+# Created: 2026-08-24T20:18:00+01:00
+# Reason: exact 8-token Qwen3-MoE KV baseline using the verified cd6923ba runtime.
+# Binary SHA256: cf7c9a2085394c14f9b0e36c9d7af9bfdbd5432c767e530c92f61d0ecfb4680a
+# Model: /home/aions/qwen3-coder-run
+# WPC: /home/aions/qwen3-coder-wpc4
+# Probe: AIONS_KV_PROBE=1, stride=64
+# Workload: max-tokens=8
+# Outcome: PENDING
+# Conclusion: PENDING
