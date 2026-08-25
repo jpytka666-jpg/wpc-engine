@@ -57,7 +57,8 @@ impl BigramLanguageModel {
             let sum_exp: f32 = row.iter().map(|value| (*value - max).exp()).sum();
             for index in 0..self.vocab_size {
                 let probability = (row[index] - max).exp() / sum_exp;
-                gradient[start + index] += probability - f32::from(index == target);
+                let target_gradient = if index == target { 1.0 } else { 0.0 };
+                gradient[start + index] += probability - target_gradient;
             }
         }
         let scale = self.learning_rate / pairs.len() as f32;
