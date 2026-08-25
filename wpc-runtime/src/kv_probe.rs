@@ -222,7 +222,7 @@ impl KvProbe for StatsKvProbe {
         self.positions
             .fetch_max((position + 1) as u64, Ordering::Relaxed);
 
-        if position % self.stride == 0 {
+        if position.is_multiple_of(self.stride) {
             self.observe_values(key);
             self.observe_values(value);
         }

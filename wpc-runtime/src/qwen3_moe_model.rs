@@ -190,8 +190,10 @@ impl MoeKvCache {
             "logits sidecar length is not f32-aligned"
         );
         let logits: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect();
         anyhow::ensure!(
             logits.len() == self.expected_vocab_size,
