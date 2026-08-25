@@ -1,0 +1,13 @@
+[package]
+name = "studio-core"
+version = "0.1.0"
+edition = "2021"
+description = "AIONS Studio dynamic workspace and presentation protocol core"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
