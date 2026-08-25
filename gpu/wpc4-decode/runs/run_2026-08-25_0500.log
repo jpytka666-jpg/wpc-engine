@@ -1,0 +1,28 @@
+=== WPC v4 GPU decode -- real Qwen3-4B weights ===
+model file      : /home/aions/qwen3-4b-wpc4/model_v4.wpc
+model bytes     : 2136832000 (2037.8 MiB)
+tensor          : model.layers.12.self_attn.o_proj.weight
+tensor offset   : 0
+tensor bytes    : 5570560 (5.3 MiB)
+blocks          : 81920
+values          : 10485760
+decoded f32     : 40.0 MiB
+bits per value  : 4.2500
+
+device          : Quadro M2000M (compute capability 5.0, 5 SMs)
+VRAM total      : 4096 MiB
+VRAM free before: 3410 MiB
+VRAM free after : 1372 MiB
+model uploaded  : 6.672 s (0.32 GB/s)
+RESIDENCY       : YES -- whole packed model lives in VRAM, 1372 MiB left for KV cache and activations
+
+grid            : 20480 blocks x 256 threads
+decode kernel   : 2.622 ms (3998.7 M values/s)
+result download : 0.064 s (0.65 GB/s)
+host reference  : 0.076 s (138.2 M values/s)
+
+=== VERDICT ===
+values checked  : 10485760
+mismatches      : 0
+sample values   : 0.005032 0.019550 0.007589 0.013641
+RESULT          : PASS -- bit-for-bit identical to the CPU decode

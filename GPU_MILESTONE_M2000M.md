@@ -38,3 +38,30 @@ Compilation is not the same as execution. The minimal kernel still needs to be l
 4. Measure tokens/s, VRAM use, and CPU↔GPU transfer cost before changing the packing layout specifically for the GPU.
 
 This milestone intentionally records only verified results. It does **not** claim that full Qwen inference is already running on the GPU.
+
+---
+
+## Status update — 2026-08-25
+
+Steps 1 and 2 of the plan above are now closed by measurement.
+
+**Step 1 — execute the `sm_50` kernel on the physical card: DONE (02:30).**
+Probe `/home/aions/gpu-sm50-probe-2026-08-25/run_sm50_probe`, exit 0. Vector add and 4-bit
+nibble unpack both returned 0 wrong elements. Transfer cost 9.16 ms against 0.30 ms of
+compute — moving data is ~30x the arithmetic, so the model must stay resident.
+
+**Step 2 — port the WPC 4-bit decode path to CUDA: DONE (05:00).**
+See `docs/gpu-wpc4-decode-sm50-2026-08-25.md`. The whole 2037.8 MiB packed Qwen3-4B model
+was uploaded once and stayed resident (VRAM free 3410 → 1372 MiB), and the decode kernel
+ran against the real on-disk v4 blocks straight out of that resident copy.
+
+| Measured | Result |
+|---|---|
+| Residency | 2037.8 MiB resident, 1372 MiB left for KV and activations |
+| Tensors verified | 3 of 253 (first, a small attention projection, and the last in the file) |
+| Values checked | 38 010 880 |
+| Mismatches vs CPU reference | **0**, bit-for-bit |
+| Decode throughput, peak | 9905.7 M values/s |
+
+Steps 3 and 4 remain open. Decode is not inference: matmul, attention, sampling and the KV
+cache are still CPU-side, and no token rate has been measured on the GPU.
