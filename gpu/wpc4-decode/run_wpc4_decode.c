@@ -528,7 +528,7 @@ int main(int argc, char **argv)
             }
             if (decode_one(fn, d_model, d_out, model_map, name,
                            (uint64_t)off, (uint64_t)sz,
-                           gpu_out, ref_out, 0, &acc) < 0) {
+                           gpu_out, ref_out, chunk_cap_blocks, 0, &acc) < 0) {
                 acc.failed_tensors++;
             }
         }
