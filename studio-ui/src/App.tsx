@@ -1,4 +1,5 @@
 import { PointerEvent, useEffect, useRef, useState } from "react";
+import GraphSurface from "./GraphSurface";
 import { applyPresentation, Surface, SurfaceKind, workspaceSnapshot } from "./protocol";
 
 type LocalSurface = Surface & { title: string };
@@ -50,7 +51,7 @@ export default function App() {
   return <main className="studio-shell">
     <header className="command-bar"><div className="brand"><span className="brand-orb" />AIONS <span className="brand-subtitle">STUDIO</span></div><div className="status-line"><span className="status-dot" />LISTENING <span className="separator">/</span> WORKSPACE</div><button className="voice-button" type="button"><span className="voice-ring" />Speak to AIONS</button></header>
     <section className="workspace" ref={workspaceRef} aria-label="AIONS dynamic workspace"><div className="ambient ambient-green" /><div className="ambient ambient-amber" />
-      {surfaces.map((surface) => <article key={surface.id} className={`surface ${focused === surface.id ? "surface-focused" : ""}`} style={{ left: `${surface.x}%`, top: `${surface.y}%`, width: `${surface.width}%`, height: `${surface.height}%`, zIndex: focused === surface.id ? 20 : surface.z_index }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onClick={() => setFocused(surface.id)}>
+      {surfaces.map((surface) => <article key={surface.id} className={`surface surface-materializing ${focused === surface.id ? "surface-focused" : ""}`} style={{ left: `${surface.x}%`, top: `${surface.y}%`, width: `${surface.width}%`, height: `${surface.height}%`, zIndex: focused === surface.id ? 20 : surface.z_index }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onClick={() => setFocused(surface.id)}>
         <div className="surface-header" onPointerDown={(e) => begin(e, surface, "move")}><div><span className="surface-kicker">{surface.kind.toUpperCase()}</span><h2>{surface.title}</h2></div><button className="surface-close" type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); close(surface.id); }}>×</button></div>
         <SurfaceContent kind={surface.kind} /><button className="surface-resize-handle" type="button" aria-label={`Resize ${surface.title}`} onPointerDown={(e) => begin(e, surface, "resize")} />
       </article>)}
@@ -61,7 +62,7 @@ export default function App() {
 }
 
 function SurfaceContent({ kind }: { kind: SurfaceKind }) {
-  if (kind === "Graph" || kind === "Agent") return <div className="graph-stage"><div className="graph-node graph-root">AIONS</div><div className="graph-line line-a" /><div className="graph-line line-b" /><div className="graph-line line-c" /><div className="graph-node node-a">WPC</div><div className="graph-node node-b">MEMORY</div><div className="graph-node node-c">QWEN</div></div>;
+  if (kind === "Graph" || kind === "Agent") return <div className="graph-stage"><GraphSurface /></div>;
   if (kind === "Code") return <pre className="code-stage"><code>{`pub fn decode(block: &PackedBlock) -> Tensor {\n    decode_block(block)\n}`}</code></pre>;
   if (kind === "Terminal") return <pre className="terminal-stage"><code>{`$ aions status\nAIONS   ONLINE\nWPC     READY\nQWEN    READY\nMEMORY  READY\n\n> listening...`}</code></pre>;
   return <div className="generic-surface">{titles[kind]}</div>;
