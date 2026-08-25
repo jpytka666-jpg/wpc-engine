@@ -155,9 +155,8 @@ Build notes that cost time and are worth recording:
 
 - **Qwen3-4B inference is not running on the GPU.** Only the decode step is. Matmul,
   attention, sampling and the KV cache are all still CPU-side.
-- Three tensors of 253 were verified. Every one passed, and they span the first, a small
-  attention projection, and the last tensor in the file — but that is a sample, not the
-  whole model.
+- Decode correctness is now complete: 253 of 253 tensors, 4 022 272 000 values, 0
+  mismatches. That is coverage of the decode step only.
 - Decode throughput was measured in isolation. It is not a token rate, and it does not
   account for reading activations or writing results in a real forward pass.
 
