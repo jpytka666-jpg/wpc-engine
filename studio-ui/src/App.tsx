@@ -1,5 +1,6 @@
 import { PointerEvent, useEffect, useRef, useState } from "react";
 import GraphSurface from "./GraphSurface";
+import { composeSurfaces, promoteFocus } from "./compositor";
 import { applyPresentation, Surface, SurfaceKind, workspaceSnapshot } from "./protocol";
 
 type LocalSurface = Surface & { title: string };
@@ -7,7 +8,7 @@ type Gesture = { mode: "move" | "resize"; id: string; startX: number; startY: nu
 
 const titles: Record<SurfaceKind, string> = { Agent: "AIONS Workspace", Graph: "Architecture Graph", Code: "decoder.rs", Terminal: "Terminal", Diff: "Change Review", Logs: "System Logs", Email: "Mail", Browser: "Browser", Video: "Media", Image: "Canvas", Chart: "Telemetry" };
 
-const seed: LocalSurface = { id: "agent-presence", kind: "Agent", state: "Active", x: 22, y: 18, width: 56, height: 56, z_index: 1, priority: 10, data: null, title: titles.Agent };
+const seed: LocalSurface = { id: "agent-presence", kind: "Agent", state: "Active", x: 18, y: 13, width: 64, height: 70, z_index: 100, priority: 10, data: null, title: titles.Agent };
 
 function toLocal(surface: Surface): LocalSurface { return { ...surface, title: titles[surface.kind] }; }
 
@@ -19,19 +20,30 @@ export default function App() {
 
   useEffect(() => { workspaceSnapshot().then((snapshot) => { const restored = Object.values(snapshot.surfaces).map(toLocal); if (restored.length) { setSurfaces(restored); setFocused(snapshot.focused ?? restored[0].id); } }).catch(() => undefined); }, []);
 
-  async function command(cmd: Parameters<typeof applyPresentation>[0], fallback: () => void) {
-    try { const snapshot = await applyPresentation(cmd); setSurfaces(Object.values(snapshot.surfaces).map(toLocal)); setFocused(snapshot.focused ?? ""); }
-    catch { fallback(); }
+  async function command(cmd: Parameters<typeof applyPresentation>[0], fallback: () => void, compose = false) {
+    try {
+      const snapshot = await applyPresentation(cmd);
+      const next = Object.values(snapshot.surfaces).map(toLocal);
+      const nextFocused = snapshot.focused ?? "";
+      setSurfaces(compose ? composeSurfaces(next, nextFocused) : next);
+      setFocused(nextFocused);
+    } catch { fallback(); }
   }
 
   function addSurface(kind: SurfaceKind) {
     const id = `${kind.toLowerCase()}-${Date.now()}`;
-    const surface: LocalSurface = { id, kind, title: titles[kind], state: "Active", x: 12 + (surfaces.length % 4) * 7, y: 12 + (surfaces.length % 4) * 5, width: 54, height: 52, z_index: surfaces.length + 1, priority: 1, data: null };
-    void command({ Create: surface as Omit<Surface, "title"> }, () => { setSurfaces((s) => [...s, surface]); setFocused(id); });
+    const surface: LocalSurface = { id, kind, title: titles[kind], state: "Active", x: 12, y: 12, width: 54, height: 52, z_index: surfaces.length + 1, priority: 1, data: null };
+    void command({ Create: surface as Omit<Surface, "title"> }, () => { const next = [...surfaces, surface]; setSurfaces(composeSurfaces(next, id)); setFocused(id); }, true);
+  }
+
+  function focus(id: string) {
+    setFocused(id);
+    setSurfaces((items) => promoteFocus(items, id));
+    void applyPresentation({ Focus: { id } }).then((snapshot) => setFocused(snapshot.focused ?? id)).catch(() => undefined);
   }
 
   function begin(event: PointerEvent<HTMLElement>, surface: LocalSurface, mode: Gesture["mode"]) {
-    event.stopPropagation(); setFocused(surface.id); gesture.current = { mode, id: surface.id, startX: event.clientX, startY: event.clientY, x: surface.x, y: surface.y, width: surface.width, height: surface.height }; event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation(); focus(surface.id); gesture.current = { mode, id: surface.id, startX: event.clientX, startY: event.clientY, x: surface.x, y: surface.y, width: surface.width, height: surface.height }; event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function move(event: PointerEvent<HTMLElement>) {
@@ -47,17 +59,18 @@ export default function App() {
 
   function close(id: string) { void command({ Close: { id } }, () => { setSurfaces((s) => s.filter((x) => x.id !== id)); setFocused((f) => f === id ? "" : f); }); }
   function clear() { void command({ Clear: {} }, () => { setSurfaces([]); setFocused(""); }); }
+  function autoArrange() { setSurfaces(composeSurfaces(surfaces, focused)); }
 
   return <main className="studio-shell">
     <header className="command-bar"><div className="brand"><span className="brand-orb" />AIONS <span className="brand-subtitle">STUDIO</span></div><div className="status-line"><span className="status-dot" />LISTENING <span className="separator">/</span> WORKSPACE</div><button className="voice-button" type="button"><span className="voice-ring" />Speak to AIONS</button></header>
     <section className="workspace" ref={workspaceRef} aria-label="AIONS dynamic workspace"><div className="ambient ambient-green" /><div className="ambient ambient-amber" />
-      {surfaces.map((surface) => <article key={surface.id} className={`surface surface-materializing ${focused === surface.id ? "surface-focused" : ""}`} style={{ left: `${surface.x}%`, top: `${surface.y}%`, width: `${surface.width}%`, height: `${surface.height}%`, zIndex: focused === surface.id ? 20 : surface.z_index }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onClick={() => setFocused(surface.id)}>
+      {surfaces.map((surface) => <article key={surface.id} className={`surface surface-materializing ${focused === surface.id ? "surface-focused" : ""}`} style={{ left: `${surface.x}%`, top: `${surface.y}%`, width: `${surface.width}%`, height: `${surface.height}%`, zIndex: focused === surface.id ? 120 : surface.z_index }} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onClick={() => focus(surface.id)}>
         <div className="surface-header" onPointerDown={(e) => begin(e, surface, "move")}><div><span className="surface-kicker">{surface.kind.toUpperCase()}</span><h2>{surface.title}</h2></div><button className="surface-close" type="button" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); close(surface.id); }}>×</button></div>
         <SurfaceContent kind={surface.kind} /><button className="surface-resize-handle" type="button" aria-label={`Resize ${surface.title}`} onPointerDown={(e) => begin(e, surface, "resize")} />
       </article>)}
       {!surfaces.length && <div className="empty-state"><div className="presence-orb"><div className="presence-core" /></div><div className="empty-title">AIONS is listening</div><div className="empty-copy">Say what you want to see.</div></div>}
     </section>
-    <footer className="command-deck"><div className="quick-actions"><button type="button" onClick={() => addSurface("Graph")}>Graph</button><button type="button" onClick={() => addSurface("Code")}>Code</button><button type="button" onClick={() => addSurface("Terminal")}>Terminal</button><button type="button" className="clear-button" onClick={clear}>Clear</button></div><div className="workspace-status">{surfaces.length} surface{surfaces.length === 1 ? "" : "s"}<span className="separator">/</span>{surfaces.find((s) => s.id === focused)?.title ?? "clean workspace"}</div></footer>
+    <footer className="command-deck"><div className="quick-actions"><button type="button" onClick={() => addSurface("Graph")}>Graph</button><button type="button" onClick={() => addSurface("Code")}>Code</button><button type="button" onClick={() => addSurface("Terminal")}>Terminal</button><button type="button" onClick={autoArrange}>Arrange</button><button type="button" className="clear-button" onClick={clear}>Clear</button></div><div className="workspace-status">{surfaces.length} surface{surfaces.length === 1 ? "" : "s"}<span className="separator">/</span>{surfaces.find((s) => s.id === focused)?.title ?? "clean workspace"}</div></footer>
   </main>;
 }
 
