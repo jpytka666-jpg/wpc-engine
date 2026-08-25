@@ -162,10 +162,11 @@ Build notes that cost time and are worth recording:
 
 ## Next step
 
-1. Sweep all 253 tensors in one process run — the model is uploaded once, so the marginal
-   cost per tensor is small. That turns the sample into full coverage.
+1. ~~Sweep all 253 tensors in one process run.~~ **Done** — see the full sweep above.
 2. Fuse decode with the matmul so decoded weights never round-trip to global memory. The
-   present kernel writes f32 out, which a real forward pass would not do.
+   present kernel writes f32 out, which a real forward pass would not do — and the
+   embedding tensor proves it cannot, since its expanded form does not fit beside the
+   model.
 3. Only then measure tokens/s for a real generation, per step 4 of the original plan.
 
 ## Artifacts
