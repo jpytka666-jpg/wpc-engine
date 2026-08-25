@@ -9,6 +9,7 @@ on:
       - 'studio-core/**'
       - 'studio-ui/**'
       - '.github/workflows/studio-ci.yml'
+  workflow_dispatch:
 
 jobs:
   studio-core:
