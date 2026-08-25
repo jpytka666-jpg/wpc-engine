@@ -5,6 +5,7 @@ pub mod editor;
 pub mod observatory;
 pub mod snapshot;
 pub mod tensor;
+pub mod training;
 pub mod weightset;
 
 pub use backend::{MemoryWeightBackend, MountedWeightSet, WeightBackend, WeightSetManager};
@@ -12,6 +13,7 @@ pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
 pub use snapshot::{WeightSetSnapshot, WeightSetSnapshotEntry, SNAPSHOT_SCHEMA_VERSION};
 pub use tensor::Tensor;
+pub use training::BigramLanguageModel;
 pub use weightset::{
     ArchitectureId, DType, TensorSpec, WeightSetError, WeightSetHeader, WeightSetId,
     WeightSetManifest, WeightSetState, WeightSetVersion,
