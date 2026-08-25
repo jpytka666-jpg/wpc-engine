@@ -22,10 +22,18 @@ pub fn write_envelope_sidecar(
     dimension: usize,
     sequence_length: usize,
 ) -> io::Result<PathBuf> {
-    let model_fingerprint = std::env::var("AIONS_KV_MODEL_FINGERPRINT")
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "AIONS_KV_MODEL_FINGERPRINT is required"))?;
-    let session_id = std::env::var("AIONS_KV_SESSION_ID")
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "AIONS_KV_SESSION_ID is required"))?;
+    let model_fingerprint = std::env::var("AIONS_KV_MODEL_FINGERPRINT").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "AIONS_KV_MODEL_FINGERPRINT is required",
+        )
+    })?;
+    let session_id = std::env::var("AIONS_KV_SESSION_ID").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "AIONS_KV_SESSION_ID is required",
+        )
+    })?;
 
     let payload_path = payload_path.as_ref();
     let envelope = KvEnvelope {

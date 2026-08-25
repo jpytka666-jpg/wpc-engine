@@ -90,7 +90,14 @@ impl CaptureState {
         })
     }
 
-    fn observe(&mut self, layer: usize, position: usize, kv_head: usize, key: &[f32], value: &[f32]) {
+    fn observe(
+        &mut self,
+        layer: usize,
+        position: usize,
+        kv_head: usize,
+        key: &[f32],
+        value: &[f32],
+    ) {
         if self.truncated || position >= self.max_positions {
             self.truncated = true;
             return;
@@ -154,7 +161,6 @@ pub struct StatsKvProbe {
     stats: Mutex<SampleStats>,
     capture: Mutex<Option<CaptureState>>,
     final_logits: Mutex<Option<Vec<f32>>>,
-
 }
 
 #[derive(Default)]
@@ -207,14 +213,7 @@ impl KvProbe for StatsKvProbe {
         *self.final_logits.lock().expect("KV logits mutex poisoned") = Some(logits.to_vec());
     }
 
-    fn observe(
-        &self,
-        layer: usize,
-        position: usize,
-        kv_head: usize,
-        key: &[f32],
-        value: &[f32],
-    ) {
+    fn observe(&self, layer: usize, position: usize, kv_head: usize, key: &[f32], value: &[f32]) {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.raw_bytes.fetch_add(
             ((key.len() + value.len()) * std::mem::size_of::<f32>()) as u64,
@@ -248,48 +247,66 @@ impl Drop for StatsKvProbe {
             .take()
         {
             if let Err(err) = capture.flush() {
-                eprintln!("kv-capture: failed to write {}: {err}", capture.path.display());
+                eprintln!(
+                    "kv-capture: failed to write {}: {err}",
+                    capture.path.display()
+                );
             } else {
                 eprintln!(
                     "kv-capture: wrote {} records to {}{}",
                     capture.records.len(),
                     capture.path.display(),
-                    if capture.truncated { " (TRUNCATED)" } else { "" }
+                    if capture.truncated {
+                        " (TRUNCATED)"
+                    } else {
+                        ""
+                    }
                 );
 
                 if capture.truncated {
                     eprintln!("kv-memory: envelope suppressed because capture is truncated");
                 } else {
-                    let logits = self.final_logits.get_mut().expect("KV logits mutex poisoned").take();
+                    let logits = self
+                        .final_logits
+                        .get_mut()
+                        .expect("KV logits mutex poisoned")
+                        .take();
                     if let Some(logits) = logits {
-                        let mut lp = capture.path.clone(); lp.set_extension("logits.f32");
-                        let mut bytes = Vec::with_capacity(logits.len()*4);
-                        for v in logits { bytes.extend_from_slice(&v.to_le_bytes()); }
-                        if let Err(err) = std::fs::write(&lp, bytes) { eprintln!("kv-capture: failed to write {}: {err}", lp.display()); } else { eprintln!("kv-capture: wrote final logits to {}", lp.display()); }
+                        let mut lp = capture.path.clone();
+                        lp.set_extension("logits.f32");
+                        let mut bytes = Vec::with_capacity(logits.len() * 4);
+                        for v in logits {
+                            bytes.extend_from_slice(&v.to_le_bytes());
+                        }
+                        if let Err(err) = std::fs::write(&lp, bytes) {
+                            eprintln!("kv-capture: failed to write {}: {err}", lp.display());
+                        } else {
+                            eprintln!("kv-capture: wrote final logits to {}", lp.display());
+                        }
                     }
                 }
                 if !capture.truncated {
                     if let Some(first) = capture.records.first() {
-                    let sequence_length = capture
-                        .records
-                        .iter()
-                        .map(|record| record.position as usize + 1)
-                        .max()
-                        .unwrap_or(0);
-                    match kv_memory_bridge::write_envelope_sidecar(
-                        &capture.path,
-                        first.key.len(),
-                        sequence_length,
-                    ) {
-                        Ok(path) => eprintln!(
-                            "kv-memory: canonical envelope written to {}",
-                            path.display()
-                        ),
-                        Err(err) => eprintln!(
-                            "kv-memory: canonical envelope not written: {err}"
-                        ),
+                        let sequence_length = capture
+                            .records
+                            .iter()
+                            .map(|record| record.position as usize + 1)
+                            .max()
+                            .unwrap_or(0);
+                        match kv_memory_bridge::write_envelope_sidecar(
+                            &capture.path,
+                            first.key.len(),
+                            sequence_length,
+                        ) {
+                            Ok(path) => eprintln!(
+                                "kv-memory: canonical envelope written to {}",
+                                path.display()
+                            ),
+                            Err(err) => {
+                                eprintln!("kv-memory: canonical envelope not written: {err}")
+                            }
+                        }
                     }
-                }
                 }
             }
         }
@@ -331,7 +348,11 @@ fn encode_snapshot(snapshot: &KvSnapshot) -> Vec<u8> {
     let mut out = Vec::with_capacity(32);
     out.extend_from_slice(SNAPSHOT_MAGIC);
     out.extend_from_slice(&snapshot.version.to_le_bytes());
-    let flags = if snapshot.truncated { SNAPSHOT_FLAG_TRUNCATED } else { 0 };
+    let flags = if snapshot.truncated {
+        SNAPSHOT_FLAG_TRUNCATED
+    } else {
+        0
+    };
     out.extend_from_slice(&flags.to_le_bytes());
     out.extend_from_slice(&(snapshot.records.len() as u64).to_le_bytes());
     for record in &snapshot.records {
@@ -363,12 +384,16 @@ fn decode_snapshot(bytes: &[u8]) -> Result<KvSnapshot, String> {
     }
     fn u32le(bytes: &[u8], cursor: &mut usize) -> Result<u32, String> {
         Ok(u32::from_le_bytes(
-            take(bytes, cursor, 4)?.try_into().map_err(|_| "u32 decode")?,
+            take(bytes, cursor, 4)?
+                .try_into()
+                .map_err(|_| "u32 decode")?,
         ))
     }
     fn u64le(bytes: &[u8], cursor: &mut usize) -> Result<u64, String> {
         Ok(u64::from_le_bytes(
-            take(bytes, cursor, 8)?.try_into().map_err(|_| "u64 decode")?,
+            take(bytes, cursor, 8)?
+                .try_into()
+                .map_err(|_| "u64 decode")?,
         ))
     }
 
@@ -389,12 +414,16 @@ fn decode_snapshot(bytes: &[u8]) -> Result<KvSnapshot, String> {
         let mut value = Vec::with_capacity(len);
         for _ in 0..len {
             key.push(f32::from_le_bytes(
-                take(bytes, &mut cursor, 4)?.try_into().map_err(|_| "key decode")?,
+                take(bytes, &mut cursor, 4)?
+                    .try_into()
+                    .map_err(|_| "key decode")?,
             ));
         }
         for _ in 0..len {
             value.push(f32::from_le_bytes(
-                take(bytes, &mut cursor, 4)?.try_into().map_err(|_| "value decode")?,
+                take(bytes, &mut cursor, 4)?
+                    .try_into()
+                    .map_err(|_| "value decode")?,
             ));
         }
         records.push(KvSnapshotRecord {

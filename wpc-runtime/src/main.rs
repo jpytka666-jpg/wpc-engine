@@ -276,9 +276,13 @@ fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> an
     let mut next_logits: Vec<f32> = Vec::new();
 
     if let Ok(snapshot_path) = std::env::var("AIONS_KV_RESTORE") {
-        let logits_path = std::env::var("AIONS_KV_RESTORE_LOGITS").unwrap_or_else(|_| format!("{snapshot_path}.logits.f32"));
+        let logits_path = std::env::var("AIONS_KV_RESTORE_LOGITS")
+            .unwrap_or_else(|_| format!("{snapshot_path}.logits.f32"));
         next_logits = cache.restore_from_files(&snapshot_path, &logits_path)?;
-        eprintln!("restored KV prefix: {} positions from {}", cache.len, snapshot_path);
+        eprintln!(
+            "restored KV prefix: {} positions from {}",
+            cache.len, snapshot_path
+        );
     } else {
         let prompt_ids = encode_prompt(tokenizer, &args.prompt, config_bos(&args.model))?;
         let t1 = Instant::now();
