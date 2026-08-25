@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use wpc_runtime::resident::ResidentEngine;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -432,7 +433,47 @@ fn main()->Result<()>{
         eprintln!("PODANE MODELOWI: {}", names.join(", "));
     }
     let tools=manifest(&tools); let mut transcript=format!("TASK: {}\n",a.task);
-    for turn in 1..=a.max_turns { eprintln!("=== AIONS AGENT TURN {turn}/{} ===",a.max_turns); let r=model(&a,&prompt(&tools,&transcript))?; eprintln!("MODEL: {r}");
+
+    // The model stays loaded for the whole run and keeps its KV cache between turns.
+    //
+    // Before this, every turn spawned a fresh engine, which reloaded the weights and
+    // re-read the whole transcript from the beginning. Measured over four turns on
+    // Qwen3-4B: 84.3 s, 100.1 s, 138.1 s, 152.2 s, of which reading alone took 62.9 s,
+    // 76.2 s, 113.6 s and 123.8 s. Every turn cost more than the last, for no reason
+    // other than forgetting.
+    //
+    // Falling back to spawning is deliberate rather than fatal: the resident path serves
+    // dense WPC v4 only, so a MoE model or another scheme still works the old way, just
+    // slower.
+    let resident = match ResidentEngine::load(&a.model, &a.wpc, &a.scheme) {
+        Ok(e) => { eprintln!("SILNIK REZYDENTNY: model zostaje w pamieci miedzy turami"); Some(e) }
+        Err(e) => { eprintln!("silnik rezydentny niedostepny ({e}); kazda tura wczyta model od nowa"); None }
+    };
+    let mut session = resident.as_ref().map(|e| e.start_session());
+    // How much of the transcript the resident model has already been shown. Everything
+    // before this is in its cache; only what comes after needs sending.
+    let mut sent = 0usize;
+
+    for turn in 1..=a.max_turns { eprintln!("=== AIONS AGENT TURN {turn}/{} ===",a.max_turns);
+        let r = match session.as_mut() {
+            Some(s) => {
+                let msg = if turn == 1 {
+                    prompt(&tools, &transcript)
+                } else {
+                    // Only the new part, plus the reminder of what a turn must look like.
+                    format!("{}\nReply with ONE action.\n__WPC_AGENT_ASSISTANT__\n", &transcript[sent.min(transcript.len())..])
+                };
+                sent = transcript.len();
+                let (text, cost) = s.feed_raw(&msg, a.max_tokens)?;
+                eprintln!(
+                    "CZAS TURY: czytanie {} tokenow: {:?}  |  pisanie {}: {:?}  |  pamiec: {} pozycji",
+                    cost.prompt_tokens, cost.prefill, cost.generated_tokens, cost.decode, cost.cache_positions
+                );
+                text
+            }
+            None => model(&a, &prompt(&tools, &transcript))?,
+        };
+        eprintln!("MODEL: {r}");
         // A turn that parses into neither an action nor a completion used to kill the
         // agent outright. That is the one case where giving up is least justified: the
         // model has simply drifted off the format, which is exactly what the other

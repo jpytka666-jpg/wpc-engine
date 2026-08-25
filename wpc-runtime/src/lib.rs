@@ -8,6 +8,7 @@ pub mod gpu;
 pub mod model;
 pub mod norm;
 pub mod qwen3_model;
+pub mod resident;
 pub mod qwen3_moe_model;
 pub mod rope;
 pub mod sampling;
