@@ -1,0 +1,25 @@
+=== WPC v4 fused decode + matvec -- real Qwen3-4B weights ===
+tensor          : model.layers.12.self_attn.o_proj.weight
+shape           : 2560 x 4096  (out x in)
+packed bytes    : 5570560 (5.3 MiB)
+blocks per row  : 32
+if expanded f32 : 40.0 MiB -- never materialised by this kernel
+result vector   : 10.0 KiB
+
+device          : Quadro M2000M (compute capability 5.0, 5 SMs)
+VRAM free before: 3410 MiB
+VRAM free after : 1372 MiB
+model uploaded  : 10.794 s (0.20 GB/s), paid once
+
+fused kernel    : 1.043 ms
+                  10049.7 M weights/s, 20.10 GFLOP/s (2 flop per weight)
+packed traffic  : 5.34 GB/s  (f32 weights would need 40.20 GB/s for the same work)
+host reference  : 0.020 s double, 0.016 s float
+speed-up vs host: 16x (float host path)
+
+=== VERDICT ===
+rows compared   : 2560
+GPU vs double   : max relative error 2.235e-04 (row 2335)
+host float vs double : max relative error 1.592e-03 (row 1670)
+sample y[0..3]  : gpu -1.829045 0.013193 0.483828 | exact -1.829045 0.013193 0.483828
+RESULT          : PASS -- fused GPU result is as close to exact as the host float path
