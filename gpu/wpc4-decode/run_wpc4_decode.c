@@ -304,10 +304,10 @@ static int decode_one(CUfunction fn,
         printf("values checked  : %llu\n", (unsigned long long)n_values);
         printf("mismatches      : %llu\n", (unsigned long long)mismatches);
         if (mismatches != 0) {
-            printf("first mismatch  : index %llu, gpu %.9g vs cpu %.9g\n",
-                   (unsigned long long)first_bad,
-                   (double)gpu_out[first_bad], (double)ref_out[first_bad]);
-        } else {
+            printf("first mismatch  : flat index %llu\n", (unsigned long long)first_bad);
+        } else if (n_blocks <= chunk_cap_blocks) {
+            /* Only meaningful when the whole tensor fitted one chunk -- otherwise the
+             * buffer holds the last chunk, not the whole tensor. */
             printf("sample values   : %.6f %.6f %.6f\n",
                    (double)gpu_out[0], (double)gpu_out[n_values / 2],
                    (double)gpu_out[n_values - 1]);
@@ -317,9 +317,8 @@ static int decode_one(CUfunction fn,
                name, (unsigned long long)n_values, (double)kernel_ms,
                mismatches == 0 ? "OK" : "MISMATCH");
         if (mismatches != 0) {
-            printf("    first mismatch at %llu: gpu %.9g vs cpu %.9g\n",
-                   (unsigned long long)first_bad,
-                   (double)gpu_out[first_bad], (double)ref_out[first_bad]);
+            printf("    first mismatch at flat index %llu\n",
+                   (unsigned long long)first_bad);
         }
         fflush(stdout);
     }
