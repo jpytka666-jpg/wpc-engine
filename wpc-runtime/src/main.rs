@@ -8,7 +8,7 @@ use wpc_runtime::gemma4_model::Gemma4Model;
 use wpc_runtime::model::Model;
 use wpc_runtime::qwen3_model;
 use wpc_runtime::qwen3_moe_model::Qwen3MoeModel;
-use wpc_runtime::sampling::{argmax_banned, banned_from_env};
+use wpc_runtime::sampling::{banned_from_env, Decoder};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Arch {
@@ -70,6 +70,43 @@ struct Args {
     /// a plausible next sentence of the same document, not an answer.
     #[arg(long, default_value_t = false)]
     chat: bool,
+
+    /// Keep the model loaded and hold a conversation on stdin.
+    ///
+    /// The one-shot path exits after one answer, so the next question pays to
+    /// load the weights and re-read the whole conversation from the start.
+    /// Here the weights are loaded once and the KV cache is never discarded:
+    /// turn two prefills only turn two. Implies `--chat`, because a
+    /// conversation without the conversation markers is not a conversation.
+    #[arg(long, default_value_t = false)]
+    interactive: bool,
+
+    /// Push down the score of anything said in the last `--repeat-window`
+    /// tokens. 1.0 switches it off and restores the old greedy output exactly.
+    ///
+    /// Without this a long answer jams: once a word is the most likely
+    /// continuation of itself, nothing can break the tie differently. Seen on
+    /// Qwen3-4B, Qwen3-Coder-30B and Gemma alike.
+    #[arg(long, default_value_t = 1.15)]
+    repeat_penalty: f32,
+
+    /// How far back the repetition penalty looks, in tokens. An older mention
+    /// falls out of the window, so a word is never silenced for good.
+    #[arg(long, default_value_t = 256)]
+    repeat_window: usize,
+
+    /// 0.0 keeps greedy decoding. Above zero the second-best word can win.
+    #[arg(long, default_value_t = 0.0)]
+    temperature: f32,
+
+    /// Nucleus mass: draw only from the most likely words that together carry
+    /// this much probability. Ignored while `--temperature` is 0.
+    #[arg(long, default_value_t = 0.95)]
+    top_p: f32,
+
+    /// Seed for sampling. 0 means a fixed internal seed, so runs repeat.
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -286,15 +323,18 @@ fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> an
 
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
+    let mut decoder = decoder_from(args);
+    let mut history: Vec<u32> = prompt_ids.clone();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
-        let next_id = argmax_banned(&next_logits, &banned);
+        let next_id = decoder.pick(&next_logits, &banned, &history);
         generated.push(next_id);
         if eos.contains(&next_id) {
             eprintln!("stopped on token {next_id} (end of turn / end of text)");
             break;
         }
+        history.push(next_id);
         next_logits = model.forward_token(next_id, &mut cache);
     }
     eprintln!("generated {} tokens in {:?}", generated.len(), t2.elapsed());
@@ -305,6 +345,9 @@ fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> an
 /// Prefill the prompt, then greedily decode up to `--max-tokens`. Shared by the
 /// Qwen2 and Qwen3 paths, which run the identical decoder stack.
 fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result<()> {
+    if args.interactive {
+        return interactive_chat(args, model, tokenizer);
+    }
     let prompt_ids = encode_prompt(tokenizer, &if args.chat { as_chat(&args.prompt) } else { args.prompt.clone() }, config_bos(&args.model))?;
     let mut cache = model.new_cache();
     let mut generated: Vec<u32> = Vec::new();
@@ -318,20 +361,141 @@ fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result
 
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
+    let mut decoder = decoder_from(args);
+    // What the model has already seen, so the repetition penalty has something
+    // to look back at. The prompt counts: echoing the question is a loop too.
+    let mut history: Vec<u32> = prompt_ids.clone();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
-        let next_id = argmax_banned(&next_logits, &banned);
+        let next_id = decoder.pick(&next_logits, &banned, &history);
         generated.push(next_id);
         if eos.contains(&next_id) {
             eprintln!("stopped on token {next_id} (end of turn / end of text)");
             break;
         }
+        history.push(next_id);
         next_logits = model.forward_token(next_id, &mut cache);
     }
     eprintln!("generated {} tokens in {:?}", generated.len(), t2.elapsed());
 
     print_result(tokenizer, &args.prompt, &generated)
+}
+
+/// Build the decode policy from the command line, and say out loud which one is
+/// in force. A run that jams is worth being able to explain afterwards.
+fn decoder_from(args: &Args) -> Decoder {
+    let d = Decoder::new(
+        args.repeat_penalty,
+        args.repeat_window,
+        args.temperature,
+        args.top_p,
+        args.seed,
+    );
+    if d.is_plain_greedy() {
+        eprintln!("decode: plain greedy (repeat penalty off, temperature 0)");
+    } else {
+        eprintln!(
+            "decode: repeat penalty {} over {} tokens, temperature {}, top-p {}",
+            args.repeat_penalty, args.repeat_window, args.temperature, args.top_p
+        );
+    }
+    d
+}
+
+/// Hold a conversation without leaving the room.
+///
+/// One process, one load of the weights, one KV cache that is never thrown
+/// away. Each turn appends to it, so the cost of turn N is the cost of turn N
+/// alone rather than the cost of the whole transcript so far. This is the
+/// "resident runtime survives multi-turn sessions" gate from the master build
+/// plan, and it is the cheap half of persistent KV: nothing is written to disk,
+/// so nothing can be half-written or go stale behind the model's back.
+///
+/// Reads questions from stdin, one per line. `koniec`, `exit`, `quit` or EOF
+/// end the session.
+fn interactive_chat(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result<()> {
+    use std::io::{BufRead, Write};
+
+    let eos = config_eos_ids(&args.model);
+    let banned = banned_from_env();
+    let bos = config_bos(&args.model);
+    let mut decoder = decoder_from(args);
+
+    let mut cache = model.new_cache();
+    // Grows for the whole session, exactly like the cache does, so the penalty
+    // can see across turns. Repeating turn one verbatim in turn three is the
+    // same failure as repeating a word.
+    let mut history: Vec<u32> = Vec::new();
+    let mut turn: usize = 0;
+
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+
+    loop {
+        print!("\n> ");
+        std::io::stdout().flush().ok();
+
+        let question = match lines.next() {
+            Some(Ok(line)) => line.trim().to_string(),
+            _ => break,
+        };
+        if question.is_empty() {
+            continue;
+        }
+        if matches!(question.as_str(), "koniec" | "exit" | "quit") {
+            break;
+        }
+
+        // Only the first turn carries the system prompt and the BOS token;
+        // everything before this point is already resident in the cache.
+        let text = if turn == 0 {
+            as_chat(&question)
+        } else {
+            as_chat_next(&question)
+        };
+        let ids = encode_prompt(tokenizer, &text, if turn == 0 { bos } else { None })?;
+
+        let t1 = Instant::now();
+        let mut next_logits: Vec<f32> = Vec::new();
+        for &tok in &ids {
+            history.push(tok);
+            next_logits = model.forward_token(tok, &mut cache);
+        }
+        let prefill = t1.elapsed();
+
+        let mut generated: Vec<u32> = Vec::new();
+        let t2 = Instant::now();
+        for _ in 0..args.max_tokens {
+            let next_id = decoder.pick(&next_logits, &banned, &history);
+            generated.push(next_id);
+            if eos.contains(&next_id) {
+                break;
+            }
+            history.push(next_id);
+            next_logits = model.forward_token(next_id, &mut cache);
+        }
+        let decode = t2.elapsed();
+
+        let answer = tokenizer
+            .decode(&generated, true)
+            .map_err(|e| anyhow::anyhow!("tokenizer decode failed: {e}"))?;
+        println!("{}", answer.trim());
+        std::io::stdout().flush().ok();
+
+        turn += 1;
+        eprintln!(
+            "turn {turn}: prefilled {} new tokens in {:?}, generated {} in {:?}, cache holds {} positions",
+            ids.len(),
+            prefill,
+            generated.len(),
+            decode,
+            cache.len
+        );
+    }
+
+    eprintln!("session ended after {turn} turn(s); cache held {} positions", cache.len);
+    Ok(())
 }
 
 fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer) -> anyhow::Result<()> {
@@ -391,15 +555,18 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
         }
     }
     let banned = banned_from_env();
+    let mut decoder = decoder_from(args);
+    let mut history: Vec<u32> = prompt_ids.clone();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
-        let next_id = argmax_banned(&next_logits, &banned);
+        let next_id = decoder.pick(&next_logits, &banned, &history);
         generated.push(next_id);
         if eos.contains(&next_id) {
             eprintln!("stopped on token {next_id} (end of turn / end of text)");
             break;
         }
+        history.push(next_id);
         next_logits = model.forward_token(next_id, &mut cache);
     }
     eprintln!("generated {} tokens in {:?}", generated.len(), t2.elapsed());
@@ -440,6 +607,22 @@ fn as_chat(prompt: &str) -> String {
     format!(
         "<|im_start|>system\nYou are Qwen, a helpful AI assistant.<|im_end|>\n\
          <|im_start|>user\n{prompt}<|im_end|>\n\
+         <|im_start|>assistant\n"
+    )
+}
+
+/// The markers for every turn after the first.
+///
+/// The cache already holds the system turn, the earlier questions and the
+/// model's earlier answers, so none of that is repeated. What is missing is
+/// only the close of the assistant turn the model just wrote, then the new
+/// question, then a fresh opened assistant turn for it to complete.
+///
+/// Generation stops on `<|im_end|>` without feeding that token to the model,
+/// so closing the previous turn here is what keeps the transcript well-formed.
+fn as_chat_next(prompt: &str) -> String {
+    format!(
+        "<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n\
          <|im_start|>assistant\n"
     )
 }
