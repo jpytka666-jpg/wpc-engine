@@ -1,7 +1,7 @@
 // ==========================================
 // AUTHOR: M. SZUL
 // AI MODEL: Claude Opus 5
-// TIMESTAMP: 2026-08-26 00:00:00
+// TIMESTAMP: 2026-08-26 11:20:03
 // REASON FOR CREATION: A codec whose only exercise is its own unit tests has been tested
 //   against the author's assumptions, not against the book. This runs it over the real
 //   457-entry code book and reports what it finds, including what it cannot encode.
@@ -199,6 +199,62 @@ fn main() -> ExitCode {
             for (w, n) in top.iter().take(25) {
                 println!("  {n:>5}x  {w}");
             }
+            ExitCode::SUCCESS
+        }
+        "pack" => {
+            // The comparison that matters is against what would otherwise be stored or
+            // sent: the source text. Comparing packed ids to the UTF-8 of the symbols
+            // flatters the result against a baseline nobody would ever transmit.
+            let Ok(body) = std::fs::read_to_string(&args[2]) else {
+                eprintln!("cannot read {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let Some(vocab) = cbms_writing::Vocabulary::new(&book) else {
+                eprintln!("cannot build a vocabulary from this book");
+                return ExitCode::FAILURE;
+            };
+            let ids = vocab.encode(&body);
+            let packed = vocab.pack(&ids);
+            let back = vocab.decode(&ids);
+
+            let source_bytes = body.len();
+            println!("vocabulary    : {} ids, {} bits each", vocab.len(), vocab.bits_per_id());
+            println!("symbols in it : {}", vocab.symbol_count());
+            println!();
+            println!("source UTF-8  : {source_bytes:>9} bytes");
+            println!("CBMS ids      : {:>9}", ids.len());
+            println!("packed        : {:>9} bytes   {:.2}x of source",
+                     packed.len(), packed.len() as f64 / source_bytes.max(1) as f64);
+            println!();
+            println!("LOSSLESS      : {}", if back == body { "yes" } else { "NO - ENCODING LOSES DATA" });
+            if back != body {
+                // Say exactly where, so the defect is a location rather than a mood.
+                let a: Vec<char> = body.chars().collect();
+                let b: Vec<char> = back.chars().collect();
+                let at = a.iter().zip(b.iter()).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+                let from = at.saturating_sub(40);
+                let to_a = (at + 40).min(a.len());
+                let to_b = (at + 40).min(b.len());
+                println!();
+                println!("first difference at character {at} (source {} chars, decoded {} chars)",
+                         a.len(), b.len());
+                println!("  source : {:?}", a[from..to_a].iter().collect::<String>());
+                println!("  decoded: {:?}", b[from..to_b].iter().collect::<String>());
+                return ExitCode::FAILURE;
+            }
+
+            // How much of the saving is the writing system, and how much is just that
+            // any repetitive text compresses? Without this the number means little.
+            let literal_ids = ids.iter().filter(|&&i| i >= 8 && i < 8 + 256).count();
+            println!();
+            println!("ids that are literal bytes : {literal_ids} ({:.1}%)",
+                     100.0 * literal_ids as f64 / ids.len().max(1) as f64);
+            println!("ids that are CBMS symbols  : {} ({:.1}%)",
+                     ids.len() - literal_ids,
+                     100.0 * (ids.len() - literal_ids) as f64 / ids.len().max(1) as f64);
+            println!();
+            println!("A high literal share means the book does not cover this corpus and");
+            println!("the packing is spelling it out byte by byte. Fix the book, not the packer.");
             ExitCode::SUCCESS
         }
         _ => usage(),

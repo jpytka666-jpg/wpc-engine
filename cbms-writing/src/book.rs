@@ -1,7 +1,7 @@
 // ==========================================
 // AUTHOR: M. SZUL
 // AI MODEL: Claude Opus 5
-// TIMESTAMP: 2026-08-26 00:00:00
+// TIMESTAMP: 2026-08-26 11:20:02
 // REASON FOR CREATION: The CBMS code book existed as a hand-maintained text file with no
 //   reader. Everything that wants to encode, decode, size a vocabulary or build a
 //   tokenizer needs the same parsed view of it, and each of those writing its own parser

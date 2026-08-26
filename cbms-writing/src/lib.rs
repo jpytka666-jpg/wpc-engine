@@ -1,7 +1,7 @@
 // ==========================================
 // AUTHOR: M. SZUL
 // AI MODEL: Claude Opus 5
-// TIMESTAMP: 2026-08-26 00:00:00
+// TIMESTAMP: 2026-08-26 11:20:03
 // REASON FOR CREATION: CBMS was described in several places as a compression scheme and
 //   measured, on 2026-08-26, as something narrower and more useful: a writing system. This
 //   crate is the first implementation of it that can be executed rather than described.
@@ -44,6 +44,8 @@
 
 pub mod book;
 pub mod codec;
+pub mod vocab;
 
-pub use book::{Book, BookError, Entry, Section};
+pub use book::{Book, BookError, Collision, Entry, Section};
 pub use codec::{Codec, Coverage};
+pub use vocab::Vocabulary;

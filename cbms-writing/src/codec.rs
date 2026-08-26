@@ -1,7 +1,7 @@
 // ==========================================
 // AUTHOR: M. SZUL
 // AI MODEL: Claude Opus 5
-// TIMESTAMP: 2026-08-26 00:00:00
+// TIMESTAMP: 2026-08-26 11:20:03
 // REASON FOR CREATION: The code book maps concepts to symbols but says nothing about
 //   inflection, and inflection is where the saving actually is: measured on a real corpus,
 //   28.9% of the distinct vocabulary is repeated forms of words already present. Writing
@@ -34,9 +34,12 @@ use crate::book::Book;
 const X_SYSTEM: [(&str, char); 6] = [
     ("cx", 'ĉ'), ("gx", 'ĝ'), ("hx", 'ĥ'), ("jx", 'ĵ'), ("sx", 'ŝ'), ("ux", 'ŭ'),
 ];
-const BARE_ASCII: [(char, char); 6] = [
-    ('c', 'ĉ'), ('g', 'ĝ'), ('h', 'ĥ'), ('j', 'ĵ'), ('s', 'ŝ'), ('u', 'ŭ'),
-];
+// Bare ascii - `hodiau` for `hodiaŭ` - was tried and removed. Restoring a diacritic
+// where one would make a known root is a GUESS: `ci` becomes `ĉi`, a real Esperanto
+// word, and the text comes back changed. The x-system above is reversible and stays;
+// guessing does not. Bare-ascii input now takes the byte fallback, which costs space
+// and loses nothing. Supporting it properly would need a mark saying "this word was
+// written without diacritics", which is a decision for the book, not for the codec.
 
 /// Grammatical endings, longest first so `-as` is tried before `-a`.
 const ENDINGS: [(&str, &str); 9] = [
@@ -113,29 +116,33 @@ impl<'b> Codec<'b> {
                 w = w.replace(pair, &ch.to_string());
             }
         }
-        if self.book.contains_root(&w) {
-            return w;
-        }
-        // Bare ascii: restore a diacritic where doing so produces a known root.
-        let chars: Vec<char> = w.chars().collect();
-        for (i, &ch) in chars.iter().enumerate() {
-            if let Some((_, accented)) = BARE_ASCII.iter().find(|(plain, _)| *plain == ch) {
-                let mut candidate: String = chars[..i].iter().collect();
-                candidate.push(*accented);
-                candidate.extend(chars[i + 1..].iter());
-                if self.book.contains_root(&candidate) {
-                    return candidate;
-                }
-            }
-        }
         w
     }
 
     /// One word to symbols. Returns `None` when the book has no entry, so the caller
     /// decides what to do rather than receiving a silent passthrough it cannot detect.
     pub fn encode_word(&self, word: &str) -> Option<String> {
-        let w = self.normalise(word);
-        let mut stem = w.as_str();
+        // Verify against what was actually given, not against the normalised form.
+        // Normalisation is itself a transformation, so checking the round trip against
+        // its output only proves normalisation agrees with itself: `Ci` was folded to
+        // `ĉi`, matched, and came back as `Ĉi`.
+        let original = word.to_lowercase();
+        let normalised = self.normalise(word);
+        let encoded = self.encode_normalised(&normalised)?;
+        // Verify rather than trust. Stripping an ending can land on a different root
+        // that happens to exist - `see` loses its ending to `se`, which is a real word,
+        // and decodes back one letter short. Checking the round trip here makes
+        // losslessness a property of the design instead of a property of getting every
+        // linguistic rule right, and hands the word to the byte fallback when it fails.
+        if self.decode_word(&encoded)? == original {
+            Some(encoded)
+        } else {
+            None
+        }
+    }
+
+    fn encode_normalised(&self, w: &str) -> Option<String> {
+        let mut stem = w;
         let mut plural = false;
         let mut accusative = false;
 
@@ -426,12 +433,24 @@ mod tests {
     }
 
     #[test]
-    fn the_x_system_and_bare_ascii_reach_the_same_entry() {
+    fn the_diacritic_spelling_encodes_and_bare_ascii_does_not() {
         let b = Book::parse(BOOK).unwrap();
         let c = codec(&b);
         assert_eq!(c.encode_word("hodiaŭ").as_deref(), Some("ᵧ"));
-        assert_eq!(c.encode_word("hodiaux").as_deref(), Some("ᵧ"), "x-system");
-        assert_eq!(c.encode_word("hodiau").as_deref(), Some("ᵧ"), "bare ascii");
+        // Bare ascii is refused rather than guessed at. `hodiau` might be `hodiaŭ`,
+        // and `ci` might be `ĉi` - the second guess is wrong and silently rewrites text.
+        assert_eq!(c.encode_word("hodiau"), None, "bare ascii is a guess, not a spelling");
+    }
+
+    #[test]
+    fn a_word_is_never_rewritten_into_a_different_real_word() {
+        // Found on the real corpus: `Ci` was folded to `ĉi`, a real Esperanto word,
+        // matched, and came back as `Ĉi`. Verifying against the normalised form only
+        // proved normalisation agreed with itself.
+        let b = Book::parse("CODEBOOK_CBMS_ES\nĉi=Σ\nMORPH-SEP=U+00B7\n").unwrap();
+        let c = codec(&b);
+        assert_eq!(c.encode_word("ĉi").as_deref(), Some("Σ"));
+        assert_eq!(c.encode_word("ci"), None, "ci is not ĉi");
     }
 
     #[test]
