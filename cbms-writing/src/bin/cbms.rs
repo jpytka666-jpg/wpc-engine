@@ -352,6 +352,95 @@ fn main() -> ExitCode {
             println!("written        : {}", args[3]);
             ExitCode::SUCCESS
         }
+        "grow" => {
+            // <book> grow <corpus> [max_new] [min_count]
+            //
+            // `build` writes a NEW book somewhere else and leaves the caller to decide
+            // what to do with it. That is the right shape for experiments and the wrong
+            // one for the book everything shares, because nothing checks that the new
+            // file is a continuation of the old one rather than a replacement.
+            //
+            // This grows the shared book IN PLACE and refuses if any entry that already
+            // existed would move. An id is nothing but an entry's position, so an entry
+            // that moves silently redefines every block ever written against it - the
+            // data still decodes, into different words. That is the one failure with no
+            // downstream symptom, so it is checked here and nowhere else.
+            if args.len() < 3 {
+                eprintln!("cbms <book> grow <corpus> [max_new=2000] [min_count=2]");
+                eprintln!("  extends the shared book in place; refuses to renumber");
+                return ExitCode::from(2);
+            }
+            let Ok(corpus) = std::fs::read_to_string(&args[2]) else {
+                eprintln!("cannot read corpus {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let max_new: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2000);
+            let min_count: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(2);
+
+            let before = book.len();
+            let report = cbms_writing::extend(&book, &vec![corpus], max_new, min_count);
+            let grown = match cbms_writing::Book::parse(&report.book_text) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("grown book will not load: {e}");
+                    eprintln!("book on disk NOT touched");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            // The guarantee, checked entry by entry rather than on raw bytes: writing the
+            // book out may reflow comments, but an entry's ROOT and SYMBOL at a given
+            // position are what an id means.
+            let old = book.entries();
+            let new = grown.entries();
+            if new.len() < old.len() {
+                eprintln!("REFUSED: book would shrink, {} entries to {}", old.len(), new.len());
+                eprintln!("book on disk NOT touched");
+                return ExitCode::FAILURE;
+            }
+            for (i, (o, n)) in old.iter().zip(new.iter()).enumerate() {
+                if o.root != n.root || o.symbol != n.symbol {
+                    eprintln!("REFUSED: entry {i} changed, {}={} became {}={}",
+                              o.root, o.symbol, n.root, n.symbol);
+                    eprintln!("  everything written before this point would decode wrong");
+                    eprintln!("book on disk NOT touched");
+                    return ExitCode::FAILURE;
+                }
+            }
+
+            // Write beside, then rename. A half-written shared book is worse than an old
+            // one, and rename is the only step here that cannot land partially.
+            //
+            // args[0] is the book: this vector already has the program name removed, so
+            // args[1] is the COMMAND. Taking args[1] here wrote the shared book to a file
+            // called `grow` and reported success - which is exactly the kind of quiet
+            // wrong that the entry check above exists to prevent, arriving by a different
+            // door. The path is echoed at the end so the next one is visible immediately.
+            let book_path = &args[0];
+            let tmp = format!("{book_path}.tmp");
+            if let Err(e) = std::fs::write(&tmp, &report.book_text) {
+                eprintln!("cannot write {tmp}: {e}");
+                return ExitCode::FAILURE;
+            }
+            if let Err(e) = std::fs::rename(&tmp, book_path) {
+                eprintln!("cannot replace {book_path}: {e}");
+                return ExitCode::FAILURE;
+            }
+
+            println!("wpisow przedtem: {before}");
+            println!("dopisano       : {} nowych", report.added);
+            println!("juz znanych    : {} pominietych", report.skipped_already_known);
+            if report.ran_out_of_symbols > 0 {
+                println!("BRAK ZNAKOW    : {} slow bez symbolu - poszerz MINT_RANGES",
+                         report.ran_out_of_symbols);
+            }
+            println!("wpisow teraz   : {}", grown.len());
+            println!("pokrycie       : {:.2}% -> {:.2}%",
+                     100.0 * report.coverage_before, 100.0 * report.coverage_after);
+            println!("ZADEN stary numer sie nie przesunal - sprawdzone wpis po wpisie");
+            println!("ksiazka        : {book_path}");
+            ExitCode::SUCCESS
+        }
         "ids" => {
             // <book> ids <text-file> <out.u16> - the interface to anything that trains.
             //
