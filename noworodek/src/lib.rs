@@ -6,6 +6,7 @@ pub mod observation_bus;
 pub mod observatory;
 pub mod snapshot;
 pub mod teacher;
+pub mod teachers;
 pub mod tensor;
 pub mod trace;
 pub mod trace_store;
@@ -18,6 +19,7 @@ pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, Obs
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
 pub use snapshot::{WeightSetSnapshot, WeightSetSnapshotEntry, SNAPSHOT_SCHEMA_VERSION};
 pub use teacher::{BehaviourTrace, ExperienceId, ObservationId, ObservationRecord, TeacherDelta, TeacherId, TeacherManifest, TeacherObserver, TeacherSnapshot, TeacherTensor, TensorStats};
+pub use teachers::ClaudeCodeAdapter;
 pub use tensor::Tensor;
 pub use trace::{SessionId, TraceError, TraceEvent, TraceEventKind, TracePayload, TraceSequenceGuard};
 pub use trace_store::{RawTraceStore, TraceStoreError};
