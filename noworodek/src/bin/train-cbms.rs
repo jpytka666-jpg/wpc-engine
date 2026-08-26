@@ -87,57 +87,106 @@ fn arg(args: &[String], name: &str) -> Option<String> {
 /// Without this the trainer learns in memory and exits, so every nightly cycle would
 /// start from nothing and there would be no earlier state to roll back to.
 fn save_weights(path: &str, names: &[String], mgr: &WeightSetManager, set: &WeightSetId) -> std::io::Result<usize> {
-    use std::io::Write;
-    let mut out = Vec::new();
+    use std::io::{Error, ErrorKind, Write};
+    let mut body = Vec::new();
     let mut written = 0usize;
     for name in names {
-        let Ok(handle) = ParameterHandle::new(set.clone(), name) else { continue };
-        let Ok(tensor) = handle.read(mgr) else { continue };
+        // Refuse rather than skip. Skipping a tensor produced a file that LOOKED saved
+        // and was missing part of the model - and a nightly daemon would hand that to the
+        // next night without anyone noticing until the model was quietly wrong.
+        let handle = ParameterHandle::new(set.clone(), name)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{name}: {e:?}")))?;
+        let tensor = handle
+            .read(mgr)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, format!("{name}: {e:?}")))?;
         let values = tensor.values();
-        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
-        out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        body.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        body.extend_from_slice(name.as_bytes());
+        body.extend_from_slice(&(values.len() as u64).to_le_bytes());
         for v in values {
-            out.extend_from_slice(&v.to_le_bytes());
+            body.extend_from_slice(&v.to_le_bytes());
         }
         written += 1;
     }
-    std::fs::File::create(path)?.write_all(&out)?;
+    if written != names.len() {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("zapisano {written} z {} tensorow", names.len()),
+        ));
+    }
+
+    // The file says how many tensors it holds, so reading it is a check rather than a
+    // guess. Written to a temporary name and renamed, so a crash mid-write cannot leave
+    // a half file where a whole one used to be.
+    let mut out = Vec::with_capacity(body.len() + 12);
+    out.extend_from_slice(b"NWRD");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&(written as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+
+    let tmp = format!("{path}.tmp");
+    std::fs::File::create(&tmp)?.write_all(&out)?;
+    std::fs::rename(&tmp, path)?;
     Ok(written)
 }
 
 fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> std::io::Result<usize> {
+    use std::io::{Error, ErrorKind};
     let bytes = std::fs::read(path)?;
-    let mut at = 0usize;
+    let bad = |m: String| Error::new(ErrorKind::InvalidData, m);
+
+    if bytes.len() < 12 || &bytes[..4] != b"NWRD" {
+        return Err(bad("to nie jest plik wag Noworodka".into()));
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if version != 1 {
+        return Err(bad(format!("wersja pliku {version}, ten program czyta 1")));
+    }
+    let declared = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+
+    let mut at = 12usize;
     let mut restored = 0usize;
-    while at + 4 <= bytes.len() {
+    // Truncation is an error, not a place to stop. Reading eight tensors out of twelve
+    // and calling it success is how a corrupted checkpoint survives into the next night.
+    while at < bytes.len() {
+        if at + 4 > bytes.len() { return Err(bad("plik urwany w nazwie".into())) }
         let n = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
         at += 4;
-        if at + n > bytes.len() { break }
+        if at + n > bytes.len() { return Err(bad("plik urwany w nazwie".into())) }
         let name = String::from_utf8_lossy(&bytes[at..at + n]).to_string();
         at += n;
-        if at + 8 > bytes.len() { break }
+        if at + 8 > bytes.len() { return Err(bad(format!("plik urwany przy {name}"))) }
         let count = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
         at += 8;
-        if at + count * 4 > bytes.len() { break }
+        if at + count * 4 > bytes.len() { return Err(bad(format!("plik urwany w wartosciach {name}"))) }
         let values: Vec<f32> = bytes[at..at + count * 4]
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
             .collect();
         at += count * 4;
-        // Shape comes from the tensor already mounted, so the file carries values only.
-        // A shape saved twice is a shape that can disagree with itself.
-        if let Ok(handle) = ParameterHandle::new(set.clone(), &name) {
-            if let Ok(current) = handle.read(mgr) {
-                if current.values().len() == values.len() {
-                    if let Ok(t) = Tensor::from_vec(current.shape().to_vec(), values) {
-                        if handle.write(mgr, &t).is_ok() {
-                            restored += 1;
-                        }
-                    }
-                }
-            }
+
+        // Shape comes from the tensor already mounted, so the file cannot disagree with
+        // itself about it.
+        let handle = ParameterHandle::new(set.clone(), &name)
+            .map_err(|e| bad(format!("{name}: {e:?}")))?;
+        let current = handle.read(mgr).map_err(|e| bad(format!("{name}: {e:?}")))?;
+        if current.values().len() != values.len() {
+            return Err(bad(format!(
+                "{name}: plik ma {} wartosci, model oczekuje {}",
+                values.len(),
+                current.values().len()
+            )));
         }
+        let t = Tensor::from_vec(current.shape().to_vec(), values)
+            .map_err(|e| bad(format!("{name}: {e:?}")))?;
+        handle.write(mgr, &t).map_err(|e| bad(format!("{name}: {e:?}")))?;
+        restored += 1;
+    }
+
+    if restored != declared {
+        return Err(bad(format!(
+            "plik deklaruje {declared} tensorow, wczytano {restored} - niekompletny checkpoint"
+        )));
     }
     Ok(restored)
 }
