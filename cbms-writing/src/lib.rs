@@ -45,6 +45,7 @@
 pub mod book;
 pub mod build;
 pub mod codec;
+pub mod huffman;
 pub mod vocab;
 
 pub use build::{extend, survey, BuildReport, CorpusStats, WordCount};

@@ -243,6 +243,45 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
+            // Fixed-width packing spends the same bits on the 1367th `status` as on a
+            // one-off hash. Order-0 entropy is what a frequency-weighted code would
+            // spend instead, and the gap between the two is the money left on the table.
+            let mut freq: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+            for &id in &ids {
+                *freq.entry(id).or_default() += 1;
+            }
+            let n = ids.len() as f64;
+            let entropy: f64 = freq
+                .values()
+                .map(|&c| {
+                    let p = c as f64 / n;
+                    -p * p.log2()
+                })
+                .sum();
+            let ideal_bytes = (n * entropy / 8.0).ceil() as usize;
+            println!();
+            println!("distinct ids used  : {}", freq.len());
+            println!("order-0 entropy    : {entropy:.2} bits/id  (fixed width spends {})",
+                     vocab.bits_per_id());
+            println!("theoretical floor  : {ideal_bytes:>9} bytes   {:.2}x of source",
+                     ideal_bytes as f64 / source_bytes.max(1) as f64);
+
+            // And what the actual coder achieves, which is the number that counts.
+            let code = cbms_writing::huffman::Code::from_frequencies(&freq, vocab.len());
+            let coded = code.encode(&ids);
+            let table_bytes = code.lengths().len(); // one byte per id, shipped with the book
+            println!("huffman-coded      : {:>9} bytes   {:.2}x of source",
+                     coded.len(), coded.len() as f64 / source_bytes.max(1) as f64);
+            println!("  code table       : {table_bytes} bytes, travels with the book, not per message");
+            println!("  saved vs fixed   : {:.0}%",
+                     100.0 * (1.0 - coded.len() as f64 / packed.len().max(1) as f64));
+            let back_ids = code.decode(&coded, ids.len());
+            println!("  LOSSLESS         : {}",
+                     if back_ids == ids { "yes" } else { "NO - CODING LOSES IDS" });
+            if back_ids != ids {
+                return ExitCode::FAILURE;
+            }
+
             // How much of the saving is the writing system, and how much is just that
             // any repetitive text compresses? Without this the number means little.
             let literal_ids = ids.iter().filter(|&&i| i >= 8 && i < 8 + 256).count();
