@@ -352,6 +352,59 @@ fn main() -> ExitCode {
             println!("written        : {}", args[3]);
             ExitCode::SUCCESS
         }
+        "ids" => {
+            // <book> ids <text-file> <out.u16> - the interface to anything that trains.
+            //
+            // Deliberately the dumbest possible format: little-endian u16, no header, no
+            // framing. A trainer should not have to understand the writing system to
+            // consume it, and a format with opinions is a format two programs can
+            // disagree about. The vocabulary size is printed, because that is the one
+            // number the consumer cannot recover from the file itself.
+            if args.len() < 4 {
+                eprintln!("cbms <book> ids <text-file> <out.u16>");
+                return ExitCode::from(2);
+            }
+            let Ok(text) = std::fs::read_to_string(&args[2]) else {
+                eprintln!("cannot read {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let Some(vocab) = cbms_writing::Vocabulary::new(&book) else {
+                eprintln!("cannot build a vocabulary from this book");
+                return ExitCode::FAILURE;
+            };
+            let ids = vocab.encode(&text);
+
+            // Verify before writing. A training corpus that does not decode back is a
+            // corpus of quiet corruption, and nothing downstream would ever notice.
+            if vocab.decode(&ids) != text {
+                eprintln!("REFUSED: these ids do not decode back to the source text");
+                return ExitCode::FAILURE;
+            }
+
+            let mut bytes = Vec::with_capacity(ids.len() * 2);
+            for id in &ids {
+                bytes.extend_from_slice(&id.to_le_bytes());
+            }
+            if let Err(e) = std::fs::write(&args[3], &bytes) {
+                eprintln!("cannot write {}: {e}", args[3]);
+                return ExitCode::FAILURE;
+            }
+
+            let mut hi = 0u16;
+            let mut distinct = std::collections::HashSet::new();
+            for &id in &ids {
+                hi = hi.max(id);
+                distinct.insert(id);
+            }
+            println!("source chars   : {}", text.chars().count());
+            println!("ids            : {}", ids.len());
+            println!("vocab size     : {}   <- the model needs this", vocab.len());
+            println!("highest id used: {hi}");
+            println!("distinct used  : {}", distinct.len());
+            println!("bytes written  : {} -> {}", bytes.len(), args[3]);
+            println!("round trip     : exact");
+            ExitCode::SUCCESS
+        }
         "seal" => {
             // <book> seal <corpus> <out-book> - freeze a code table into the book, so
             // messages carry no table of their own.
