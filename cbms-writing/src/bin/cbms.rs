@@ -104,10 +104,59 @@ fn main() -> ExitCode {
                     },
                 }
             }
+            // The constraint: one word must fit in one to three symbols. Checked over
+            // every root in its inflected forms, not over a chosen sentence.
+            let mut hist = [0usize; 8];
+            let mut worst: Vec<(String, String)> = Vec::new();
+            for entry in book.entries() {
+                if entry.section != Section::Lexical {
+                    continue;
+                }
+                let stem: String = {
+                    let r = &entry.root;
+                    match r.chars().last() {
+                        Some(c) if "oaei".contains(c) => r[..r.len() - c.len_utf8()].to_string(),
+                        _ => r.clone(),
+                    }
+                };
+                for form in [
+                    entry.root.clone(),
+                    format!("{stem}on"), format!("{stem}oj"), format!("{stem}ojn"),
+                    format!("{stem}a"), format!("{stem}an"), format!("{stem}ajn"),
+                    format!("{stem}as"), format!("{stem}is"), format!("{stem}os"),
+                ] {
+                    if let Some(enc) = codec.encode_word(&form) {
+                        let n = enc.chars().count();
+                        hist[n.min(7)] += 1;
+                        if n > 3 {
+                            worst.push((form, enc));
+                        }
+                    }
+                }
+            }
+
             println!("roots checked  : {checked}");
             println!("round-tripped  : {}", checked - lost.len() - unencodable.len());
             println!("not encodable  : {}", unencodable.len());
             println!("LOST IN TRANSIT: {}", lost.len());
+            println!();
+            println!("symbols per word, over every root in its inflected forms:");
+            for (n, &count) in hist.iter().enumerate() {
+                if count > 0 {
+                    let flag = if n > 3 { "  <- OVER THE LIMIT" } else { "" };
+                    println!("  {n} symbol(s): {count:>6}{flag}");
+                }
+            }
+            if worst.is_empty() {
+                println!("  every form fits in 3 symbols or fewer");
+            } else {
+                println!("  {} form(s) need four or more:", worst.len());
+                for (form, enc) in worst.iter().take(10) {
+                    println!("    {form} -> {enc}");
+                }
+                println!("  (adding a `-jn` entry to the book collapses these to three)");
+            }
+            println!();
             for (root, enc, dec) in lost.iter().take(20) {
                 println!("  {root} -> {enc} -> {dec}");
             }
