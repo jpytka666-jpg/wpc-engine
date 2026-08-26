@@ -6,6 +6,7 @@ pub mod device;
 pub mod editor;
 pub mod evaluator;
 pub mod experience;
+pub mod low_rank;
 pub mod model;
 pub mod observation_bus;
 pub mod observatory;
@@ -30,6 +31,7 @@ pub use device::{ComputeDevice, DeviceBackend, DeviceMemoryReport, ResidencyPoli
 pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use evaluator::{Evidence, EvidenceEvaluator, EvaluationResult, Evaluator, OutcomeClass};
 pub use experience::{ExperienceError, ExperienceNormalizer, NormalizedExperience, ProvenanceRef};
+pub use low_rank::{rank_metrics, LowRankError, LowRankMatrix, RankMetrics};
 pub use model::{ExternalTransformer, ParameterRegistration, ParameterRegistry, RegistryError, TinyTransformerConfig, TransformerTensorRole};
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
