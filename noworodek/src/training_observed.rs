@@ -28,7 +28,7 @@ impl ObservedLinearTrainer {
             .collect::<Vec<_>>();
 
         self.observatory.record(TrainingObservation {
-            experience_id: experience_id.0,
+            experience_id: experience_id.as_str().to_owned(),
             step,
             weight_set: self.inner.weight.weight_set().clone(),
             loss: Some(report.loss),
@@ -58,7 +58,7 @@ mod tests {
         let mut trainer = ObservedLinearTrainer { inner: LinearTrainer::new(id, "linear.weight", 0.1).unwrap(), observatory: TrainingObservatory::new() };
         let input = Tensor::from_vec(vec![1, 2], vec![2.0, 3.0]).unwrap();
         let target = Tensor::from_vec(vec![1, 1], vec![1.0]).unwrap();
-        trainer.train_step(&mut manager, &input, &target, ExperienceId("exp-1".into()), 1).unwrap();
+        trainer.train_step(&mut manager, &input, &target, ExperienceId::new("exp-1").unwrap(), 1).unwrap();
         let observations = trainer.observatory.observations();
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].experience_id, "exp-1");
