@@ -10,6 +10,7 @@ pub mod model;
 pub mod observation_bus;
 pub mod observatory;
 pub mod parameter_handle;
+pub mod procedural;
 pub mod qwen;
 pub mod snapshot;
 pub mod teacher;
@@ -20,6 +21,7 @@ pub mod trace;
 pub mod trace_store;
 pub mod trainer;
 pub mod training;
+pub mod training_observed;
 pub mod weightset;
 
 pub use autograd::{linear_backward, mse_loss, Gradients, LinearCache, Sgd};
@@ -32,6 +34,7 @@ pub use model::{ExternalTransformer, ParameterRegistration, ParameterRegistry, R
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
 pub use parameter_handle::ParameterHandle;
+pub use procedural::{AffineWeight, LowRankWeight, WeightRepresentation};
 pub use qwen::qwen3_coder_registry;
 pub use snapshot::{WeightSetSnapshot, WeightSetSnapshotEntry, SNAPSHOT_SCHEMA_VERSION};
 pub use teacher::{BehaviourTrace, ExperienceId, ObservationId, ObservationRecord, TeacherDelta, TeacherId, TeacherManifest, TeacherObserver, TeacherSnapshot, TeacherTensor, TensorStats};
@@ -42,6 +45,7 @@ pub use trace::{SessionId, TraceError, TraceEvent, TraceEventKind, TracePayload,
 pub use trace_store::{RawTraceStore, TraceStoreError};
 pub use trainer::{LinearTrainer, TrainingStepReport};
 pub use training::BigramLanguageModel;
+pub use training_observed::ObservedLinearTrainer;
 pub use weightset::{ArchitectureId, DType, TensorSpec, WeightSetError, WeightSetHeader, WeightSetId, WeightSetManifest, WeightSetState, WeightSetVersion};
 
 #[cfg(test)]

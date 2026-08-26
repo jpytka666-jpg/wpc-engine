@@ -1,7 +1,7 @@
 //! Observed training bridge: records before/after weight statistics for a
 //! parameter update and links the update to a stable experience identifier.
 
-use crate::{ExperienceId, LinearTrainer, Tensor, TrainingObservation, TrainingObservatory, WeightSetError, WeightSetManager};
+use crate::{ExperienceId, LinearTrainer, Tensor, TensorDeltaSummary, TrainingObservation, TrainingObservatory, WeightSetError, WeightSetManager};
 
 pub struct ObservedLinearTrainer {
     pub inner: LinearTrainer,
@@ -26,22 +26,14 @@ impl ObservedLinearTrainer {
             .zip(after.values())
             .map(|(a, b)| b - a)
             .collect::<Vec<_>>();
-        let changed_elements = delta.iter().filter(|v| **v != 0.0).count();
-        let l1 = delta.iter().map(|v| v.abs()).sum::<f32>();
-        let l2 = delta.iter().map(|v| v * v).sum::<f32>().sqrt();
-        let max_abs = delta.iter().map(|v| v.abs()).fold(0.0, f32::max);
 
         self.observatory.record(TrainingObservation {
-            experience_id,
+            experience_id: experience_id.0,
             step,
             weight_set: self.inner.weight.weight_set().clone(),
-            tensor_name: self.inner.weight.tensor_name().to_owned(),
-            loss: report.loss,
-            changed_elements,
-            l1,
-            l2,
-            max_abs,
-        })?;
+            loss: Some(report.loss),
+            deltas: vec![TensorDeltaSummary::from_delta(self.inner.weight.tensor_name(), &delta)],
+        });
 
         Ok(report)
     }
@@ -69,8 +61,8 @@ mod tests {
         trainer.train_step(&mut manager, &input, &target, ExperienceId("exp-1".into()), 1).unwrap();
         let observations = trainer.observatory.observations();
         assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].experience_id, ExperienceId("exp-1".into()));
-        assert!(observations[0].changed_elements > 0);
-        assert!(observations[0].max_abs > 0.0);
+        assert_eq!(observations[0].experience_id, "exp-1");
+        assert!(observations[0].deltas[0].changed_elements > 0);
+        assert!(observations[0].deltas[0].max_abs > 0.0);
     }
 }
