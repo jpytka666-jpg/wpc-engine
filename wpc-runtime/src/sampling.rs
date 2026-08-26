@@ -88,6 +88,20 @@ pub struct Decoder {
     /// fact costs nothing; a word jammed fifteen times pays fourteen times over, which
     /// no continuation can survive.
     pub freq_penalty: f32,
+    /// Length of phrase that may not be produced twice. 0 switches it off.
+    ///
+    /// This is the part that tells a jam from ordinary writing, and it does so without
+    /// being told which language it is looking at -- which matters, because an answer
+    /// usually mixes prose and code in the same breath and no mode switch could be
+    /// flipped mid-sentence.
+    ///
+    /// A jam is a repeated PHRASE: "(programming) (programming)" is the same short
+    /// sequence over and over. Code repeats WORDS, not phrases: a variable name comes
+    /// back twenty times, each time in different company. So: if the tokens just written
+    /// already appeared somewhere earlier, whatever followed them there is refused here.
+    /// A loop becomes impossible to write; reusing a name never trips it unless doing so
+    /// would reproduce a whole phrase verbatim.
+    pub ngram_block: usize,
     pub repeat_window: usize,
     pub temperature: f32,
     pub top_p: f32,
@@ -103,6 +117,7 @@ impl Decoder {
     pub fn new(
         repeat_penalty: f32,
         freq_penalty: f32,
+        ngram_block: usize,
         repeat_window: usize,
         temperature: f32,
         top_p: f32,
@@ -111,6 +126,7 @@ impl Decoder {
         Self {
             repeat_penalty,
             freq_penalty,
+            ngram_block,
             repeat_window,
             temperature,
             top_p,
@@ -124,7 +140,10 @@ impl Decoder {
 
     /// True when nothing would be changed and the caller could use `argmax_banned`.
     pub fn is_plain_greedy(&self) -> bool {
-        self.repeat_penalty == 1.0 && self.freq_penalty == 0.0 && self.temperature <= 0.0
+        self.repeat_penalty == 1.0
+            && self.freq_penalty == 0.0
+            && self.ngram_block == 0
+            && self.temperature <= 0.0
     }
 
     fn next_rand(&mut self) -> u64 {
@@ -188,6 +207,28 @@ impl Decoder {
                     let excess = n.saturating_sub(1) as f32;
                     if excess > 0.0 {
                         *v -= self.freq_penalty * excess;
+                    }
+                }
+            }
+        }
+
+        // Refuse to write a phrase that has already been written.
+        //
+        // The tokens just produced form a key; wherever that key occurred before, the
+        // token that followed it is taken off the table here. Writing a loop becomes
+        // impossible, while a name reused in different company never trips it -- which
+        // is why this needs no notion of whether it is reading prose or code.
+        if self.ngram_block >= 2 && history.len() >= self.ngram_block - 1 {
+            let k = self.ngram_block - 1;
+            let key = &history[history.len() - k..];
+            // Every earlier place the same k tokens appeared, and which token followed
+            // there. `i + k < history.len()` excludes the key's own position, which has
+            // no follower yet.
+            for i in 0..history.len().saturating_sub(k) {
+                if &history[i..i + k] == key {
+                    let follower = history[i + k];
+                    if let Some(v) = self.scratch.get_mut(follower as usize) {
+                        *v = f32::NEG_INFINITY;
                     }
                 }
             }
@@ -264,9 +305,38 @@ mod tests {
     #[test]
     fn decoder_with_neutral_settings_is_plain_greedy() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.0, 0.0, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(1.0, 0.0, 0, 64, 0.0, 0.95, 1);
         assert!(d.is_plain_greedy());
         assert_eq!(d.pick(&logits, &[], &[]), argmax(&logits));
+    }
+
+    #[test]
+    fn a_repeated_phrase_is_refused() {
+        // Vocabulary: 0..4. History ends with the same pair that appeared earlier, and
+        // last time that pair was followed by 3. With ngram_block 3 the key is two
+        // tokens, so 3 must be off the table however attractive it looks.
+        let logits = [0.0f32, 0.0, 0.0, 9.0, 1.0];
+        let mut d = Decoder::new(1.0, 0.0, 3, 64, 0.0, 0.95, 1);
+        let history = [1u32, 2, 3, 0, 1, 2];
+        assert_eq!(d.pick(&logits, &[], &history), 4, "3 would repeat the phrase");
+    }
+
+    #[test]
+    fn a_word_reused_in_different_company_is_allowed() {
+        // This is the code case: token 3 appears twice already, but never after the
+        // pair now at the end, so nothing about it is a repeated phrase.
+        let logits = [0.0f32, 0.0, 0.0, 9.0, 1.0];
+        let mut d = Decoder::new(1.0, 0.0, 3, 64, 0.0, 0.95, 1);
+        let history = [3u32, 0, 3, 1, 4, 0];
+        assert_eq!(d.pick(&logits, &[], &history), 3, "reuse is not a repeated phrase");
+    }
+
+    #[test]
+    fn phrase_blocking_needs_enough_history() {
+        // Nothing to compare against yet: the blocker must stay out of the way.
+        let logits = [0.0f32, 9.0, 1.0];
+        let mut d = Decoder::new(1.0, 0.0, 6, 64, 0.0, 0.95, 1);
+        assert_eq!(d.pick(&logits, &[], &[1]), 1);
     }
 
     #[test]
@@ -274,7 +344,7 @@ mod tests {
         // The whole point of charging for excess rather than presence: a token said once
         // must still be reachable, or "what did I tell you" becomes unanswerable.
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(1.0, 0.8, 0, 64, 0.0, 0.95, 1);
         assert_eq!(d.pick(&logits, &[], &[1]), 1);
     }
 
@@ -282,7 +352,7 @@ mod tests {
     fn a_jam_becomes_unaffordable() {
         // Ten repeats of a token only 0.1 ahead of its rival: the excess cost buries it.
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(1.0, 0.8, 0, 64, 0.0, 0.95, 1);
         let jam: Vec<u32> = std::iter::repeat(1).take(10).collect();
         assert_eq!(d.pick(&logits, &[], &jam), 3);
     }
@@ -290,7 +360,7 @@ mod tests {
     #[test]
     fn the_cost_grows_with_each_extra_repeat() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(1.0, 0.8, 0, 64, 0.0, 0.95, 1);
         // Twice: 5.0 - 0.8 = 4.2, now behind 4.9.
         assert_eq!(d.pick(&logits, &[], &[1, 1]), 3);
         // Once: untouched, still ahead.
@@ -300,7 +370,7 @@ mod tests {
     #[test]
     fn excess_cost_also_falls_out_of_the_window() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.0, 0.8, 2, 0.0, 0.95, 1);
+        let mut d = Decoder::new(1.0, 0.8, 0, 2, 0.0, 0.95, 1);
         // Only the last two entries count, so one of the three mentions is forgotten.
         assert_eq!(d.pick(&logits, &[], &[1, 1, 0]), 1);
     }
@@ -308,7 +378,7 @@ mod tests {
     #[test]
     fn repetition_penalty_demotes_what_was_just_said() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(2.0, 0.0, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(2.0, 0.0, 0, 64, 0.0, 0.95, 1);
         // 1 is the winner until it has just been used; then 3 takes over.
         assert_eq!(d.pick(&logits, &[], &[]), 1);
         assert_eq!(d.pick(&logits, &[], &[1]), 3);
@@ -317,7 +387,7 @@ mod tests {
     #[test]
     fn penalty_window_forgets_old_mentions() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(2.0, 0.0, 1, 0.0, 0.95, 1);
+        let mut d = Decoder::new(2.0, 0.0, 0, 1, 0.0, 0.95, 1);
         // Only the last entry is inside the window, so token 1 is untouched.
         assert_eq!(d.pick(&logits, &[], &[1, 0]), 1);
     }
@@ -325,7 +395,7 @@ mod tests {
     #[test]
     fn banned_ids_are_never_drawn() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.1, 0.0, 64, 1.0, 1.0, 7);
+        let mut d = Decoder::new(1.1, 0.0, 0, 64, 1.0, 1.0, 7);
         for _ in 0..200 {
             assert_ne!(d.pick(&logits, &[1], &[]), 1);
         }
@@ -335,7 +405,7 @@ mod tests {
     fn sampling_stays_inside_the_nucleus() {
         // 0 carries almost all the mass; a tight top_p must never reach 2.
         let logits = [10.0f32, 1.0, -20.0];
-        let mut d = Decoder::new(1.0, 0.0, 64, 1.0, 0.9, 3);
+        let mut d = Decoder::new(1.0, 0.0, 0, 64, 1.0, 0.9, 3);
         for _ in 0..200 {
             assert_ne!(d.pick(&logits, &[], &[]), 2);
         }
@@ -344,8 +414,8 @@ mod tests {
     #[test]
     fn same_seed_gives_the_same_sequence() {
         let logits = [1.0f32, 1.1, 0.9, 1.05];
-        let mut a = Decoder::new(1.0, 0.0, 64, 1.0, 0.99, 42);
-        let mut b = Decoder::new(1.0, 0.0, 64, 1.0, 0.99, 42);
+        let mut a = Decoder::new(1.0, 0.0, 0, 64, 1.0, 0.99, 42);
+        let mut b = Decoder::new(1.0, 0.0, 0, 64, 1.0, 0.99, 42);
         for _ in 0..50 {
             assert_eq!(a.pick(&logits, &[], &[]), b.pick(&logits, &[], &[]));
         }

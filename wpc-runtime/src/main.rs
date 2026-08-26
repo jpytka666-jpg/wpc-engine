@@ -99,6 +99,19 @@ struct Args {
     #[arg(long, default_value_t = 0.8)]
     freq_penalty: f32,
 
+    /// Refuse to write any phrase of this many tokens twice. 0 switches it off.
+    ///
+    /// OFF BY DEFAULT, deliberately. It separates a jam from ordinary writing without
+    /// being told which language it is reading -- a jam repeats a PHRASE, code repeats
+    /// WORDS in different company -- and it was built against a risk worked out on
+    /// paper: that charging for excess repeats would fight code, where reusing a name
+    /// is correct. But the 30B has since produced whole correct blocks of code and
+    /// reasoning without once jamming, so the risk is so far theory and the harm of
+    /// switching this on untested is not. Measure first, then default it on if the
+    /// measurement asks for it. 6 is the value to try.
+    #[arg(long, default_value_t = 0)]
+    ngram_block: usize,
+
     /// How far back the penalty looks, in tokens. A jam repeats within a few dozen
     /// tokens; a fact recalled from earlier in the conversation should fall outside.
     #[arg(long, default_value_t = 64)]
@@ -401,6 +414,7 @@ fn decoder_from(args: &Args) -> Decoder {
     let d = Decoder::new(
         args.repeat_penalty,
         args.freq_penalty,
+        args.ngram_block,
         args.repeat_window,
         args.temperature,
         args.top_p,

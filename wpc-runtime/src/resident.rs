@@ -148,7 +148,9 @@ impl ResidentEngine {
             engine: self,
             cache: self.model.new_cache(),
             history: Vec::new(),
-            decoder: Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 0),
+            // Phrase blocking off: the settings without it have been measured working,
+            // the settings with it have not. set_decoder() turns it on for a trial.
+            decoder: Decoder::new(1.0, 0.8, 0, 64, 0.0, 0.95, 0),
             turn: 0,
             clean: 0,
         }
