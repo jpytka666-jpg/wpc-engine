@@ -441,6 +441,34 @@ fn main() -> ExitCode {
             println!("ksiazka        : {book_path}");
             ExitCode::SUCCESS
         }
+        "mark" => {
+            // <book> mark [n]  - the book's lineage at a given size.
+            //
+            // Anything trained or stored against this book records the pair it prints.
+            // Later, `mark <n>` on a GROWN book recomputes the same value if and only if
+            // the first n entries are untouched - which is exactly the condition under
+            // which those ids still mean what they meant, and therefore the condition
+            // under which weights or stored blocks may be carried forward.
+            //
+            // Non-zero exit when the book has fewer entries than asked about: that means
+            // it shrank, and answering with a hash of whatever is there would call a
+            // shrunken book a valid ancestor.
+            let n = args.get(2).and_then(|s| s.parse::<usize>().ok()).unwrap_or(book.len());
+            match book.fingerprint_prefix(n) {
+                Some(mark) => {
+                    println!("wpisow  : {}", book.len());
+                    println!("dla     : {n}");
+                    println!("znak    : {mark:016x}");
+                    ExitCode::SUCCESS
+                }
+                None => {
+                    eprintln!("ksiazka ma {} wpisow, pytano o {n} - ksiazka SIE SKURCZYLA",
+                              book.len());
+                    eprintln!("nic co zapisano przy {n} wpisach nie jest juz czytelne");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "ids" => {
             // <book> ids <text-file> <out.u16> - the interface to anything that trains.
             //
