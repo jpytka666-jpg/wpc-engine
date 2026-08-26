@@ -1,6 +1,6 @@
-pub mod transformer;
-
 //! Externalized parameter registry for the decoder Transformer.
+
+pub mod transformer;
 
 use crate::{ArchitectureId, DType, TensorSpec, WeightSetId, WeightSetManifest, WeightSetVersion};
 
