@@ -4,6 +4,7 @@ members = [
     "wpc-format",
     "wpc-eval", "wpc-core", "wpc-compiler",
     "wpc-runtime",
+    "noworodek",
 ]
 exclude = [
     "wpc-engine",  # C++ lives here, not a Rust crate
