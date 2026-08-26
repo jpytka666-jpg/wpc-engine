@@ -45,7 +45,9 @@ pub struct Qwen3CoderTokenizer {
 impl Qwen3CoderTokenizer {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, TokenizerError> {
         let inner = Tokenizer::from_file(path).map_err(|error| TokenizerError::Load(error.to_string()))?;
-        let actual = inner.get_vocab_size(false);
+        // Qwen's model config declares 151,936 tokens including added tokens;
+        // tokenizers' `false` mode reports only the 151,643 base vocabulary.
+        let actual = inner.get_vocab_size(true);
         if actual != VOCAB_SIZE as usize {
             return Err(TokenizerError::VocabMismatch { expected: VOCAB_SIZE, actual });
         }
@@ -67,6 +69,10 @@ impl Qwen3CoderTokenizer {
     }
 
     pub fn vocab_size(&self) -> usize {
+        self.inner.get_vocab_size(true)
+    }
+
+    pub fn base_vocab_size(&self) -> usize {
         self.inner.get_vocab_size(false)
     }
 
