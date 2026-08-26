@@ -2,6 +2,8 @@ pub const VERSION: &str = "0.1.0";
 
 pub mod autograd;
 pub mod backend;
+pub mod code_atoms;
+pub mod code_atoms_v2;
 pub mod device;
 pub mod editor;
 pub mod evaluator;
@@ -30,6 +32,8 @@ pub mod weightset;
 
 pub use autograd::{linear_backward, mse_loss, Gradients, LinearCache, Sgd};
 pub use backend::{MemoryWeightBackend, MountedWeightSet, WeightBackend, WeightSetManager};
+pub use code_atoms::{CodeAtom, CodeAtomId, CodeAtomKind, CodeAtomRegistry, CodeLanguage};
+pub use code_atoms_v2::{extract_functions, CodeAtomV2Error, TokenizedCodeAtom};
 pub use device::{ComputeDevice, DeviceBackend, DeviceMemoryReport, ResidencyPolicy, ResidencyViolation};
 pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use evaluator::{Evidence, EvidenceEvaluator, EvaluationResult, Evaluator, OutcomeClass};
@@ -59,7 +63,5 @@ pub use weightset::{ArchitectureId, DType, TensorSpec, WeightSetError, WeightSet
 #[cfg(test)]
 mod tests {
     #[test]
-    fn noworodek_crate_is_reachable() {
-        assert_eq!(crate::VERSION, "0.1.0");
-    }
+    fn noworodek_crate_is_reachable() { assert_eq!(crate::VERSION, "0.1.0"); }
 }
