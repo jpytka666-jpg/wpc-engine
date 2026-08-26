@@ -45,7 +45,12 @@ pub const ID_RAW_RUN: u16 = 4;
 pub const ID_CAPITAL: u16 = 5;
 /// The next word is in capitals throughout.
 pub const ID_UPPER: u16 = 6;
-const CONTROL_COUNT: u16 = 8;
+/// The same two, with a leading space folded in. A capitalised word usually starts a
+/// sentence, so without these the commonest word in the language to follow a space would
+/// be the one that still had to pay an id for it.
+pub const ID_CAPITAL_SPACED: u16 = 7;
+pub const ID_UPPER_SPACED: u16 = 8;
+const CONTROL_COUNT: u16 = 16;
 /// 256 ids for raw bytes, immediately after the control block.
 const BYTE_BASE: u16 = CONTROL_COUNT;
 const SYMBOL_BASE: u16 = BYTE_BASE + 256;
@@ -74,9 +79,12 @@ impl<'b> Vocabulary<'b> {
         Some(Vocabulary { codec, book, symbol_to_id, id_to_symbol })
     }
 
-    /// Total ids: control, bytes, and one per distinct symbol.
+    /// Total ids: control, bytes, and TWO per distinct symbol - the symbol itself and
+    /// the same symbol with a space in front. Doubling the symbol range is what buys the
+    /// space ids back; it is exactly what BPE does with `Ġword` against `word`, and the
+    /// result is still tiny beside a general tokenizer's vocabulary.
     pub fn len(&self) -> usize {
-        SYMBOL_BASE as usize + self.id_to_symbol.len()
+        SYMBOL_BASE as usize + 2 * self.id_to_symbol.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -97,11 +105,15 @@ impl<'b> Vocabulary<'b> {
         self.symbol_to_id.get(sym).copied()
     }
 
-    fn symbol_of_id(&self, id: u16) -> Option<&str> {
+    /// The symbol an id names, and whether that id also carries a leading space.
+    fn symbol_of_id(&self, id: u16) -> Option<(&str, bool)> {
         if id < SYMBOL_BASE {
             return None;
         }
-        self.id_to_symbol.get((id - SYMBOL_BASE) as usize).map(|s| s.as_str())
+        let n = self.id_to_symbol.len();
+        let idx = (id - SYMBOL_BASE) as usize;
+        let (idx, spaced) = if idx >= n { (idx - n, true) } else { (idx, false) };
+        self.id_to_symbol.get(idx).map(|s| (s.as_str(), spaced))
     }
 
     /// Split an encoded word into its symbols. They are all in the book, so longest
@@ -139,21 +151,35 @@ impl<'b> Vocabulary<'b> {
             first = false;
             let mut first_word = true;
             for word in line.split(' ') {
-                if !first_word {
-                    out.push(ID_SPACE);
-                }
+                // A single space before a word is folded INTO that word's first symbol
+                // rather than spent as an id of its own. Measured on prose, separate
+                // space ids were 27.7% of the whole stream - one id per space, where BPE
+                // pays nothing because its `Ġword` and `word` are simply different
+                // tokens. Same trick here: the symbol range is doubled, and the second
+                // half means "with a space in front".
+                let leading_space = !first_word;
                 first_word = false;
                 if word.is_empty() {
+                    // Two spaces in a row: nothing to attach the second one to.
+                    if leading_space {
+                        out.push(ID_SPACE);
+                    }
                     continue;
                 }
+                let mut pending = leading_space;
                 // Punctuation is split off before lookup. The book is built from words
                 // with punctuation trimmed, so leaving it attached here would make every
                 // entry unreachable for any word that happens to end a sentence - which
                 // is what kept 59.5% of ids as literal bytes at 100% reported coverage.
                 let (lead, core, tail) = split_affixes(word);
-                self.push_literal(&mut out, lead);
-                self.push_word(&mut out, core);
-                self.push_literal(&mut out, tail);
+                self.push_literal(&mut out, lead, &mut pending);
+                self.push_word(&mut out, core, &mut pending);
+                self.push_literal(&mut out, tail, &mut pending);
+                // Nothing in the token could carry it - a token of pure punctuation
+                // whose bytes all went out unspaced cannot happen, but be exact.
+                if pending {
+                    out.push(ID_SPACE);
+                }
             }
         }
         out
@@ -174,8 +200,16 @@ impl<'b> Vocabulary<'b> {
         }
     }
 
+    /// The id meaning "this symbol, with one space in front of it".
+    fn spaced(&self, id: u16) -> u16 {
+        id + self.id_to_symbol.len() as u16
+    }
+
     /// One word through the code book, or spelled out if the book cannot hold it.
-    fn push_word(&self, out: &mut Vec<u16>, word: &str) {
+    ///
+    /// `pending` carries a leading space that has not been spent yet: if the word
+    /// encodes, the space rides on its first symbol and costs nothing.
+    fn push_word(&self, out: &mut Vec<u16>, word: &str, pending: &mut bool) {
         if word.is_empty() {
             return;
         }
@@ -186,24 +220,48 @@ impl<'b> Vocabulary<'b> {
         // A verbatim entry needs no case handling at all, and is the only way a mixed
         // shape like `AarSvc_6e9d9` can be encoded: no mark describes it, so the book
         // must hold it exactly as written or it goes out byte by byte.
+        // Take the space if there is one; the first id pushed below carries it.
+        let take = |out: &mut Vec<u16>, id: u16, pending: &mut bool, first: &mut bool| {
+            let id = if *first && *pending {
+                *pending = false;
+                self.spaced(id)
+            } else {
+                id
+            };
+            *first = false;
+            out.push(id);
+        };
+
         if let Some(sym) = self.book.symbol_for(word) {
             if let Some(id) = self.id_of_symbol(sym) {
-                out.push(id);
+                let mut first = true;
+                take(out, id, pending, &mut first);
                 return;
             }
         }
         if let Some((case, folded)) = split_case(word) {
             if let Some(syms) = self.codec.encode_word(&folded).and_then(|e| self.symbols_of(&e)) {
+                let mut first = true;
                 if let Some(mark) = case {
-                    out.push(mark);
+                    // Control ids have their own spaced twins; the generic offset is
+                    // only valid inside the symbol range.
+                    out.push(if *pending {
+                        *pending = false;
+                        first = false;
+                        if mark == ID_UPPER { ID_UPPER_SPACED } else { ID_CAPITAL_SPACED }
+                    } else {
+                        first = false;
+                        mark
+                    });
                 }
                 for s in syms {
-                    out.push(self.id_of_symbol(&s).expect("symbols_of only returns known symbols"));
+                    let id = self.id_of_symbol(&s).expect("symbols_of only returns known symbols");
+                    take(out, id, pending, &mut first);
                 }
                 return;
             }
         }
-        self.push_literal(out, word);
+        self.push_literal(out, word, pending);
     }
 
     /// Spelled out, one id per byte.
@@ -211,7 +269,16 @@ impl<'b> Vocabulary<'b> {
     /// No framing: byte ids occupy their own range, so a decoder recognises them by
     /// value. The run marker this used to write cost two ids per literal word to say
     /// something the id already said.
-    fn push_literal(&self, out: &mut Vec<u16>, text: &str) {
+    fn push_literal(&self, out: &mut Vec<u16>, text: &str, pending: &mut bool) {
+        if text.is_empty() {
+            return;
+        }
+        // Byte ids are a fixed 256 and have no spaced twin, so an unspent space here
+        // still costs an id of its own. Only words absorb it.
+        if *pending {
+            out.push(ID_SPACE);
+            *pending = false;
+        }
         for &b in text.as_bytes() {
             out.push(BYTE_BASE + b as u16);
         }
@@ -259,15 +326,31 @@ impl<'b> Vocabulary<'b> {
                     flush_bytes!();
                     case = Some(id);
                 }
+                ID_CAPITAL_SPACED | ID_UPPER_SPACED => {
+                    flush_word!();
+                    flush_bytes!();
+                    out.push(' ');
+                    case = Some(if id == ID_UPPER_SPACED { ID_UPPER } else { ID_CAPITAL });
+                }
                 ID_PAD | ID_RESERVED | ID_RAW_RUN => {}
                 _ if (BYTE_BASE..SYMBOL_BASE).contains(&id) => {
                     flush_word!();
                     bytes.push((id - BYTE_BASE) as u8);
                 }
                 _ => {
-                    flush_bytes!();
-                    if let Some(sym) = self.symbol_of_id(id) {
+                    if let Some((sym, spaced)) = self.symbol_of_id(id) {
+                        // A spaced id both ends the previous word and opens a new one,
+                        // so the boundary needs no id of its own either.
+                        if spaced {
+                            flush_word!();
+                            flush_bytes!();
+                            out.push(' ');
+                        } else {
+                            flush_bytes!();
+                        }
                         word.push_str(sym);
+                    } else {
+                        flush_bytes!();
                     }
                 }
             }
@@ -441,6 +524,51 @@ mod tests {
             let ids = v.encode(text);
             assert_eq!(v.decode(&ids), text, "round trip failed for {text:?}");
         }
+    }
+
+    #[test]
+    fn a_space_before_a_word_costs_nothing() {
+        let b = book();
+        let v = Vocabulary::new(&b).unwrap();
+        assert_eq!(v.encode("homo").len(), 1);
+        assert_eq!(v.encode("homo homo").len(), 2, "the space rides on the second word");
+        assert_eq!(v.encode("homo homo homo").len(), 3);
+        assert_eq!(v.decode(&v.encode("homo homo homo")), "homo homo homo");
+    }
+
+    #[test]
+    fn folding_the_space_works_on_any_script_because_it_works_on_ids() {
+        // `Ġword` against `word` is a BPE trick tied to its own vocabulary. Doing it at
+        // the id layer instead means the symbol underneath can be Latin, Cyrillic,
+        // Armenian or a CJK ideograph minted from a corpus - the spaced twin is the same
+        // arithmetic either way.
+        let grown = BOOK.replace(
+            "homo=Ա\n",
+            "homo=Ա\nsłowo=一\nword=ᐁ\n한국=ᄀ\n",
+        );
+        let b = Book::parse(&grown).unwrap();
+        let v = Vocabulary::new(&b).unwrap();
+        for text in ["słowo słowo", "word word", "한국 한국", "słowo word 한국 homo"] {
+            let ids = v.encode(text);
+            assert_eq!(v.decode(&ids), text, "{text} must survive");
+            assert_eq!(
+                ids.len(),
+                text.split(' ').count(),
+                "{text} -> {ids:?}: one id per word, spaces folded in"
+            );
+        }
+    }
+
+    #[test]
+    fn a_capitalised_word_after_a_space_still_pays_nothing_for_it() {
+        // A capital usually starts a sentence, so this is the commonest case there is.
+        let b = book();
+        let v = Vocabulary::new(&b).unwrap();
+        // A capitalised word is two ids of its own - the mark and the symbol. The space
+        // rides on the mark, so the pair costs two rather than three.
+        assert_eq!(v.encode("Homo").len(), 2);
+        assert_eq!(v.encode("homo Homo").len(), 3, "1 + 2, with no id spent on the space");
+        assert_eq!(v.decode(&v.encode("homo Homo HOMO")), "homo Homo HOMO");
     }
 
     #[test]
