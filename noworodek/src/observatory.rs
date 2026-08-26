@@ -58,6 +58,62 @@ impl TrainingObservatory {
     pub fn clear(&mut self) { self.observations.clear(); }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TensorInfluence {
+    pub tensor: String,
+    pub influence: f32,
+}
+
+impl TensorInfluence {
+    pub fn new(tensor: impl Into<String>, influence: f32) -> Self {
+        Self { tensor: tensor.into(), influence }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InfluenceMap(pub Vec<TensorInfluence>);
+
+impl From<Vec<TensorInfluence>> for InfluenceMap {
+    fn from(value: Vec<TensorInfluence>) -> Self { Self(value) }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InfluenceMapDiffRow {
+    pub tensor: String,
+    pub before: f32,
+    pub after: f32,
+    pub influence_delta: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InfluenceMapDiff {
+    rows: Vec<InfluenceMapDiffRow>,
+}
+
+impl InfluenceMapDiff {
+    pub fn between(before: &InfluenceMap, after: &InfluenceMap) -> Result<Self, String> {
+        let mut b = std::collections::BTreeMap::new();
+        let mut a = std::collections::BTreeMap::new();
+        for x in &before.0 { b.insert(x.tensor.clone(), x.influence); }
+        for x in &after.0 { a.insert(x.tensor.clone(), x.influence); }
+        let mut keys: Vec<String> = b.keys().chain(a.keys()).cloned().collect();
+        keys.sort();
+        keys.dedup();
+        let rows = keys.into_iter().map(|tensor| {
+            let before = *b.get(&tensor).unwrap_or(&0.0);
+            let after = *a.get(&tensor).unwrap_or(&0.0);
+            InfluenceMapDiffRow { tensor, before, after, influence_delta: after - before }
+        }).collect();
+        Ok(Self { rows })
+    }
+
+    pub fn for_tensor(&self, tensor: &str) -> Option<&InfluenceMapDiffRow> {
+        self.rows.iter().find(|x| x.tensor == tensor)
+    }
+
+    pub fn rows(&self) -> &[InfluenceMapDiffRow] { &self.rows }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
