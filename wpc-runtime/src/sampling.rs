@@ -111,9 +111,18 @@ impl Decoder {
 
     /// Choose the next token id.
     ///
-    /// `history` is the ids already in the context; only its tail of
-    /// `repeat_window` entries is penalised, so an early mention does not
-    /// silence a word forever.
+    /// `history` is what the model has ALREADY WRITTEN -- not the prompt.
+    ///
+    /// That distinction is the whole correctness of this function. Feeding it the prompt
+    /// as well pushes down exactly the words the person just used, so a model asked to
+    /// repeat a figure back cannot reach it. Observed on Qwen3-Coder-30B: given "4096 MB"
+    /// and asked to repeat it, it answered "4０９６ MB" -- the right digits in
+    /// full-width characters, because the ordinary ones had been penalised out of its
+    /// way. The same effect turned "M2000M" into "m2oOa" on the 4B and was blamed on the
+    /// model for most of a day.
+    ///
+    /// Only the tail of `repeat_window` entries is penalised, so an early mention does
+    /// not silence a word forever.
     pub fn pick(&mut self, logits: &[f32], banned: &[u32], history: &[u32]) -> u32 {
         if self.is_plain_greedy() && banned.is_empty() {
             return argmax(logits);

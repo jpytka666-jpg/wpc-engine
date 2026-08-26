@@ -114,9 +114,12 @@ impl ResidentEngine {
 pub struct ResidentSession<'a> {
     engine: &'a ResidentEngine,
     cache: KvCache,
-    /// Everything the model has seen, so the repetition penalty can look back across
-    /// turns. Repeating turn one verbatim in turn three is the same failure as repeating
-    /// a word.
+    /// Everything the model has WRITTEN, across turns, and nothing it was told.
+    ///
+    /// Repeating turn one's answer verbatim in turn three is the same failure as
+    /// repeating a word, so this outlives a single turn. It must never contain the
+    /// prompt: penalising the person's own words is what makes a model asked to repeat
+    /// a figure reach for a lookalike instead.
     history: Vec<u32>,
     decoder: Decoder,
     turn: usize,
@@ -177,7 +180,6 @@ impl ResidentSession<'_> {
             return Ok(0);
         }
         self.cache.truncate(self.clean)?;
-        self.history.truncate(self.clean);
         let released = before - self.clean;
 
         if !digest.trim().is_empty() {
@@ -191,10 +193,13 @@ impl ResidentSession<'_> {
                 .encode(text.as_str(), true)
                 .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
             for &tok in encoding.get_ids() {
-                self.history.push(tok);
+                // Input, not output: it must not attract the repetition penalty.
                 let _ = self.engine.model.forward_token(tok, &mut self.cache);
             }
         }
+        // Whatever the model had written is gone from the cache, so it must go from the
+        // penalty's memory too, or the cleaned turn would still be steered away from it.
+        self.history.clear();
         Ok(released)
     }
 
@@ -246,7 +251,9 @@ impl ResidentSession<'_> {
         let t1 = Instant::now();
         let mut next_logits: Vec<f32> = Vec::new();
         for &tok in &ids {
-            self.history.push(tok);
+            // Not pushed to `history`: the penalty applies to what the model writes, not
+            // to what it is told. Seeding it with the prompt is what made a model asked
+            // to repeat "4096" answer with full-width lookalike digits instead.
             next_logits = self.engine.model.forward_token(tok, &mut self.cache);
         }
         let prefill = t1.elapsed();

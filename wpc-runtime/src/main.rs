@@ -324,7 +324,9 @@ fn generate_moe(args: &Args, model: &Qwen3MoeModel, tokenizer: &Tokenizer) -> an
     let eos = config_eos_ids(&args.model);
     let banned = banned_from_env();
     let mut decoder = decoder_from(args);
-    let mut history: Vec<u32> = prompt_ids.clone();
+    // Only what the model writes. Seeding this with the prompt penalises the person's
+    // own words, so asked to repeat "4096" the model reaches for a lookalike instead.
+    let mut history: Vec<u32> = Vec::new();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
@@ -364,7 +366,9 @@ fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result
     let mut decoder = decoder_from(args);
     // What the model has already seen, so the repetition penalty has something
     // to look back at. The prompt counts: echoing the question is a loop too.
-    let mut history: Vec<u32> = prompt_ids.clone();
+    // Only what the model writes. Seeding this with the prompt penalises the person's
+    // own words, so asked to repeat "4096" the model reaches for a lookalike instead.
+    let mut history: Vec<u32> = Vec::new();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
@@ -459,7 +463,8 @@ fn interactive_chat(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow
         let t1 = Instant::now();
         let mut next_logits: Vec<f32> = Vec::new();
         for &tok in &ids {
-            history.push(tok);
+            // Deliberately not added to `history`: the repetition penalty must not push
+            // the model away from words the person just used.
             next_logits = model.forward_token(tok, &mut cache);
         }
         let prefill = t1.elapsed();
@@ -556,7 +561,9 @@ fn run_gemma4(args: &Args, config_path: &std::path::Path, tokenizer: &Tokenizer)
     }
     let banned = banned_from_env();
     let mut decoder = decoder_from(args);
-    let mut history: Vec<u32> = prompt_ids.clone();
+    // Only what the model writes. Seeding this with the prompt penalises the person's
+    // own words, so asked to repeat "4096" the model reaches for a lookalike instead.
+    let mut history: Vec<u32> = Vec::new();
 
     let t2 = Instant::now();
     for _ in 0..args.max_tokens {
