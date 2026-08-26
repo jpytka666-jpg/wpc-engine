@@ -20,6 +20,7 @@ pub mod trace;
 pub mod trace_store;
 pub mod trainer;
 pub mod training;
+pub mod training_observed;
 pub mod weightset;
 
 pub use autograd::{linear_backward, mse_loss, Gradients, LinearCache, Sgd};
@@ -42,6 +43,7 @@ pub use trace::{SessionId, TraceError, TraceEvent, TraceEventKind, TracePayload,
 pub use trace_store::{RawTraceStore, TraceStoreError};
 pub use trainer::{LinearTrainer, TrainingStepReport};
 pub use training::BigramLanguageModel;
+pub use training_observed::ObservedLinearTrainer;
 pub use weightset::{ArchitectureId, DType, TensorSpec, WeightSetError, WeightSetHeader, WeightSetId, WeightSetManifest, WeightSetState, WeightSetVersion};
 
 #[cfg(test)]
