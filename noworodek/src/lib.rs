@@ -23,7 +23,7 @@ pub use device::{ComputeDevice, DeviceBackend, DeviceMemoryReport, ResidencyPoli
 pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use evaluator::{Evidence, EvidenceEvaluator, EvaluationResult, Evaluator, OutcomeClass};
 pub use experience::{ExperienceError, ExperienceNormalizer, NormalizedExperience, ProvenanceRef};
-pub use model::{ParameterRegistration, ParameterRegistry, RegistryError, TransformerTensorRole};
+pub use model::{ExternalTransformer, ParameterRegistration, ParameterRegistry, RegistryError, TinyTransformerConfig, TransformerTensorRole};
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
 pub use parameter_handle::ParameterHandle;
@@ -34,15 +34,7 @@ pub use tensor::Tensor;
 pub use trace::{SessionId, TraceError, TraceEvent, TraceEventKind, TracePayload, TraceSequenceGuard};
 pub use trace_store::{RawTraceStore, TraceStoreError};
 pub use training::BigramLanguageModel;
-pub use weightset::{
-    ArchitectureId, DType, TensorSpec, WeightSetError, WeightSetHeader, WeightSetId,
-    WeightSetManifest, WeightSetState, WeightSetVersion,
-};
+pub use weightset::{ArchitectureId, DType, TensorSpec, WeightSetError, WeightSetHeader, WeightSetId, WeightSetManifest, WeightSetState, WeightSetVersion};
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn noworodek_crate_is_reachable() {
-        assert_eq!(crate::VERSION, "0.1.0");
-    }
-}
+mod tests { #[test] fn noworodek_crate_is_reachable(){ assert_eq!(crate::VERSION,"0.1.0"); } }
