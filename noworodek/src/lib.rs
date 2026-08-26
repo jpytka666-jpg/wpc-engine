@@ -40,7 +40,7 @@ pub use math_trace::{MathOp, MathStep, MathTrace};
 pub use math_train::{evaluate as evaluate_math_model, generate_dataset as generate_math_dataset, MathEvalReport, MathDataset, MathSample, MathTrainReport};
 pub use model::{ExternalTransformer, ParameterRegistration, ParameterRegistry, RegistryError, TinyTransformerConfig, TransformerTensorRole};
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
-pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
+pub use observatory::{InfluenceMap, InfluenceMapDiff, InfluenceMapDiffRow, TensorDeltaSummary, TensorInfluence, TrainingObservation, TrainingObservatory};
 pub use parameter_handle::ParameterHandle;
 pub use procedural::{AffineWeight, LowRankWeight, WeightRepresentation};
 pub use qwen::qwen3_coder_registry;
