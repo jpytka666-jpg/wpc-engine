@@ -5,6 +5,7 @@ pub mod device;
 pub mod editor;
 pub mod evaluator;
 pub mod experience;
+pub mod model;
 pub mod observation_bus;
 pub mod observatory;
 pub mod snapshot;
@@ -21,6 +22,7 @@ pub use device::{ComputeDevice, DeviceBackend, DeviceMemoryReport, ResidencyPoli
 pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use evaluator::{Evidence, EvidenceEvaluator, EvaluationResult, Evaluator, OutcomeClass};
 pub use experience::{ExperienceError, ExperienceNormalizer, NormalizedExperience, ProvenanceRef};
+pub use model::{ParameterRegistration, ParameterRegistry, RegistryError, TransformerTensorRole};
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
 pub use snapshot::{WeightSetSnapshot, WeightSetSnapshotEntry, SNAPSHOT_SCHEMA_VERSION};
