@@ -93,7 +93,7 @@ mod tests {
         let mut manager = WeightSetManager::new(ArchitectureId::new("noworodek-v0"));
         let backend = MemoryWeightBackend::with_tensor_data(manifest(), [("linear.weight", vec![0.0, 0.0])]);
         let id = manager.mount(Box::new(backend)).unwrap();
-        let trainer = LinearTrainer::new(id, "linear.weight", 0.1).unwrap();
+        let trainer = LinearTrainer::new(id, "linear.weight", 0.01).unwrap();
         let input = Tensor::from_vec(vec![1, 2], vec![2.0, 3.0]).unwrap();
         let target = Tensor::from_vec(vec![1, 1], vec![1.0]).unwrap();
         let first = trainer.train_step(&mut manager, &input, &target).unwrap();
