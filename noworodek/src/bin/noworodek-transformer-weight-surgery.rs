@@ -16,9 +16,10 @@ fn main() {
     specs.push(TensorSpec::new("model.layers.00.attention.k_proj.weight", vec![hidden, hidden], DType::F32, "transformer-surgery"));
     specs.push(TensorSpec::new("model.layers.00.attention.v_proj.weight", vec![hidden, hidden], DType::F32, "transformer-surgery"));
     specs.push(TensorSpec::new("model.layers.00.attention.o_proj.weight", vec![hidden, hidden], DType::F32, "transformer-surgery"));
-    specs.push(TensorSpec::new("model.layers.00.mlp.up_proj.weight", vec![intermediate, hidden], DType::F32, "transformer-surgery"));
-    specs.push(TensorSpec::new("model.layers.00.mlp.gate_proj.weight", vec![intermediate, hidden], DType::F32, "transformer-surgery"));
-    specs.push(TensorSpec::new("model.layers.00.mlp.down_proj.weight", vec![hidden, intermediate], DType::F32, "transformer-surgery"));
+    // ExternalTransformer executes XW, therefore up/gate are [hidden, intermediate].
+    specs.push(TensorSpec::new("model.layers.00.mlp.up_proj.weight", vec![hidden, intermediate], DType::F32, "transformer-surgery"));
+    specs.push(TensorSpec::new("model.layers.00.mlp.gate_proj.weight", vec![hidden, intermediate], DType::F32, "transformer-surgery"));
+    specs.push(TensorSpec::new("model.layers.00.mlp.down_proj.weight", vec![intermediate, hidden], DType::F32, "transformer-surgery"));
     specs.push(TensorSpec::new("model.layers.00.attention_norm.weight", vec![hidden], DType::F32, "transformer-surgery"));
     specs.push(TensorSpec::new("model.layers.00.mlp_norm.weight", vec![hidden], DType::F32, "transformer-surgery"));
     specs.push(TensorSpec::new("model.final_norm.weight", vec![hidden], DType::F32, "transformer-surgery"));
@@ -35,9 +36,9 @@ fn main() {
         ("model.layers.00.attention.k_proj.weight", tensor_values(hidden * hidden, 0.22, 2.0)),
         ("model.layers.00.attention.v_proj.weight", tensor_values(hidden * hidden, 0.18, 3.0)),
         ("model.layers.00.attention.o_proj.weight", tensor_values(hidden * hidden, 0.16, 4.0)),
-        ("model.layers.00.mlp.up_proj.weight", tensor_values(intermediate * hidden, 0.12, 5.0)),
-        ("model.layers.00.mlp.gate_proj.weight", tensor_values(intermediate * hidden, 0.11, 6.0)),
-        ("model.layers.00.mlp.down_proj.weight", tensor_values(hidden * intermediate, 0.10, 7.0)),
+        ("model.layers.00.mlp.up_proj.weight", tensor_values(hidden * intermediate, 0.12, 5.0)),
+        ("model.layers.00.mlp.gate_proj.weight", tensor_values(hidden * intermediate, 0.11, 6.0)),
+        ("model.layers.00.mlp.down_proj.weight", tensor_values(intermediate * hidden, 0.10, 7.0)),
         ("model.layers.00.attention_norm.weight", vec![1.0; hidden]),
         ("model.layers.00.mlp_norm.weight", vec![1.0; hidden]),
         ("model.final_norm.weight", vec![1.0; hidden]),
@@ -75,7 +76,7 @@ fn main() {
     let exact_restore = restored.values() == before_values.as_slice();
 
     println!("NOWORODEK REAL TRANSFORMER WEIGHT SURGERY V1");
-    println!("architecture=noworodek-decoder-v0 vocab={} hidden={} layers={}", vocab, hidden, layers);
+    println!("architecture=noworodek-decoder-v0 vocab={} hidden={} intermediate={} layers={}", vocab, hidden, intermediate, layers);
     println!("surgery_tensor=model.layers.00.attention.q_proj.weight");
     println!("edited_element[0] += 1.0");
     println!("changed_logits={} max_abs_logit_delta={:.9}", changed, max_delta);
