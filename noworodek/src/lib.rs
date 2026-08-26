@@ -8,6 +8,7 @@ pub mod experience;
 pub mod model;
 pub mod observation_bus;
 pub mod observatory;
+pub mod parameter_handle;
 pub mod snapshot;
 pub mod teacher;
 pub mod teachers;
@@ -25,6 +26,7 @@ pub use experience::{ExperienceError, ExperienceNormalizer, NormalizedExperience
 pub use model::{ParameterRegistration, ParameterRegistry, RegistryError, TransformerTensorRole};
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
+pub use parameter_handle::ParameterHandle;
 pub use snapshot::{WeightSetSnapshot, WeightSetSnapshotEntry, SNAPSHOT_SCHEMA_VERSION};
 pub use teacher::{BehaviourTrace, ExperienceId, ObservationId, ObservationRecord, TeacherDelta, TeacherId, TeacherManifest, TeacherObserver, TeacherSnapshot, TeacherTensor, TensorStats};
 pub use teachers::ClaudeCodeAdapter;
