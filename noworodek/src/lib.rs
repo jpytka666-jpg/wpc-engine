@@ -13,6 +13,7 @@ pub mod snapshot;
 pub mod teacher;
 pub mod teachers;
 pub mod tensor;
+pub mod tokenizer;
 pub mod trace;
 pub mod trace_store;
 pub mod training;
@@ -31,10 +32,16 @@ pub use snapshot::{WeightSetSnapshot, WeightSetSnapshotEntry, SNAPSHOT_SCHEMA_VE
 pub use teacher::{BehaviourTrace, ExperienceId, ObservationId, ObservationRecord, TeacherDelta, TeacherId, TeacherManifest, TeacherObserver, TeacherSnapshot, TeacherTensor, TensorStats};
 pub use teachers::ClaudeCodeAdapter;
 pub use tensor::Tensor;
+pub use tokenizer::{format_chat_turn, format_tool_call, Qwen3CoderTokenizer, TokenizerError, EOS_ID, EOS_TOKEN, IM_END_ID, IM_START_ID, MODEL_ID as QWEN3_CODER_TOKENIZER_MODEL_ID, MODEL_REVISION as QWEN3_CODER_TOKENIZER_REVISION, PAD_ID, PAD_TOKEN, VOCAB_SIZE as QWEN3_CODER_VOCAB_SIZE, MAX_POSITION_TOKENS as QWEN3_CODER_MAX_POSITION_TOKENS};
 pub use trace::{SessionId, TraceError, TraceEvent, TraceEventKind, TracePayload, TraceSequenceGuard};
 pub use trace_store::{RawTraceStore, TraceStoreError};
 pub use training::BigramLanguageModel;
 pub use weightset::{ArchitectureId, DType, TensorSpec, WeightSetError, WeightSetHeader, WeightSetId, WeightSetManifest, WeightSetState, WeightSetVersion};
 
 #[cfg(test)]
-mod tests { #[test] fn noworodek_crate_is_reachable(){ assert_eq!(crate::VERSION,"0.1.0"); } }
+mod tests {
+    #[test]
+    fn noworodek_crate_is_reachable() {
+        assert_eq!(crate::VERSION, "0.1.0");
+    }
+}
