@@ -101,6 +101,7 @@ impl ResidentEngine {
             history: Vec::new(),
             decoder: Decoder::new(1.15, 256, 0.0, 0.95, 0),
             turn: 0,
+            clean: 0,
         }
     }
 
@@ -119,6 +120,9 @@ pub struct ResidentSession<'a> {
     history: Vec<u32>,
     decoder: Decoder,
     turn: usize,
+    /// Position up to which the cache holds trusted input rather than the model's own
+    /// output. See `mark_clean`.
+    clean: usize,
 }
 
 impl ResidentSession<'_> {
@@ -136,6 +140,62 @@ impl ResidentSession<'_> {
     /// Set the decode policy. 1.0 penalty with temperature 0 reproduces plain greedy.
     pub fn set_decoder(&mut self, decoder: Decoder) {
         self.decoder = decoder;
+    }
+
+    /// Mark the current position as clean ground.
+    ///
+    /// Everything up to here is trusted: the system prompt, the tool catalogue, the task
+    /// as the person actually stated it. Everything after it is the model's own output,
+    /// which it cannot distinguish from what it was told -- so a figure it invents is a
+    /// fact to it from then on. The mark is where the valve cuts back to.
+    pub fn mark_clean(&mut self) {
+        self.clean = self.cache.len;
+    }
+
+    /// Where the clean ground is.
+    pub fn clean_mark(&self) -> usize {
+        self.clean
+    }
+
+    /// How much of the cache is the model's own output rather than trusted input.
+    pub fn pressure(&self) -> usize {
+        self.cache.len.saturating_sub(self.clean)
+    }
+
+    /// Open the valve: drop everything the model has said since the clean mark, then put
+    /// `digest` back in its place.
+    ///
+    /// The caller decides what the digest says -- a summary the model wrote, the tool
+    /// results alone, or simply the last question and answer. This method only knows how
+    /// to release the pressure and refill with something clean; deciding what is worth
+    /// keeping is a judgement, and judgement does not belong in a cache.
+    ///
+    /// Returns how many positions were released.
+    pub fn relieve(&mut self, digest: &str) -> Result<usize> {
+        let before = self.cache.len;
+        if before <= self.clean {
+            return Ok(0);
+        }
+        self.cache.truncate(self.clean)?;
+        self.history.truncate(self.clean);
+        let released = before - self.clean;
+
+        if !digest.trim().is_empty() {
+            let text = format!(
+                "<|im_start|>user\nEarlier in this conversation, established and confirmed:\n{}\n<|im_end|>\n<|im_start|>assistant\nUnderstood.<|im_end|>\n",
+                digest.trim()
+            );
+            let encoding = self
+                .engine
+                .tokenizer
+                .encode(text.as_str(), true)
+                .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
+            for &tok in encoding.get_ids() {
+                self.history.push(tok);
+                let _ = self.engine.model.forward_token(tok, &mut self.cache);
+            }
+        }
+        Ok(released)
     }
 
     /// Ask, and get the answer plus what it cost.

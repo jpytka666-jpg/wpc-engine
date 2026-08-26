@@ -59,6 +59,46 @@ impl KvCache {
             len: 0,
         }
     }
+
+    /// Forget everything after position `len`, keeping the prefix exactly as it was.
+    ///
+    /// This is the valve. A conversation's cache holds not only what the model was told
+    /// but everything it said back, mistakes included -- and the model cannot tell the
+    /// two apart. Once it writes "300 MB" for a figure it was never given, that sentence
+    /// sits in its context and is treated as fact from then on, so every later turn
+    /// builds on it. Cutting back to a clean prefix and re-feeding a summary lets the
+    /// next turn start from ground truth instead of from the model's own drift.
+    ///
+    /// The head width is recovered from what is already stored rather than kept as a
+    /// field, which leaves `KvCache::new` exactly as it was.
+    pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
+        if len > self.len {
+            anyhow::bail!(
+                "truncate cannot extend a cache: asked for {len}, holding {}",
+                self.len
+            );
+        }
+        if len == self.len {
+            return Ok(());
+        }
+        let head_dim = match self.layers.first().and_then(|l| l.k.first()) {
+            Some(head) if self.len > 0 => head.len() / self.len,
+            _ => 0,
+        };
+        let elems = len
+            .checked_mul(head_dim)
+            .ok_or_else(|| anyhow::anyhow!("truncate size overflow"))?;
+        for layer in &mut self.layers {
+            for head in &mut layer.k {
+                head.truncate(elems);
+            }
+            for head in &mut layer.v {
+                head.truncate(elems);
+            }
+        }
+        self.len = len;
+        Ok(())
+    }
 }
 
 impl Model {
@@ -544,5 +584,69 @@ impl Model {
         let mut logits = vec![0.0f32; cfg.vocab_size];
         self.embed.logits(&final_normed, &mut logits);
         logits
+    }
+}
+
+#[cfg(test)]
+mod valve_tests {
+    use super::*;
+
+    /// Build a cache holding `positions` positions of `head_dim` floats per head, with
+    /// each float equal to its own index so a prefix is recognisable after cutting.
+    fn filled(layers: usize, heads: usize, positions: usize, head_dim: usize) -> KvCache {
+        let mut c = KvCache::new(layers, heads);
+        for layer in &mut c.layers {
+            for h in layer.k.iter_mut().chain(layer.v.iter_mut()) {
+                *h = (0..positions * head_dim).map(|i| i as f32).collect();
+            }
+        }
+        c.len = positions;
+        c
+    }
+
+    #[test]
+    fn truncate_keeps_the_prefix_exactly() {
+        let mut c = filled(2, 3, 4, 5);
+        c.truncate(2).unwrap();
+        assert_eq!(c.len, 2);
+        for layer in &c.layers {
+            for h in layer.k.iter().chain(layer.v.iter()) {
+                assert_eq!(h.len(), 10, "2 positions x head_dim 5");
+                // Untouched values, not merely the right count.
+                assert_eq!(h[0], 0.0);
+                assert_eq!(h[9], 9.0);
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_to_zero_empties_every_head() {
+        let mut c = filled(3, 2, 6, 4);
+        c.truncate(0).unwrap();
+        assert_eq!(c.len, 0);
+        assert!(c.layers.iter().all(|l| l.k.iter().all(|h| h.is_empty())));
+        assert!(c.layers.iter().all(|l| l.v.iter().all(|h| h.is_empty())));
+    }
+
+    #[test]
+    fn truncating_to_the_current_length_changes_nothing() {
+        let mut c = filled(1, 1, 3, 8);
+        c.truncate(3).unwrap();
+        assert_eq!(c.len, 3);
+        assert_eq!(c.layers[0].k[0].len(), 24);
+    }
+
+    #[test]
+    fn truncate_refuses_to_extend() {
+        let mut c = filled(1, 1, 2, 4);
+        assert!(c.truncate(5).is_err(), "a cache cannot be grown by forgetting");
+        assert_eq!(c.len, 2, "and the refusal leaves it untouched");
+    }
+
+    #[test]
+    fn an_empty_cache_survives_the_valve() {
+        let mut c = KvCache::new(2, 2);
+        c.truncate(0).unwrap();
+        assert_eq!(c.len, 0);
     }
 }
