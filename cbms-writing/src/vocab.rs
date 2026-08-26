@@ -25,6 +25,7 @@
 //! Stable integer ids for CBMS symbols, with a byte fallback so any input encodes.
 
 use crate::book::Book;
+use crate::build::split_affixes;
 use crate::codec::Codec;
 use std::collections::HashMap;
 
@@ -145,27 +146,14 @@ impl<'b> Vocabulary<'b> {
                 if word.is_empty() {
                     continue;
                 }
-                // Case is recorded as a mark and stripped before lookup, so `Homo` and
-                // `homo` reach the same entry without either losing its spelling.
-                // A word whose case NO mark can describe - `C:\Users\User\CLAUDE.md` -
-                // must not go through the codec at all, because canonicalisation
-                // lowercases and nothing would put the capitals back.
-                let Some((case, folded)) = split_case(word) else {
-                    self.push_literal(&mut out, word);
-                    continue;
-                };
-                match self.codec.encode_word(&folded).and_then(|e| self.symbols_of(&e)) {
-                    Some(syms) => {
-                        if let Some(mark) = case {
-                            out.push(mark);
-                        }
-                        for s in syms {
-                            // symbols_of only returns symbols that are in the map
-                            out.push(self.id_of_symbol(&s).expect("symbol has an id"));
-                        }
-                    }
-                    None => self.push_literal(&mut out, word),
-                }
+                // Punctuation is split off before lookup. The book is built from words
+                // with punctuation trimmed, so leaving it attached here would make every
+                // entry unreachable for any word that happens to end a sentence - which
+                // is what kept 59.5% of ids as literal bytes at 100% reported coverage.
+                let (lead, core, tail) = split_affixes(word);
+                self.push_literal(&mut out, lead);
+                self.push_word(&mut out, core);
+                self.push_literal(&mut out, tail);
             }
         }
         out
@@ -186,15 +174,46 @@ impl<'b> Vocabulary<'b> {
         }
     }
 
-    /// A word with no entry: escape, length, then its UTF-8 bytes.
-    fn push_literal(&self, out: &mut Vec<u16>, word: &str) {
-        let bytes = word.as_bytes();
-        for chunk in bytes.chunks(255) {
-            out.push(ID_RAW_RUN);
-            out.push(chunk.len() as u16);
-            for &b in chunk {
-                out.push(BYTE_BASE + b as u16);
+    /// One word through the code book, or spelled out if the book cannot hold it.
+    fn push_word(&self, out: &mut Vec<u16>, word: &str) {
+        if word.is_empty() {
+            return;
+        }
+        // Case is recorded as a mark and stripped before lookup, so `Homo` and `homo`
+        // reach the same entry without either losing its spelling. A word whose case no
+        // mark can describe must not reach the codec at all, because canonicalisation
+        // lowercases and nothing would put the capitals back.
+        // A verbatim entry needs no case handling at all, and is the only way a mixed
+        // shape like `AarSvc_6e9d9` can be encoded: no mark describes it, so the book
+        // must hold it exactly as written or it goes out byte by byte.
+        if let Some(sym) = self.book.symbol_for(word) {
+            if let Some(id) = self.id_of_symbol(sym) {
+                out.push(id);
+                return;
             }
+        }
+        if let Some((case, folded)) = split_case(word) {
+            if let Some(syms) = self.codec.encode_word(&folded).and_then(|e| self.symbols_of(&e)) {
+                if let Some(mark) = case {
+                    out.push(mark);
+                }
+                for s in syms {
+                    out.push(self.id_of_symbol(&s).expect("symbols_of only returns known symbols"));
+                }
+                return;
+            }
+        }
+        self.push_literal(out, word);
+    }
+
+    /// Spelled out, one id per byte.
+    ///
+    /// No framing: byte ids occupy their own range, so a decoder recognises them by
+    /// value. The run marker this used to write cost two ids per literal word to say
+    /// something the id already said.
+    fn push_literal(&self, out: &mut Vec<u16>, text: &str) {
+        for &b in text.as_bytes() {
+            out.push(BYTE_BASE + b as u16);
         }
     }
 
@@ -204,64 +223,57 @@ impl<'b> Vocabulary<'b> {
     pub fn decode(&self, ids: &[u16]) -> String {
         let mut out = String::new();
         let mut word = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
         let mut case: Option<u16> = None;
-        let mut i = 0;
 
-        // Encoded symbols accumulate into a word so the codec can read the grammar.
-        macro_rules! flush {
+        // Symbols accumulate into a word so the codec can read the grammar off it;
+        // byte ids accumulate separately so a multi-byte character is not split.
+        macro_rules! flush_word {
             () => {
                 if !word.is_empty() {
                     let plain = self.codec.decode_word(&word).unwrap_or_else(|| word.clone());
                     out.push_str(&Self::apply_case(case, &plain));
                     word.clear();
+                    case = None;
                 }
-                case = None;
+            };
+        }
+        macro_rules! flush_bytes {
+            () => {
+                if !bytes.is_empty() {
+                    out.push_str(&String::from_utf8_lossy(&bytes));
+                    bytes.clear();
+                }
             };
         }
 
-        while i < ids.len() {
-            let id = ids[i];
+        for &id in ids {
             match id {
-                ID_SPACE => {
-                    flush!();
-                    out.push(' ');
-                    i += 1;
-                }
-                ID_NEWLINE => {
-                    flush!();
-                    out.push('\n');
-                    i += 1;
-                }
-                ID_RAW_RUN => {
-                    flush!();
-                    let len = ids.get(i + 1).copied().unwrap_or(0) as usize;
-                    let mut bytes = Vec::with_capacity(len);
-                    for k in 0..len {
-                        match ids.get(i + 2 + k) {
-                            Some(&b) if (BYTE_BASE..SYMBOL_BASE).contains(&b) => {
-                                bytes.push((b - BYTE_BASE) as u8)
-                            }
-                            _ => break,
-                        }
-                    }
-                    out.push_str(&String::from_utf8_lossy(&bytes));
-                    i += 2 + len;
+                ID_SPACE | ID_NEWLINE => {
+                    flush_word!();
+                    flush_bytes!();
+                    out.push(if id == ID_SPACE { ' ' } else { '\n' });
                 }
                 ID_CAPITAL | ID_UPPER => {
-                    flush!();
+                    flush_word!();
+                    flush_bytes!();
                     case = Some(id);
-                    i += 1;
                 }
-                ID_PAD | ID_RESERVED => i += 1,
+                ID_PAD | ID_RESERVED | ID_RAW_RUN => {}
+                _ if (BYTE_BASE..SYMBOL_BASE).contains(&id) => {
+                    flush_word!();
+                    bytes.push((id - BYTE_BASE) as u8);
+                }
                 _ => {
+                    flush_bytes!();
                     if let Some(sym) = self.symbol_of_id(id) {
                         word.push_str(sym);
                     }
-                    i += 1;
                 }
             }
         }
-        flush!();
+        flush_word!();
+        flush_bytes!();
         out
     }
 
@@ -314,7 +326,7 @@ impl<'b> Vocabulary<'b> {
 /// `C:\Users\User\CLAUDE.md` or `iPhone`. Those must take the byte fallback: the codec
 /// lowercases before lookup, and with nothing recording where the capitals were, the
 /// text would come back changed. Losing a byte saving is cheap; losing the text is not.
-fn split_case(word: &str) -> Option<(Option<u16>, String)> {
+pub(crate) fn split_case(word: &str) -> Option<(Option<u16>, String)> {
     if !word.chars().any(|c| c.is_uppercase()) {
         return Some((None, word.to_string()));
     }

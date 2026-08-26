@@ -126,6 +126,12 @@ impl<'b> Codec<'b> {
         // Normalisation is itself a transformation, so checking the round trip against
         // its output only proves normalisation agrees with itself: `Ci` was folded to
         // `ĉi`, matched, and came back as `Ĉi`.
+        // The book's own spelling wins outright, before any folding. A corpus-built book
+        // holds mixed-case entries verbatim - `AarSvc_6e9d9` - and lowercasing them
+        // first would walk away from an entry that is right there.
+        if let Some(sym) = self.book.symbol_for(word) {
+            return Some(sym.to_string());
+        }
         let original = word.to_lowercase();
         let normalised = self.normalise(word);
         let encoded = self.encode_normalised(&normalised)?;

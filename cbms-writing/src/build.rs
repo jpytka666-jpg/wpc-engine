@@ -31,11 +31,22 @@ use std::collections::{HashMap, HashSet};
 /// Codepoint ranges for machine-minted entries, chosen because the hand-written book
 /// uses none of them. Keeping them separate means a glance at a symbol says whether a
 /// person chose it or a frequency count did.
-const MINT_RANGES: [(u32, u32); 4] = [
+/// Ordered smallest-first, so a modest book stays inside the visually distinctive
+/// syllabic blocks and only a large one reaches for the ideographs.
+///
+/// Running out used to be a hard stop worth avoiding by hand-picking; with a
+/// frequency-weighted code it stopped mattering, because a rare symbol takes a long
+/// code and costs bits only when it actually occurs. Under fixed-width packing every
+/// added symbol widened every id and made the whole stream worse - that constraint is
+/// gone, so the pool can be generous.
+const MINT_RANGES: [(u32, u32); 7] = [
     (0x1400, 0x167F), // Unified Canadian Aboriginal Syllabics - 640 codepoints
     (0x13A0, 0x13F5), // Cherokee - 86
     (0x10A0, 0x10FA), // Georgian - 91
     (0xA000, 0xA48C), // Yi Syllables - 1165
+    (0x0900, 0x097F), // Devanagari - 128
+    (0xAC00, 0xD7A3), // Hangul Syllables - 11 172
+    (0x4E00, 0x9FFF), // CJK Unified Ideographs - 20 992
 ];
 
 #[derive(Debug, Clone)]
@@ -58,14 +69,34 @@ impl CorpusStats {
     }
 }
 
-/// Split text into candidate words. Deliberately crude and deliberately fixed: the
-/// same rule has to run when the book is built and when text is encoded, or the book
-/// will contain entries the encoder can never look up.
+/// Peel punctuation off both ends of a token: `(leading, core, trailing)`.
+///
+/// This is THE definition of a word, and both sides use it. When the builder trimmed
+/// punctuation and the encoder did not, the book filled with entries the encoder could
+/// never look up: coverage reported 100% while 59.5% of ids were still literal bytes,
+/// because `status:` never matched the `status` that had been minted for it.
+pub fn split_affixes(token: &str) -> (&str, &str, &str) {
+    let is_punct = |c: char| c.is_ascii_punctuation();
+    let start = token.find(|c: char| !is_punct(c)).unwrap_or(token.len());
+    let end = token.rfind(|c: char| !is_punct(c)).map_or(start, |i| {
+        i + token[i..].chars().next().map_or(1, |c| c.len_utf8())
+    });
+    (&token[..start], &token[start..end], &token[end..])
+}
+
+/// Split text into candidate words, using the same rule the encoder applies.
+///
+/// A word is folded to lower case only when a case mark could put its capitals back -
+/// `Status`, `STATUS`. A mixed shape like `AarSvc_6e9d9` is kept verbatim, because the
+/// encoder cannot fold it either and a lowercase entry would be one it can never reach.
 pub fn words_of(text: &str) -> Vec<String> {
     text.split(|c: char| c.is_whitespace())
-        .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()))
+        .map(|w| split_affixes(w).1)
         .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
+        .map(|w| match crate::vocab::split_case(w) {
+            Some((_, folded)) => folded,
+            None => w.to_string(),
+        })
         .collect()
 }
 
