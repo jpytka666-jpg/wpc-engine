@@ -73,6 +73,67 @@ function essence(record) {
   return '';
 }
 
+/* ---------- the quality gate ---------------------------------------------
+ *
+ * AIONS already made this mistake once, one level down. Its memory decided what to keep
+ * by looking at the SHAPE OF THE QUESTION rather than at whether anything had been
+ * learned, and filled 73% of itself with its own echo - 455 blocks quarantined. Feeding
+ * a model unfiltered traces repeats that in the weights, where it cannot be quarantined
+ * afterwards.
+ *
+ * So the same defence, one level up: named rules, and every rejection written down.
+ * A gate whose refusals are invisible is a gate nobody can argue with.
+ *
+ * Kill switch: NOWORODEK_LESSON_GATE=0
+ */
+
+const GATE_OFF = process.env.NOWORODEK_LESSON_GATE === '0';
+
+// Tools that only look around. Looking is not learning: nothing changed, nothing was
+// verified, and a model trained on it learns to look around.
+const PASSIVE = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite']);
+
+// Files that ARE the observer and the learner. A lesson about building the thing that is
+// watching is the echo problem wearing a different hat: it would train on itself.
+const SELF = /(record-event|traces-to-lessons|train-cbms|kapral|noworodek-observer|scale-probe)/i;
+
+const seenLessons = new Set();
+const rejections = [];
+
+function gate(records, text) {
+  if (GATE_OFF) return { ok: true, reason: 'gate_off' };
+
+  const done = records.filter((r) => r.hook?.startsWith('PostToolUse'));
+  if (done.length === 0) return { ok: false, reason: 'R1_zadnego_dzialania' };
+
+  if (text.length < 40) return { ok: false, reason: 'R2_za_krotkie' };
+
+  if (done.every((r) => PASSIVE.has(r.tool))) {
+    return { ok: false, reason: 'R3_samo_rozgladanie' };
+  }
+
+  const selfHits = done.filter((r) => SELF.test(JSON.stringify(r.payload?.tool_input ?? ''))).length;
+  if (selfHits > done.length / 2) {
+    return { ok: false, reason: 'R4_obserwuje_sam_siebie' };
+  }
+
+  // Something objective must have happened: a runner gave a verdict, or a failure was
+  // followed by a success. Without either, the episode records activity, not learning.
+  const hasVerdict = done.some((r) => r.verification);
+  const outcomes = done.map((r) => r.outcome);
+  const repaired = outcomes.indexOf('error') !== -1
+    && outcomes.lastIndexOf('ok') > outcomes.indexOf('error');
+  if (!hasVerdict && !repaired) {
+    return { ok: false, reason: 'R5_nic_sprawdzalnego' };
+  }
+
+  const fingerprint = text.replace(/\d+/g, '#');
+  if (seenLessons.has(fingerprint)) return { ok: false, reason: 'R6_powtorka' };
+  seenLessons.add(fingerprint);
+
+  return { ok: true, reason: 'ok' };
+}
+
 const lessons = new Map(); // episode -> lines
 
 for (const file of jsonlFiles(traceRoot)) {
@@ -125,11 +186,19 @@ for (const [, records] of lessons) {
     actions += 1;
   }
 
-  // A turn with nothing but a question is not a lesson - nothing was learned from it.
-  if (lines.length > 1) {
-    turns += 1;
-    out.push(lines.join('\n'));
+  const text = lines.join('\n');
+  const verdict = gate(records, text);
+  if (!verdict.ok) {
+    rejections.push({
+      at: new Date().toISOString(),
+      reason: verdict.reason,
+      actions: records.filter((r) => r.hook?.startsWith('PostToolUse')).length,
+      preview: text.slice(0, 200),
+    });
+    continue;
   }
+  turns += 1;
+  out.push(text);
 }
 
 fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
@@ -138,7 +207,20 @@ fs.writeFileSync(outPath, text, 'utf8');
 
 console.log(`sladow przeczytanych : ${jsonlFiles(traceRoot).length} plikow`);
 console.log(`epizodow             : ${lessons.size}`);
-console.log(`lekcji zapisanych    : ${turns}   (epizody bez zadnego dzialania pominiete)`);
+console.log(`lekcji PRZYJETYCH    : ${turns}`);
+console.log(`lekcji ODRZUCONYCH   : ${rejections.length}${GATE_OFF ? '   (BRAMKA WYLACZONA)' : ''}`);
+if (rejections.length) {
+  const byReason = {};
+  for (const r of rejections) byReason[r.reason] = (byReason[r.reason] ?? 0) + 1;
+  for (const [reason, n] of Object.entries(byReason).sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${String(n).padStart(4)}  ${reason}`);
+  }
+  // Written down, because a gate whose refusals are invisible is a gate nobody can argue
+  // with - and the one time it refuses something valuable, this is how it gets found.
+  const logPath = path.join(path.dirname(path.resolve(outPath)), 'odrzucone-lekcje.jsonl');
+  fs.appendFileSync(logPath, rejections.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  console.log(`    dziennik odrzucen: ${logPath}`);
+}
 console.log(`dzialan              : ${actions}`);
 console.log(`w tym z werdyktem    : ${withVerdict}   <- to sa najcenniejsze`);
 console.log(`znakow               : ${text.length}`);
