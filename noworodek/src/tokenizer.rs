@@ -9,7 +9,7 @@ use std::path::Path;
 use tokenizers::Tokenizer;
 
 pub const MODEL_ID: &str = "Qwen/Qwen3-Coder-30B-A3B-Instruct";
-pub const MODEL_REVISION: &str = "b2cff646eb4bb1d68355c01b18ae02e7cf42d120";
+pub const MODEL_REVISION: &str = "573fa3901e5799703b1e60825b0ec024a4c0f1d3";
 pub const VOCAB_SIZE: u32 = 151_936;
 pub const MAX_POSITION_TOKENS: usize = 1_048_576;
 pub const EOS_TOKEN: &str = "<|im_end|>";
@@ -96,6 +96,7 @@ mod tests {
     #[test]
     fn contract_matches_pinned_qwen_metadata() {
         assert_eq!(MODEL_ID, "Qwen/Qwen3-Coder-30B-A3B-Instruct");
+        assert_eq!(MODEL_REVISION, "573fa3901e5799703b1e60825b0ec024a4c0f1d3");
         assert_eq!(VOCAB_SIZE, 151_936);
         assert_eq!(EOS_ID, 151_645);
         assert_eq!(PAD_ID, 151_643);
