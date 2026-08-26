@@ -1,0 +1,11 @@
+[package]
+name = "noworodek"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "noworodek"
+path = "src/lib.rs"
+
+[dependencies]
+tokenizers = "0.23.1"
