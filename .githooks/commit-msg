@@ -1,0 +1,15 @@
+#!/bin/sh
+# Noworodek commit metadata guard.
+# Enable once in a local checkout with:
+#   git config core.hooksPath .githooks
+
+msg_file="$1"
+subject=$(sed -n '1p' "$msg_file")
+prefix='[NOWORODEK][branch=Noworodek][project=wpc-engine]'
+
+case "$subject" in
+  "$prefix"*) exit 0 ;;
+esac
+
+echo "ERROR: Noworodek commits must start with: $prefix" >&2
+exit 1
