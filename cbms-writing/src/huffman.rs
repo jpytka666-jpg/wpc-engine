@@ -118,6 +118,28 @@ impl Code {
             .sum()
     }
 
+    /// Does this table have a code for every id in the stream?
+    ///
+    /// A table built from one corpus has no code for an id that corpus never used, and
+    /// encoding such a stream would drop those ids. The caller has to know BEFORE it
+    /// writes a header claiming a count it cannot deliver.
+    pub fn covers(&self, ids: &[u16]) -> bool {
+        ids.iter()
+            .all(|&id| self.lengths.get(id as usize).copied().unwrap_or(0) > 0)
+    }
+
+    /// Encode, or refuse. Silently skipping an id without a code is what made a stored
+    /// chunk come back with its last word missing: the header promised more ids than
+    /// the payload held, and decoding ran off the end.
+    pub fn try_encode(&self, ids: &[u16]) -> Option<Vec<u8>> {
+        if self.covers(ids) {
+            Some(self.encode(ids))
+        } else {
+            None
+        }
+    }
+
+    /// Ids with no code are skipped. Call `covers` first, or use `try_encode`.
     pub fn encode(&self, ids: &[u16]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut acc: u64 = 0;

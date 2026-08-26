@@ -114,17 +114,23 @@ pub fn peek(bytes: &[u8]) -> Result<Header, ContainerError> {
 /// Text to a self-describing payload.
 pub fn write(book: &Book, vocab: &Vocabulary, text: &str) -> Result<Vec<u8>, ContainerError> {
     let ids = vocab.encode(text);
-    let sealed = book.is_sealed();
-    let payload = if sealed {
-        Code::from_lengths(book.code_lengths().to_vec()).encode(&ids)
-    } else {
-        vocab.pack(&ids)
+    // Frequency coding only when the frozen table covers every id in THIS text. A table
+    // built from one corpus has no code for a word that corpus never used, and a message
+    // containing one must not be written as if it did. Fixed width always works, so the
+    // fallback costs space and never correctness.
+    let coded = book
+        .is_sealed()
+        .then(|| Code::from_lengths(book.code_lengths().to_vec()).try_encode(&ids))
+        .flatten();
+    let (flags, payload) = match coded {
+        Some(bytes) => (FLAG_HUFFMAN, bytes),
+        None => (0, vocab.pack(&ids)),
     };
 
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
     out.extend_from_slice(&MAGIC);
     out.push(FORMAT_VERSION);
-    out.push(if sealed { FLAG_HUFFMAN } else { 0 });
+    out.push(flags);
     out.extend_from_slice(&book.fingerprint().to_le_bytes());
     out.extend_from_slice(&(ids.len() as u32).to_le_bytes());
     out.extend_from_slice(&payload);
@@ -225,6 +231,26 @@ mod tests {
         let vocab_o = Vocabulary::new(&other).unwrap();
         let err = read(&other, &vocab_o, &bytes).expect_err("wrong book must be refused");
         assert!(matches!(err, ContainerError::WrongBook { .. }), "got {err}");
+    }
+
+    #[test]
+    fn a_word_the_code_table_never_saw_falls_back_instead_of_losing_the_word() {
+        // Found on the live AIONS store: 96 of 167 chunks came back short. The frozen
+        // table had no code for ids the sealing corpus never used, and the encoder
+        // skipped them - so the header promised more ids than the payload held.
+        let book = sealed_book();
+        let vocab = Vocabulary::new(&book).unwrap();
+        let unseen = "mi skribis libron pri homo";
+        let bytes = write(&book, &vocab, unseen).unwrap();
+        assert_eq!(read(&book, &vocab, &bytes).unwrap(), unseen);
+    }
+
+    #[test]
+    fn refusing_beats_dropping_when_a_code_is_missing() {
+        let code = Code::from_lengths(vec![0, 1, 1]);
+        assert!(code.covers(&[1, 2, 1]));
+        assert!(!code.covers(&[1, 5]), "id 5 has no code");
+        assert!(code.try_encode(&[1, 5]).is_none(), "must refuse, not silently shorten");
     }
 
     #[test]
