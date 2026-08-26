@@ -294,3 +294,141 @@ The implementation will allow measurable experiments on:
 - whether specialist WeightSets can be learned independently and hot-swapped;
 - whether experimentally mapped teacher parameter patterns improve student benchmarks;
 - whether WPC can later serve as a backend for these externalized WeightSets.
+
+---
+
+# 7. Representation strategy — proven fused WPC first, Low-Rank second
+
+**26 August 2026 — evidence-driven architecture update**
+
+The project now distinguishes between what has been **measured** and what remains a research hypothesis.
+
+## 7.1 Proven result: execution without full materialization
+
+The current fused WPC decode-and-multiply kernel has already demonstrated the core execution idea: the compressed weight is consumed inside the multiply and the fully expanded matrix is never materialized.
+
+Recorded run:
+
+```text
+Tensor                  : model.layers.12.self_attn.o_proj.weight
+Shape                   : 2560 x 4096
+Compressed              : 5,570,560 B (5.3 MiB)
+Expanded dense size     : 40.0 MiB
+Expanded tensor         : never materialized by this kernel
+Fused kernel            : 1.043 ms
+Throughput              : 10,049.7 M weights/s
+Compute                 : 20.09 GFLOP/s
+CPU comparison          : 16–18x faster (reported run)
+Error GPU               : 2.235e-04
+Error CPU               : 1.592e-03
+Result                  : PASS
+Log                     : gpu/wpc4-decode/runs/gemv_2026-08-25_1522.log
+```
+
+This is an **experiment-specific measured result**, not a universal performance claim. The key architectural fact established by the run is the absence of full dense materialization in the hot path.
+
+The repository also contains an earlier design comment that anticipated this execution form: a fused decode-and-multiply kernel should consume the compressed representation directly instead of first expanding the whole tensor.
+
+## 7.2 What remains different in Noworodek
+
+The current WPC representation is predetermined:
+
+```text
+one representation
++ one optimized execution kernel
+```
+
+Noworodek proposes:
+
+```text
+representation selected per tensor
++ editable representation parameters
++ observable representation changes
+```
+
+That is a qualitative architecture extension. It must not be presented as already solved.
+
+## 7.3 Low-Rank is the first alternative representation
+
+The first new representation is **Low-Rank**:
+
+```text
+W = A * B
+```
+
+with small rank `r`.
+
+Storage changes from:
+
+```text
+n * m
+```
+
+to:
+
+```text
+(n + m) * r
+```
+
+For `2560 x 4096` and `r = 64`, factor storage is about twelve times smaller than dense FP32 storage before metadata and other representation costs.
+
+Execution can use the standard associative form:
+
+```text
+y = A * (B * x)
+```
+
+and the trainable factors have a direct gradient path. This makes low-rank the most controlled first experiment across storage, execution, and training complexity.
+
+## 7.4 Required rank sweep
+
+No rank is chosen by intuition. The first benchmark must evaluate the real tensor above at:
+
+```text
+r = 8, 16, 32, 64, 128, 256
+```
+
+For every rank measure:
+
+- reconstruction error;
+- representation bytes;
+- compression ratio;
+- execution latency without full dense materialization;
+- GPU versus CPU latency;
+- training stability;
+- downstream model quality.
+
+The result becomes evidence for a future representation selector.
+
+## 7.5 Representation-kernel rule
+
+Every fundamentally new representation requires an execution implementation that is at least benchmarked before it is promoted. A new storage format without an efficient execution path is not treated as a performance improvement.
+
+This rule explicitly blocks representation proliferation from outrunning kernel engineering.
+
+## 7.6 Continuously editable representation
+
+The representation remains part of the editable model state:
+
+```text
+WeightSet
+   -> representation manifest
+   -> representation parameters
+   -> live execution
+   -> Observatory
+   -> edit
+   -> snapshot/version
+   -> rollback or continue training
+```
+
+For low-rank, Observatory must distinguish factor changes (`dA`, `dB`) from optional dense reconstruction diffs.
+
+## 7.7 Research order
+
+1. Preserve the proven fused WPC path as the baseline.
+2. Measure low-rank ranks on the proven target tensor.
+3. Compare quality, storage, and execution.
+4. Add low-rank training and observable factor deltas.
+5. Only then consider additional procedural representations.
+
+Sinusoids, polynomials, recursive generators, and arbitrary learned programs remain research candidates until their execution cost and gradient stability are demonstrated.
