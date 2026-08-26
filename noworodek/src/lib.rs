@@ -37,7 +37,7 @@ pub use experience::{ExperienceError, ExperienceNormalizer, NormalizedExperience
 pub use low_rank::{rank_metrics, LowRankError, LowRankMatrix, RankMetrics};
 pub use math_domain::{evaluate_exact, starter_curriculum, MathDomain, MathEvaluation, MathExample};
 pub use math_trace::{MathOp, MathStep, MathTrace};
-pub use math_train::{evaluate as evaluate_math_model, generate_dataset as generate_math_dataset, EvalReport as MathEvalReport, MathDataset, MathSample, MathTrainReport};
+pub use math_train::{evaluate as evaluate_math_model, generate_dataset as generate_math_dataset, MathEvalReport, MathDataset, MathSample, MathTrainReport};
 pub use model::{ExternalTransformer, ParameterRegistration, ParameterRegistry, RegistryError, TinyTransformerConfig, TransformerTensorRole};
 pub use observation_bus::{DiagnosticsSink, ObservationBus, ObservationError, ObservationEvent, ObservationSink, RawTraceSink, TrainingObservatorySink};
 pub use observatory::{TensorDeltaSummary, TrainingObservation, TrainingObservatory};
