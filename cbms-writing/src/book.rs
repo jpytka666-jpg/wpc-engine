@@ -296,6 +296,40 @@ impl Book {
         h
     }
 
+    /// A fingerprint over the FIRST `n` entries only.
+    ///
+    /// `fingerprint` answers "is this the same book", which stops being the useful
+    /// question once the book is meant to grow: every addition changes it, so it cannot
+    /// tell a legitimate continuation from an unrelated book.
+    ///
+    /// This answers the question that actually protects stored data and trained weights:
+    /// *do the first n ids still mean the same words?* An id is an entry's position, so
+    /// if the first n entries match, everything ever written or learned against a book
+    /// that had n entries stays valid - and if they do not, weights copied forward would
+    /// answer from a shifted vocabulary without any error to notice.
+    ///
+    /// The code table is deliberately excluded. Codes decide how tightly ids pack, not
+    /// what they mean, and they are re-derived whenever frequencies change.
+    pub fn fingerprint_prefix(&self, n: usize) -> Option<u64> {
+        if n > self.entries.len() {
+            return None;
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for e in &self.entries[..n] {
+            eat(e.root.as_bytes());
+            eat(b"=");
+            eat(e.symbol.as_bytes());
+            eat(if e.section == Section::Lexical { b"L" } else { b"X" });
+        }
+        Some(h)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -543,6 +577,42 @@ mod tests {
         let a = Book::parse(SAMPLE).unwrap();
         let b = Book::parse(&SAMPLE.replace("homo=Ա\n", "homo=Ա\nurbo=զ\n")).unwrap();
         assert_ne!(a.fingerprint(), b.fingerprint());
+    }
+
+    #[test]
+    fn the_prefix_mark_recognises_a_book_that_only_grew() {
+        let a = Book::parse(SAMPLE).unwrap();
+        let n = a.len();
+        // Appended at the END: every id already issued still means what it meant.
+        let grown = Book::parse(&format!("{SAMPLE}\nurbo=զ\nvilagxo=է\n")).unwrap();
+        assert!(grown.len() > n);
+        assert_eq!(
+            grown.fingerprint_prefix(n),
+            a.fingerprint_prefix(n),
+            "a book that only grew must be recognised as a continuation"
+        );
+        // The whole-book fingerprint cannot answer this - it changes on any addition,
+        // which is why the prefix mark exists.
+        assert_ne!(grown.fingerprint(), a.fingerprint());
+    }
+
+    #[test]
+    fn the_prefix_mark_catches_an_entry_inserted_early() {
+        let a = Book::parse(SAMPLE).unwrap();
+        let n = a.len();
+        // Inserted near the FRONT: everything after it shifts by one, so every id past
+        // that point now names a different word. Weights carried into this book would
+        // answer from a vocabulary shifted by one and nothing would report an error.
+        let shifted = Book::parse(&SAMPLE.replace("homo=Ա\n", "urbo=զ\nhomo=Ա\n")).unwrap();
+        assert_ne!(shifted.fingerprint_prefix(n), a.fingerprint_prefix(n));
+    }
+
+    #[test]
+    fn the_prefix_mark_refuses_a_length_the_book_does_not_have() {
+        let a = Book::parse(SAMPLE).unwrap();
+        // Asking about more entries than exist means the book SHRANK. Returning a hash
+        // of what happens to be there would call a shrunken book a valid ancestor.
+        assert_eq!(a.fingerprint_prefix(a.len() + 1), None);
     }
 
     #[test]

@@ -45,7 +45,20 @@ const MINT_RANGES: [(u32, u32); 7] = [
     (0x10A0, 0x10FA), // Georgian - 91
     (0xA000, 0xA48C), // Yi Syllables - 1165
     (0x0900, 0x097F), // Devanagari - 128
-    (0xAC00, 0xD7A3), // Hangul Syllables - 11 172
+    // Hangul Syllables, but NOT from the start of the block.
+    //
+    // AIONS addresses every stored block with a Hangul code: `make_hangul_code` maps each
+    // hex digit of a SHA-1 to `가` + 32n, so its whole alphabet is the 16 codepoints
+    // U+AC00, U+AC20 ... U+ADE0. Minting began at U+AC00 and walks upwards, so it took
+    // all sixteen: measured on a 14 114 entry book, `가` had been issued to `Node/Python`,
+    // `갠` to `RemoteAccess`, `고` to `az`, and so on for every one of them.
+    //
+    // With those overlapping, an address and a sentence are the same characters - the
+    // address `가갠걀...` decodes as the words those symbols were minted for, and nothing
+    // can tell which was meant. Start above the address alphabet instead. It costs 481
+    // codepoints of 11 172 and it is the address layer that has stored data pointing at
+    // it, so the address stays where it is and the minting moves.
+    (0xADE1, 0xD7A3), // Hangul Syllables above the KR address alphabet - 10 691
     (0x4E00, 0x9FFF), // CJK Unified Ideographs - 20 992
 ];
 
@@ -279,6 +292,24 @@ mod tests {
             MINT_RANGES.iter().any(|(lo, hi)| (*lo..=*hi).contains(&sym)),
             "U+{sym:04X} is outside the mint ranges"
         );
+    }
+
+    /// Every codepoint AIONS can put in a block address: `가` + 32n, n in 0..16.
+    fn kr_address_alphabet() -> Vec<u32> {
+        (0..16).map(|n| 0xAC00 + n * 32).collect()
+    }
+
+    #[test]
+    fn no_mint_range_can_issue_a_kr_address_character() {
+        // Not a property of one built book - a property of the ranges themselves, so a
+        // future range that reopens the address alphabet fails here rather than in a
+        // year, when an address and a sentence turn out to be the same characters.
+        for cp in kr_address_alphabet() {
+            assert!(
+                !MINT_RANGES.iter().any(|(lo, hi)| (*lo..=*hi).contains(&cp)),
+                "U+{cp:04X} is a KR block-address character and must never be minted"
+            );
+        }
     }
 
     #[test]
