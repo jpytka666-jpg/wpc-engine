@@ -40,15 +40,18 @@ fn hash8(text: &str) -> usize {
 }
 
 fn ids(text: &str) -> Vec<usize> {
-    let mut out = Vec::with_capacity(text.len().saturating_add(2));
-    for tok in text.split_whitespace() { out.push(hash8(tok)); }
-    if out.len() < 3 { out.extend([0,1,2]); }
+    let all: Vec<usize> = text.split_whitespace().map(hash8).collect();
+    if all.is_empty() { return vec![0, 1, 2]; }
+    // Keep the fixture within the decoder's bounded context while preserving the target token.
+    if all.len() <= 8 { return all; }
+    let mut out = all[..7].to_vec();
+    out.push(*all.last().unwrap());
     out
 }
 
 fn fixture() -> (WeightSetManager, ExternalTransformer) {
     let vocab=8usize; let hidden=4usize; let intermediate=8usize;
-    let mut specs = vec![
+    let specs = vec![
         TensorSpec::new("model.embeddings.token.weight", vec![vocab,hidden], DType::F32, "school-v1"),
         TensorSpec::new("model.layers.00.attention.q_proj.weight", vec![hidden,hidden], DType::F32, "school-v1"),
         TensorSpec::new("model.layers.00.attention.k_proj.weight", vec![hidden,hidden], DType::F32, "school-v1"),
@@ -66,7 +69,7 @@ fn fixture() -> (WeightSetManager, ExternalTransformer) {
         WeightSetHeader::new(WeightSetId::new("coder-school-v1"), WeightSetVersion::new("0.1.0").unwrap(), ArchitectureId::new("noworodek-decoder-v0"))
             .with_capabilities(["externalized-parameters","observable","editable","coder-school-v1"])
             .with_provenance("M.Szul via GPT-5.6 Luna; Noworodek Rust/C++ curriculum prototype"),
-        std::mem::take(&mut specs),
+        specs,
     ).unwrap();
     let data = [
         ("model.embeddings.token.weight", vec![0.05;32]),
