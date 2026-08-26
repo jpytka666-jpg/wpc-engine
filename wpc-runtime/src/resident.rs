@@ -18,11 +18,14 @@
  *   chat template shipped beside the weights.
  * SYSTEM PART: WPC runtime, resident inference lane.
  * ARCHITECTURE FUNCTION: Layer 4 of AIONS_MASTER_BUILD_PLAN.md, whose exit gate reads
- *   "resident runtime survives multi-turn sessions". A dense counterpart to the MoE-only
- *   resident engine on feature/agent-gates, which bails on anything that is not
- *   Qwen3-MoE and so could not serve the small model at all.
- * DEPENDENCIES/LINKS: qwen3_model::load_wpc_v4 for the weights, model::{Model, KvCache}
- *   for the forward pass and the cache, sampling::Decoder for the repetition penalty
+ *   "resident runtime survives multi-turn sessions". Serves BOTH stacks: the dense
+ *   Qwen2/Qwen3 path and Qwen3-MoE. The earlier resident engine on feature/agent-gates
+ *   refused anything that was not MoE, so it could not serve the small model at all;
+ *   this one refuses neither, which matters because the 30B pays 58.8 s to re-read a
+ *   62-token prompt and is the model that most needs to stop doing that.
+ * DEPENDENCIES/LINKS: qwen3_model::load_wpc_v4 and Qwen3MoeModel::load_wpc_v4 for the
+ *   weights, model::{Model, KvCache} and qwen3_moe_model::{Qwen3MoeModel, MoeKvCache}
+ *   for the forward pass and the caches, sampling::Decoder for the repetition penalty
  *   that stops long answers jamming, config::Config for the geometry.
  * TECH STACK: Rust 2021, no new crates.
  * LOCAL WORKSPACE: C:\temp\aions-multiturn-2026-08-25\wpc-runtime\src\resident.rs
@@ -40,11 +43,51 @@ use tokenizers::Tokenizer;
 use crate::config::Config;
 use crate::model::{KvCache, Model};
 use crate::qwen3_model;
+use crate::qwen3_moe_model::{MoeKvCache, Qwen3MoeModel};
 use crate::sampling::Decoder;
+
+/// The two decoder stacks this engine can hold.
+///
+/// They are separate types with separate cache types, so the alternative to an enum here
+/// is a second engine and a second session with the same body twice. The enum keeps one
+/// session API and one valve, which is what callers actually want.
+enum Weights {
+    Dense(Model),
+    Moe(Qwen3MoeModel),
+}
+
+enum Cache {
+    Dense(KvCache),
+    Moe(MoeKvCache),
+}
+
+impl Weights {
+    fn new_cache(&self) -> Cache {
+        match self {
+            Weights::Dense(m) => Cache::Dense(m.new_cache()),
+            Weights::Moe(m) => Cache::Moe(m.new_cache()),
+        }
+    }
+}
+
+impl Cache {
+    fn len(&self) -> usize {
+        match self {
+            Cache::Dense(c) => c.len,
+            Cache::Moe(c) => c.len,
+        }
+    }
+    fn truncate(&mut self, len: usize) -> Result<()> {
+        match self {
+            Cache::Dense(c) => c.truncate(len),
+            Cache::Moe(c) => c.truncate(len),
+        }
+    }
+}
 
 /// A model loaded once and kept.
 pub struct ResidentEngine {
-    model: Model,
+    model: Weights,
     tokenizer: Tokenizer,
     model_dir: PathBuf,
     bos: Option<u32>,
@@ -62,27 +105,33 @@ pub struct TurnCost {
 }
 
 impl ResidentEngine {
-    /// Load a dense Qwen2/Qwen3 model from WPC v4 weights and keep it resident.
+    /// Load a model from WPC v4 weights and keep it resident.
     ///
-    /// Only v4 for now, and only the dense path: the MoE models go through
-    /// `Qwen3MoeModel`, which has its own cache type and would need its own session.
-    /// Refusing loudly is better than silently producing a model that cannot answer.
+    /// Both stacks are served: the dense Qwen2/Qwen3 path and the Qwen3-MoE one. Only v4
+    /// for now; refusing another scheme loudly is better than silently producing a model
+    /// that cannot answer.
     pub fn load(model_dir: &Path, wpc_dir: &Path, scheme: &str) -> Result<Self> {
         if scheme != "v4" {
             bail!("the resident engine currently supports WPC v4 only, not {scheme}");
         }
         let config_path = model_dir.join("config.json");
         let config = Config::load(&config_path)?;
-        if config.is_qwen3_moe() {
-            bail!("this model is Qwen3-MoE; the resident dense engine does not serve it");
-        }
+        let is_moe = config.is_qwen3_moe();
 
         let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("failed to load tokenizer: {e}"))?;
 
         let t0 = Instant::now();
-        let model = qwen3_model::load_wpc_v4(model_dir, wpc_dir, config)?;
-        eprintln!("resident engine: weights loaded in {:?}", t0.elapsed());
+        let model = if is_moe {
+            Weights::Moe(Qwen3MoeModel::load_wpc_v4(model_dir, wpc_dir, config)?)
+        } else {
+            Weights::Dense(qwen3_model::load_wpc_v4(model_dir, wpc_dir, config)?)
+        };
+        eprintln!(
+            "resident engine: {} weights loaded in {:?}",
+            if is_moe { "mixture-of-experts" } else { "dense" },
+            t0.elapsed()
+        );
 
         Ok(Self {
             bos: read_bos(&config_path),
@@ -109,11 +158,34 @@ impl ResidentEngine {
     pub fn model_dir(&self) -> &Path {
         &self.model_dir
     }
+
+    /// Push one token through whichever stack is loaded.
+    ///
+    /// A mismatched pair -- a dense cache handed to an MoE model -- is a programming
+    /// mistake rather than a runtime condition, so it panics with a message that says
+    /// which way round it went wrong instead of returning an error nobody can act on.
+    fn forward(&self, token: u32, cache: &mut Cache) -> Vec<f32> {
+        match (&self.model, cache) {
+            (Weights::Dense(m), Cache::Dense(c)) => m.forward_token(token, c),
+            (Weights::Moe(m), Cache::Moe(c)) => m.forward_token(token, c),
+            (Weights::Dense(_), Cache::Moe(_)) => {
+                panic!("resident engine: dense weights given a mixture-of-experts cache")
+            }
+            (Weights::Moe(_), Cache::Dense(_)) => {
+                panic!("resident engine: mixture-of-experts weights given a dense cache")
+            }
+        }
+    }
+
+    /// True when the loaded stack is the mixture-of-experts one.
+    pub fn is_mixture_of_experts(&self) -> bool {
+        matches!(self.model, Weights::Moe(_))
+    }
 }
 
 pub struct ResidentSession<'a> {
     engine: &'a ResidentEngine,
-    cache: KvCache,
+    cache: Cache,
     /// Everything the model has WRITTEN, across turns, and nothing it was told.
     ///
     /// Repeating turn one's answer verbatim in turn three is the same failure as
@@ -137,7 +209,7 @@ impl ResidentSession<'_> {
     /// How many positions the cache holds. Each one costs real memory, so a caller that
     /// runs long conversations will want to watch this.
     pub fn positions(&self) -> usize {
-        self.cache.len
+        self.cache.len()
     }
 
     /// Set the decode policy. 1.0 penalty with temperature 0 reproduces plain greedy.
@@ -152,7 +224,7 @@ impl ResidentSession<'_> {
     /// which it cannot distinguish from what it was told -- so a figure it invents is a
     /// fact to it from then on. The mark is where the valve cuts back to.
     pub fn mark_clean(&mut self) {
-        self.clean = self.cache.len;
+        self.clean = self.cache.len();
     }
 
     /// Where the clean ground is.
@@ -162,7 +234,7 @@ impl ResidentSession<'_> {
 
     /// How much of the cache is the model's own output rather than trusted input.
     pub fn pressure(&self) -> usize {
-        self.cache.len.saturating_sub(self.clean)
+        self.cache.len().saturating_sub(self.clean)
     }
 
     /// Open the valve: drop everything the model has said since the clean mark, then put
@@ -175,7 +247,7 @@ impl ResidentSession<'_> {
     ///
     /// Returns how many positions were released.
     pub fn relieve(&mut self, digest: &str) -> Result<usize> {
-        let before = self.cache.len;
+        let before = self.cache.len();
         if before <= self.clean {
             return Ok(0);
         }
@@ -194,7 +266,7 @@ impl ResidentSession<'_> {
                 .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
             for &tok in encoding.get_ids() {
                 // Input, not output: it must not attract the repetition penalty.
-                let _ = self.engine.model.forward_token(tok, &mut self.cache);
+                let _ = self.engine.forward(tok, &mut self.cache);
             }
         }
         // Whatever the model had written is gone from the cache, so it must go from the
@@ -254,7 +326,7 @@ impl ResidentSession<'_> {
             // Not pushed to `history`: the penalty applies to what the model writes, not
             // to what it is told. Seeding it with the prompt is what made a model asked
             // to repeat "4096" answer with full-width lookalike digits instead.
-            next_logits = self.engine.model.forward_token(tok, &mut self.cache);
+            next_logits = self.engine.forward(tok, &mut self.cache);
         }
         let prefill = t1.elapsed();
 
@@ -267,7 +339,7 @@ impl ResidentSession<'_> {
                 break;
             }
             self.history.push(next_id);
-            next_logits = self.engine.model.forward_token(next_id, &mut self.cache);
+            next_logits = self.engine.forward(next_id, &mut self.cache);
         }
         let decode = t2.elapsed();
 
@@ -285,7 +357,7 @@ impl ResidentSession<'_> {
                 prefill,
                 generated_tokens: generated.len(),
                 decode,
-                cache_positions: self.cache.len,
+                cache_positions: self.cache.len(),
             },
         ))
     }

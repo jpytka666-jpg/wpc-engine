@@ -67,6 +67,42 @@ pub struct MoeKvCache {
 }
 
 impl MoeKvCache {
+    /// Forget everything after position `len`, keeping the prefix exactly as it was.
+    ///
+    /// The same valve as `KvCache::truncate` on the dense path, and for the same reason:
+    /// a cache holds both what the model was told and what it said back, and the model
+    /// cannot tell them apart, so its own mistakes become facts it later reasons from.
+    /// The head width is recovered from what is already stored rather than kept as a
+    /// field, which leaves `MoeKvCache::new` untouched.
+    pub fn truncate(&mut self, len: usize) -> anyhow::Result<()> {
+        if len > self.len {
+            anyhow::bail!(
+                "truncate cannot extend a cache: asked for {len}, holding {}",
+                self.len
+            );
+        }
+        if len == self.len {
+            return Ok(());
+        }
+        let head_dim = match self.layers.first().and_then(|l| l.k.first()) {
+            Some(head) if self.len > 0 => head.len() / self.len,
+            _ => 0,
+        };
+        let elems = len
+            .checked_mul(head_dim)
+            .ok_or_else(|| anyhow::anyhow!("truncate size overflow"))?;
+        for layer in &mut self.layers {
+            for head in &mut layer.k {
+                head.truncate(elems);
+            }
+            for head in &mut layer.v {
+                head.truncate(elems);
+            }
+        }
+        self.len = len;
+        Ok(())
+    }
+
     fn new(num_layers: usize, num_kv_heads: usize) -> Self {
         MoeKvCache {
             layers: (0..num_layers)
