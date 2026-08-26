@@ -33,6 +33,12 @@ use std::fmt;
 /// Section markers as they appear in the file M. Szul maintains.
 const LEXICAL_HEADER: &str = "CODEBOOK_CBMS_ES";
 const EXTENSION_PREFIX: &str = "CBMS-Eo-v1.1";
+/// Frozen code lengths, one per id, written by `seal`.
+///
+/// The table lives with the book rather than inside every message because both ends
+/// already share the book. A message that carried its own table would pay twice for
+/// something both sides have, and for short messages the table would dwarf the content.
+const CODES_HEADER: &str = "CBMS-CODES-v1";
 
 /// One symbol claimed by two different roots.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +106,8 @@ pub struct Entry {
 
 #[derive(Debug, Default)]
 pub struct Book {
+    /// Frozen Huffman code lengths, one per id, or empty if the book is unsealed.
+    code_lengths: Vec<u8>,
     entries: Vec<Entry>,
     by_root: HashMap<String, usize>,
     by_symbol: HashMap<String, usize>,
@@ -127,6 +135,7 @@ impl Book {
         let mut book = Book::default();
         let mut collisions = Vec::new();
         let mut section = Section::Lexical;
+        let mut in_codes = false;
 
         for (i, raw) in text.lines().enumerate() {
             let line = raw.trim();
@@ -140,6 +149,30 @@ impl Book {
             if line.starts_with(EXTENSION_PREFIX) {
                 section = Section::Extension;
                 continue;
+            }
+            if line.starts_with(CODES_HEADER) {
+                in_codes = true;
+                continue;
+            }
+            if in_codes {
+                // One length per id, whitespace separated. Anything unparseable ends
+                // the section rather than corrupting the table.
+                let mut ok = true;
+                let mut lens = Vec::new();
+                for tok in line.split_whitespace() {
+                    match tok.parse::<u8>() {
+                        Ok(v) => lens.push(v),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    book.code_lengths.extend(lens);
+                    continue;
+                }
+                in_codes = false;
             }
             let Some((raw_root, value)) = split_on_separator(line) else {
                 continue;
@@ -222,6 +255,47 @@ impl Book {
         &self.entries
     }
 
+    /// Frozen code lengths, empty when the book has not been sealed.
+    pub fn code_lengths(&self) -> &[u8] {
+        &self.code_lengths
+    }
+
+    pub fn set_code_lengths(&mut self, lengths: Vec<u8>) {
+        self.code_lengths = lengths;
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        !self.code_lengths.is_empty()
+    }
+
+    /// A fingerprint over what decoding depends on: every root, its symbol, its section,
+    /// in order, plus the code table.
+    ///
+    /// A message names this, so a receiver holding a different book finds out at once
+    /// instead of silently producing different text. Order matters because ids are
+    /// assigned in it - two books with the same entries in a different order are NOT
+    /// interchangeable, and the hash has to say so.
+    pub fn fingerprint(&self) -> u64 {
+        // FNV-1a. Not a security hash and not meant to be: this catches the wrong book,
+        // not an attacker, and a dependency for that would be a poor trade.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for e in &self.entries {
+            eat(e.root.as_bytes());
+            eat(b"=");
+            eat(e.symbol.as_bytes());
+            eat(if e.section == Section::Lexical { b"L" } else { b"X" });
+        }
+        eat(b"|codes|");
+        eat(&self.code_lengths);
+        h
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -245,25 +319,48 @@ impl Book {
 
     /// Render back to the file format, so a built book is editable by hand afterwards.
     pub fn to_text(&self) -> String {
-        let mut out = String::from(LEXICAL_HEADER);
-        out.push_str("\n\n");
-        for e in self.entries.iter().filter(|e| e.section == Section::Lexical) {
+        // Entries are written in the order they were read, with a section header
+        // wherever the section changes. Grouping them instead would reorder the book,
+        // and ids are assigned in order - so a saved book would load as a DIFFERENT
+        // book with the same entries. The fingerprint check at seal time caught exactly
+        // that, which is what it is for.
+        let mut out = String::new();
+        let mut current: Option<Section> = None;
+        for e in &self.entries {
+            if current != Some(e.section) {
+                if current.is_some() {
+                    out.push('\n');
+                }
+                out.push_str(match e.section {
+                    Section::Lexical => LEXICAL_HEADER,
+                    Section::Extension => "CBMS-Eo-v1.1-EXT",
+                });
+                out.push('\n');
+                current = Some(e.section);
+            }
             out.push_str(&escape_root(&e.root));
             out.push('=');
-            out.push_str(&e.symbol);
-            out.push('\n');
-        }
-        out.push_str("\n\n");
-        out.push_str("CBMS-Eo-v1.1-EXT\n");
-        for e in self.entries.iter().filter(|e| e.section == Section::Extension) {
-            out.push_str(&escape_root(&e.root));
-            out.push('=');
-            // The extension section is conventionally written as codepoints, because
-            // several of its marks are invisible or easy to mistake for each other.
-            for ch in e.symbol.chars() {
-                out.push_str(&format!("U+{:04X}", ch as u32));
+            if e.section == Section::Extension {
+                // Conventionally written as codepoints: several of these marks are
+                // invisible or easy to mistake for one another.
+                for ch in e.symbol.chars() {
+                    out.push_str(&format!("U+{:04X}", ch as u32));
+                }
+            } else {
+                out.push_str(&e.symbol);
             }
             out.push('\n');
+        }
+        if !self.code_lengths.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(CODES_HEADER);
+            out.push('\n');
+            // Wrapped so the file stays readable and diffable rather than one huge line.
+            for row in self.code_lengths.chunks(32) {
+                let line: Vec<String> = row.iter().map(|v| v.to_string()).collect();
+                out.push_str(&line.join(" "));
+                out.push('\n');
+            }
         }
         out
     }
@@ -412,6 +509,40 @@ mod tests {
         assert_eq!(again.symbol_for("=="), Some("ᐂ"));
         assert_eq!(again.symbol_for("a\\b"), Some("ᐃ"));
         assert_eq!(again.symbol_for("homo"), Some("Ա"));
+    }
+
+    #[test]
+    fn a_saved_book_loads_back_as_the_same_book_not_a_reordered_one() {
+        // Ids are assigned in entry order, so the file must preserve it. Writing all
+        // lexical entries then all extension ones reordered a book that interleaved
+        // them, and it loaded as a different book with the same contents - which the
+        // fingerprint check found at seal time.
+        let interleaved = "CODEBOOK_CBMS_ES\nhomo=Ա\n\
+            CBMS-Eo-v1.1-EXT\n-as=U+25B6\nMORPH-SEP=U+00B7\n\
+            CODEBOOK_CBMS_ES\nlibro=չ\n";
+        let book = Book::parse(interleaved).unwrap();
+        let again = Book::parse(&book.to_text()).expect("saved book reloads");
+        assert_eq!(again.fingerprint(), book.fingerprint(), "order must survive the file");
+        let roots: Vec<&str> = again.entries().iter().map(|e| e.root.as_str()).collect();
+        assert_eq!(roots, vec!["homo", "-as", "MORPH-SEP", "libro"]);
+    }
+
+    #[test]
+    fn a_sealed_book_carries_its_code_table_through_the_file() {
+        let mut book = Book::parse(SAMPLE).unwrap();
+        assert!(!book.is_sealed());
+        book.set_code_lengths(vec![0, 1, 2, 3, 4, 5]);
+        let again = Book::parse(&book.to_text()).expect("sealed book reloads");
+        assert!(again.is_sealed());
+        assert_eq!(again.code_lengths(), &[0, 1, 2, 3, 4, 5]);
+        assert_eq!(again.fingerprint(), book.fingerprint());
+    }
+
+    #[test]
+    fn the_fingerprint_notices_a_changed_book() {
+        let a = Book::parse(SAMPLE).unwrap();
+        let b = Book::parse(&SAMPLE.replace("homo=Ա\n", "homo=Ա\nurbo=զ\n")).unwrap();
+        assert_ne!(a.fingerprint(), b.fingerprint());
     }
 
     #[test]

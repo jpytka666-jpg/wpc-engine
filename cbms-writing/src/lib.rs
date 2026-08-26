@@ -45,8 +45,11 @@
 pub mod book;
 pub mod build;
 pub mod codec;
+pub mod container;
 pub mod huffman;
 pub mod vocab;
+
+pub use container::{peek, read, write, ContainerError, Header};
 
 pub use build::{extend, survey, BuildReport, CorpusStats, WordCount};
 

@@ -29,7 +29,12 @@ fn usage() -> ExitCode {
          stats            vocabulary size and what a tokenizer would need\n\
          encode <text>    Esperanto to CBMS\n\
          decode <text>    CBMS to Esperanto\n\
-         file <path>      encode a whole file, report coverage"
+         file <path>      encode a whole file, report coverage\n\
+         pack <corpus>    measure packing and frequency coding\n\
+         build <corpus> <out> [max] [min]   mint entries from a corpus\n\
+         seal <corpus> <out>                freeze a code table into the book\n\
+         write <text> <out.cbms>            store or send\n\
+         read <in.cbms> [out]               read back"
     );
     ExitCode::from(2)
 }
@@ -346,6 +351,119 @@ fn main() -> ExitCode {
             }
             println!("written        : {}", args[3]);
             ExitCode::SUCCESS
+        }
+        "seal" => {
+            // <book> seal <corpus> <out-book> - freeze a code table into the book, so
+            // messages carry no table of their own.
+            if args.len() < 4 {
+                eprintln!("cbms <book> seal <corpus> <out-book>");
+                return ExitCode::from(2);
+            }
+            let Ok(corpus) = std::fs::read_to_string(&args[2]) else {
+                eprintln!("cannot read corpus {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let Some(vocab) = cbms_writing::Vocabulary::new(&book) else {
+                eprintln!("cannot build a vocabulary from this book");
+                return ExitCode::FAILURE;
+            };
+            let ids = vocab.encode(&corpus);
+            let mut freq: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+            for &id in &ids {
+                *freq.entry(id).or_default() += 1;
+            }
+            let code = cbms_writing::huffman::Code::from_frequencies(&freq, vocab.len());
+
+            let mut sealed = book;
+            sealed.set_code_lengths(code.lengths().to_vec());
+            let text = sealed.to_text();
+            match cbms_writing::Book::parse(&text) {
+                Ok(again) => {
+                    if again.fingerprint() != sealed.fingerprint() {
+                        eprintln!("sealed book does not survive a round trip through the file");
+                        return ExitCode::FAILURE;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("sealed book will not load: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            if let Err(e) = std::fs::write(&args[3], &text) {
+                eprintln!("cannot write {}: {e}", args[3]);
+                return ExitCode::FAILURE;
+            }
+            println!("sealed         : {}", args[3]);
+            println!("fingerprint    : {:016x}", sealed.fingerprint());
+            println!("code table     : {} lengths", sealed.code_lengths().len());
+            ExitCode::SUCCESS
+        }
+        "write" => {
+            // <book> write <text-file> <out.cbms>
+            if args.len() < 4 {
+                eprintln!("cbms <book> write <text-file> <out.cbms>");
+                return ExitCode::from(2);
+            }
+            let Ok(text) = std::fs::read_to_string(&args[2]) else {
+                eprintln!("cannot read {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let Some(vocab) = cbms_writing::Vocabulary::new(&book) else {
+                eprintln!("cannot build a vocabulary from this book");
+                return ExitCode::FAILURE;
+            };
+            match cbms_writing::write(&book, &vocab, &text) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&args[3], &bytes) {
+                        eprintln!("cannot write {}: {e}", args[3]);
+                        return ExitCode::FAILURE;
+                    }
+                    println!("source  : {:>9} bytes", text.len());
+                    println!("written : {:>9} bytes   {:.2}x   -> {}",
+                             bytes.len(), bytes.len() as f64 / text.len().max(1) as f64, args[3]);
+                    println!("book    : {:016x}{}", book.fingerprint(),
+                             if book.is_sealed() { " (sealed)" } else { " (unsealed, fixed width)" });
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "read" => {
+            // <book> read <in.cbms> [out-text]
+            if args.len() < 3 {
+                eprintln!("cbms <book> read <in.cbms> [out-text]");
+                return ExitCode::from(2);
+            }
+            let Ok(bytes) = std::fs::read(&args[2]) else {
+                eprintln!("cannot read {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let Some(vocab) = cbms_writing::Vocabulary::new(&book) else {
+                eprintln!("cannot build a vocabulary from this book");
+                return ExitCode::FAILURE;
+            };
+            match cbms_writing::read(&book, &vocab, &bytes) {
+                Ok(text) => {
+                    match args.get(3) {
+                        Some(path) => {
+                            if let Err(e) = std::fs::write(path, &text) {
+                                eprintln!("cannot write {path}: {e}");
+                                return ExitCode::FAILURE;
+                            }
+                            println!("{} bytes -> {path}", text.len());
+                        }
+                        None => print!("{text}"),
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         _ => usage(),
     }
