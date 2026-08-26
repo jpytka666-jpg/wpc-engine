@@ -170,14 +170,51 @@ fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> st
         let handle = ParameterHandle::new(set.clone(), &name)
             .map_err(|e| bad(format!("{name}: {e:?}")))?;
         let current = handle.read(mgr).map_err(|e| bad(format!("{name}: {e:?}")))?;
-        if current.values().len() != values.len() {
-            return Err(bad(format!(
-                "{name}: plik ma {} wartosci, model oczekuje {}",
-                values.len(),
-                current.values().len()
-            )));
-        }
-        let t = Tensor::from_vec(current.shape().to_vec(), values)
+        let shape = current.shape().to_vec();
+        let want = current.values().len();
+
+        // A checkpoint smaller than the model is the NORMAL case once the shared code
+        // book grows: new words append new rows to the embedding and the output head,
+        // both of which are shaped [vocab, hidden] - vocab first. Row-major, that puts
+        // every previously learned row at the front of the array, untouched, and the new
+        // words after it. So the old values are copied in as a prefix and the new rows
+        // keep the fresh initialisation they were mounted with.
+        //
+        // This is only sound because a symbol's id never moves: plain at 2i, spaced at
+        // 2i+1, and new symbols take the next free pair at the end. Under the old layout
+        // the spaced half shifted whenever the book grew, so row 500 would have meant a
+        // different word after the growth than before it - the weights would have loaded
+        // and quietly answered with the wrong vocabulary.
+        //
+        // Growing is allowed only along the FIRST dimension. The check is that the file's
+        // length is a whole number of rows: if `hidden` had changed instead, the stride
+        // would differ and this refuses rather than smearing one row across two.
+        let values = if values.len() == want {
+            values
+        } else {
+            let row: usize = shape.iter().skip(1).product();
+            let can_grow =
+                shape.len() >= 2 && values.len() < want && row > 0 && values.len() % row == 0;
+            if !can_grow {
+                return Err(bad(format!(
+                    "{name}: plik ma {} wartosci, model oczekuje {} - nie jest to rozrost \
+                     slownika (ksztalt {:?})",
+                    values.len(),
+                    want,
+                    shape
+                )));
+            }
+            let carried = values.len() / row;
+            let fresh = (want - values.len()) / row;
+            println!(
+                "  {name}: przeniesiono {carried} wierszy, {fresh} nowych zaczyna od zera"
+            );
+            let mut merged = current.values().to_vec();
+            merged[..values.len()].copy_from_slice(&values);
+            merged
+        };
+
+        let t = Tensor::from_vec(shape, values)
             .map_err(|e| bad(format!("{name}: {e:?}")))?;
         handle.write(mgr, &t).map_err(|e| bad(format!("{name}: {e:?}")))?;
         restored += 1;
