@@ -35,6 +35,14 @@ impl Tensor {
         Self::from_vec(self.shape.clone(), values)
     }
 
+    pub fn hadamard(&self, rhs: &Self) -> Result<Self, WeightSetError> {
+        if self.shape != rhs.shape {
+            return Err(WeightSetError::Backend("tensor hadamard shape mismatch".into()));
+        }
+        let values = self.values.iter().zip(&rhs.values).map(|(a, b)| a * b).collect();
+        Self::from_vec(self.shape.clone(), values)
+    }
+
     pub fn relu(&self) -> Self {
         let values = self.values.iter().map(|value| value.max(0.0)).collect();
         Self { shape: self.shape.clone(), values, grad: vec![0.0; self.values.len()] }
@@ -88,10 +96,13 @@ mod tests {
     }
 
     #[test]
-    fn tensor_add_and_relu_are_elementwise() {
+    fn tensor_add_relu_and_hadamard_are_elementwise() {
         let lhs = Tensor::from_vec(vec![3], vec![-1.0, 2.0, -3.0]).unwrap();
         let rhs = Tensor::from_vec(vec![3], vec![2.0, 3.0, 4.0]).unwrap();
-        let result = lhs.add(&rhs).unwrap().relu();
-        assert_eq!(result.values(), &[1.0, 5.0, 1.0]);
+        let added = lhs.add(&rhs).unwrap().relu();
+        assert_eq!(added.values(), &[1.0, 5.0, 1.0]);
+        let hadamard = Tensor::from_vec(vec![3], vec![1.0, 2.0, 3.0]).unwrap()
+            .hadamard(&Tensor::from_vec(vec![2.0, 3.0, 4.0]).unwrap()).unwrap();
+        assert_eq!(hadamard.values(), &[2.0, 6.0, 12.0]);
     }
 }
