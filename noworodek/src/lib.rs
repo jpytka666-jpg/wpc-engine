@@ -2,6 +2,7 @@ pub const VERSION: &str = "0.1.0";
 
 pub mod autograd;
 pub mod backend;
+pub mod code_atoms;
 pub mod device;
 pub mod editor;
 pub mod evaluator;
@@ -30,6 +31,7 @@ pub mod weightset;
 
 pub use autograd::{linear_backward, mse_loss, Gradients, LinearCache, Sgd};
 pub use backend::{MemoryWeightBackend, MountedWeightSet, WeightBackend, WeightSetManager};
+pub use code_atoms::{CodeAtom, CodeAtomId, CodeAtomKind, CodeAtomRegistry, CodeLanguage};
 pub use device::{ComputeDevice, DeviceBackend, DeviceMemoryReport, ResidencyPolicy, ResidencyViolation};
 pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use evaluator::{Evidence, EvidenceEvaluator, EvaluationResult, Evaluator, OutcomeClass};
