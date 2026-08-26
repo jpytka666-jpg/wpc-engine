@@ -63,7 +63,7 @@ fn forward_loss(model:&ExternalTransformer, manager:&WeightSetManager, tokens:&[
 
 fn snapshot_delta(a:&[TensorSnapshot], manager:&WeightSetManager, id:&WeightSetId)->Vec<(String,f32,f32)>{
     let mut out=Vec::new();
-    for s in a { let h=ParameterHandle::new(id.clone(),s.name).unwrap(); let cur=h.read(manager).unwrap().values().to_vec(); let mut l2=0.0; let mut maxd=0.0; for (x,y) in s.values.iter().zip(cur.iter()){let d=*y-*x;l2+=d*d;maxd=maxd.max(d.abs());} out.push((s.name.to_string(),l2.sqrt(),maxd)); }
+    for s in a { let h=ParameterHandle::new(id.clone(),s.name).unwrap(); let cur=h.read(manager).unwrap().values().to_vec(); let mut l2=0.0f32; let mut maxd=0.0f32; for (x,y) in s.values.iter().zip(cur.iter()){let d=*y-*x;l2+=d*d;maxd=maxd.max(d.abs());} out.push((s.name.to_string(),l2.sqrt(),maxd)); }
     out
 }
 
@@ -78,7 +78,6 @@ fn main(){
     let mut trace=Vec::new();
     for step in 0..steps {
         let before=model.forward(&manager,&tokens).unwrap().values().to_vec();
-        // Deterministic, model-level teaching signal: move LM-head column for the target token upward.
         let name="model.lm_head.weight";
         let h=ParameterHandle::new(id.clone(),name).unwrap();
         let mut w=h.read(&manager).unwrap().values().to_vec();
