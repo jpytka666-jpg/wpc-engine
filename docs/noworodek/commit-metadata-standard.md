@@ -1,52 +1,35 @@
 # Noworodek Commit Metadata Standard
 
-Purpose: prevent `Noworodek` work from being confused with WPC/AIONS work when reviewing the Git history.
+All commits on the `Noworodek` branch must be self-identifying.
 
-## Required commit subject
-
-Every commit made for this project on branch `Noworodek` MUST begin with:
+## Subject
 
 ```text
-[NOWORODEK][branch=Noworodek][project=wpc-engine]
+[WPC-ENGINE][NOWORODEK][WORKSTREAM] type(scope): summary
 ```
 
-Then add a conventional action, for example:
+Allowed `type` values: `feat`, `fix`, `test`, `docs`, `chore`, `refactor`, `perf`.
+
+`WORKSTREAM` is uppercase: `FOUNDATION`, `TEACHER`, `GPU`, `TOKENIZER`, `TRANSFORMER`, `TRAINING`, `REPRESENTATION`, `LOWRANK`, `META`, `MATH`, or another explicitly named stream.
+
+## Required body
 
 ```text
-[NOWORODEK][branch=Noworodek][project=wpc-engine] feat: add low-rank weight representation
-```
-
-## Required commit body metadata
-
-The body SHOULD contain:
-
-```text
-Author: M. Szul via GPT-5.6 Luna
-Project: wpc-engine / Noworodek
+Project: wpc-engine
 Branch: Noworodek
-Workstream: <teacher-learning|transformer|weights|wpc-backend|gpu|tokenizer|observatory|docs>
-Purpose: <why this change exists>
-Outcome: <what changed / what was measured>
+Workstream: WORKSTREAM
+Change: <what changed>
 Parent: <parent commit SHA>
-CI: <pending|green|failed|not-run>
-Evidence: <test/log/benchmark path when applicable>
+CI: <pending|green|failed|historical|not-run>
+Evidence: <path or none>
 ```
 
-The exact GitHub commit SHA is the source-of-truth identifier and is recorded after commit creation when reporting status. Do not fabricate metadata that GitHub has not supplied.
+`CI: pending` is valid when the commit is created and must be replaced/documented after verification.
 
-## Separation rule
+## Enforcement
 
-`Noworodek` commits must not be described as generic WPC or AIONS commits. The branch and project prefix must remain visible in the commit subject so history, diffs, and future automation can distinguish this research line immediately.
+`.githooks/commit-msg` rejects commits on `Noworodek` that do not satisfy the subject format or omit the required metadata fields.
 
-## Naming examples
+## Historical rewrite
 
-```text
-[NOWORODEK][branch=Noworodek][project=wpc-engine] feat: externalize transformer parameters
-[NOWORODEK][branch=Noworodek][project=wpc-engine] feat: observe Claude Code tool trajectory
-[NOWORODEK][branch=Noworodek][project=wpc-engine] bench: compare WPC fused GEMV and low-rank
-[NOWORODEK][branch=Noworodek][project=wpc-engine] docs: record measured non-materializing decode result
-```
-
-## Status discipline
-
-A commit is not labelled GREEN merely because it was created successfully. CI/test status must be checked separately. Benchmark claims require a path to the captured evidence.
+On 2026-08-26 the pre-existing Noworodek microcommit chain was condensed into canonical milestone commits. The original pre-rewrite head is preserved by `archive/Noworodek-pre-metadata-rewrite-2026-08-26`. `main` is untouched.

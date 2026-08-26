@@ -1,15 +1,34 @@
 #!/bin/sh
-# Noworodek commit metadata guard.
-# Enable once in a local checkout with:
-#   git config core.hooksPath .githooks
+set -eu
 
 msg_file="$1"
-subject=$(sed -n '1p' "$msg_file")
-prefix='[NOWORODEK][branch=Noworodek][project=wpc-engine]'
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
-case "$subject" in
-  "$prefix"*) exit 0 ;;
-esac
+# Only enforce the project contract on the Noworodek branch.
+[ "$branch" = "Noworodek" ] || exit 0
 
-echo "ERROR: Noworodek commits must start with: $prefix" >&2
-exit 1
+subject="$(sed -n '1p' "$msg_file")"
+pattern='^\[WPC-ENGINE\]\[NOWORODEK\]\[[A-Z0-9._-]+\] (feat|fix|test|docs|chore|refactor|perf)(\([a-z0-9._-]+\))?: .+'
+
+if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+  echo "ERROR: invalid Noworodek commit subject." >&2
+  echo "Expected: [WPC-ENGINE][NOWORODEK][WORKSTREAM] type(scope): summary" >&2
+  exit 1
+fi
+
+for field in Project Branch Workstream Change Parent CI Evidence; do
+  if ! grep -Eq "^${field}: .+" "$msg_file"; then
+    echo "ERROR: missing commit metadata field: ${field}:" >&2
+    exit 1
+  fi
+done
+
+if ! grep -Eq '^Project: wpc-engine$' "$msg_file"; then
+  echo "ERROR: Project must be wpc-engine." >&2
+  exit 1
+fi
+
+if ! grep -Eq '^Branch: Noworodek$' "$msg_file"; then
+  echo "ERROR: Branch must be Noworodek." >&2
+  exit 1
+fi
