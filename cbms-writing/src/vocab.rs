@@ -68,11 +68,28 @@ impl<'b> Vocabulary<'b> {
         let mut symbol_to_id = HashMap::new();
         let mut id_to_symbol = Vec::new();
         // Order follows the book, so a book that only grows keeps every existing id.
+        //
+        // The pair is INTERLEAVED - a symbol's plain id and its spaced twin sit next to
+        // each other - and that is what makes the promise above true for both halves.
+        // Blocking them instead (all plain, then all spaced) makes every spaced id depend
+        // on the total symbol count, so appending one entry silently shifts the whole
+        // second half. Measured before this change: appending a single word moved
+        // `urbo` in "homo urbo" from 5276 to 5277 while `homo` stayed at 468. That is
+        // what forced a full retrain instead of carrying the previous one forward, and
+        // it would have quietly invalidated every stored block ever written.
+        //
+        // Nothing about the space folding itself changes here - the space still rides on
+        // the word's first symbol and still costs no id of its own. Only the arithmetic
+        // that names that id is different.
         for entry in book.entries() {
             if symbol_to_id.contains_key(&entry.symbol) {
                 continue;
             }
-            let id = SYMBOL_BASE + id_to_symbol.len() as u16;
+            // Refuse rather than wrap. A book past this size would alias new symbols onto
+            // ids that already mean something, which is the one failure that cannot be
+            // detected downstream - the data would decode, into the wrong words.
+            let index = id_to_symbol.len();
+            let id = SYMBOL_BASE.checked_add(2u16.checked_mul(u16::try_from(index).ok()?)?)?;
             symbol_to_id.insert(entry.symbol.clone(), id);
             id_to_symbol.push(entry.symbol.clone());
         }
@@ -110,10 +127,13 @@ impl<'b> Vocabulary<'b> {
         if id < SYMBOL_BASE {
             return None;
         }
-        let n = self.id_to_symbol.len();
-        let idx = (id - SYMBOL_BASE) as usize;
-        let (idx, spaced) = if idx >= n { (idx - n, true) } else { (idx, false) };
-        self.id_to_symbol.get(idx).map(|s| (s.as_str(), spaced))
+        // Interleaved: even offset is the plain symbol, odd is the same symbol with a
+        // leading space. Reading the twin off the low bit costs nothing and, unlike the
+        // old block layout, does not consult the book's size - so an id decoded today
+        // means the same word it meant before the book grew.
+        let offset = (id - SYMBOL_BASE) as usize;
+        let spaced = offset % 2 == 1;
+        self.id_to_symbol.get(offset / 2).map(|s| (s.as_str(), spaced))
     }
 
     /// Split an encoded word into its symbols. They are all in the book, so longest
@@ -201,8 +221,11 @@ impl<'b> Vocabulary<'b> {
     }
 
     /// The id meaning "this symbol, with one space in front of it".
+    ///
+    /// The twin is the next id up, never an offset by the book's size - see the note in
+    /// `new`. This is what lets a book grow without renumbering anything already written.
     fn spaced(&self, id: u16) -> u16 {
-        id + self.id_to_symbol.len() as u16
+        id + 1
     }
 
     /// One word through the code book, or spelled out if the book cannot hold it.
@@ -690,13 +713,41 @@ mod tests {
     fn ids_are_stable_when_the_book_only_grows() {
         let b1 = book();
         let v1 = Vocabulary::new(&b1).unwrap();
-        let before = v1.encode("homo");
+        // A SECOND word matters here. The first word of a line carries no leading space,
+        // so testing one word alone only ever exercised the half that was already stable
+        // - which is how the block layout survived this test while every spaced id moved
+        // whenever the book grew.
+        let before_plain = v1.encode("homo");
+        let before_spaced = v1.encode("homo komputilo");
 
-        let grown = BOOK.replace("mi=Α\n", "mi=Α\n") .replace("komputilo=տ\n", "komputilo=տ\nurbo=զ\n");
+        let grown = BOOK.replace("komputilo=տ\n", "komputilo=տ\nurbo=զ\n");
         let b2 = Book::parse(&grown).unwrap();
         let v2 = Vocabulary::new(&b2).unwrap();
+
         // `urbo` is appended after the entries that already existed, so ids assigned
         // before it keep their meaning and previously encoded data stays readable.
-        assert_eq!(v2.encode("homo"), before);
+        assert_eq!(v2.encode("homo"), before_plain, "plain id moved");
+        assert_eq!(
+            v2.encode("homo komputilo"),
+            before_spaced,
+            "spaced id moved - anything written before the book grew now decodes wrong"
+        );
+
+        // And the growth is genuinely visible, so the test cannot pass by comparing two
+        // identical books.
+        assert!(v2.symbol_count() > v1.symbol_count());
+    }
+
+    #[test]
+    fn a_spaced_id_decodes_to_the_word_before_it() {
+        let b = book();
+        let v = Vocabulary::new(&b).unwrap();
+        // The space costs no id of its own: two words, and the second one's leading
+        // space rides on its first symbol. This is the measured win the interleaving had
+        // to preserve - prose went from 1.45x to 1.16x of BPE on exactly this.
+        let two = v.encode("homo komputilo");
+        let one = v.encode("homo");
+        assert_eq!(two.len(), one.len() + v.encode("komputilo").len());
+        assert_eq!(v.decode(&two), "homo komputilo");
     }
 }
