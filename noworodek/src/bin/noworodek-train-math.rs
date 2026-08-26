@@ -25,9 +25,7 @@ fn evaluate_external(manager: &WeightSetManager, trainer: &LinearTrainer, datase
     let weight = trainer.weight.read(manager).expect("read external weight");
     let values = weight.values();
     let weights = [values[0], values[1]];
-    evaluate_math_model(&weights, &dataset.held_out)
-        .expect("valid math model")
-        .mse
+    evaluate_math_model(&weights, &dataset.held_out).mse
 }
 
 fn main() {
@@ -38,21 +36,19 @@ fn main() {
         [("math.linear.weight", vec![0.0, 0.0])],
     );
     let id = manager.mount(Box::new(backend)).expect("mount WeightSet");
-    let trainer = LinearTrainer::new(id, "math.linear.weight", 0.01).expect("create trainer");
+    let trainer = LinearTrainer::new(id, "math.linear.weight", 0.001).expect("create trainer");
 
     let before = evaluate_external(&manager, &trainer, &dataset);
     println!("NOWORODEK MATH TRAIN");
     println!("BEFORE heldout_mse={:.8}", before);
 
-    let input_a = Tensor::from_vec(vec![1, 2], vec![0.0, 0.0]).expect("input tensor");
-    let target_a = Tensor::from_vec(vec![1, 1], vec![0.0]).expect("target tensor");
     let mut last_train_loss = 0.0f32;
 
     // Small supervised family: y = 2a + 3b.
     for step in 0..2000usize {
         let mut epoch_loss = 0.0f32;
         for sample in &dataset.train {
-            let input = Tensor::from_vec(vec![1, 2], vec![sample.a, sample.b]).expect("sample input");
+            let input = Tensor::from_vec(vec![1, 2], vec![sample.input_a, sample.input_b]).expect("sample input");
             let target = Tensor::from_vec(vec![1, 1], vec![sample.target]).expect("sample target");
             epoch_loss += trainer
                 .train_step(&mut manager, &input, &target)
@@ -77,7 +73,7 @@ fn main() {
 
     let after_weight = trainer.weight.read(&manager).expect("read final weight");
     let weights = [after_weight.values()[0], after_weight.values()[1]];
-    let after = evaluate_math_model(&weights, &dataset.held_out).expect("evaluate final model");
+    let after = evaluate_math_model(&weights, &dataset.held_out);
 
     println!(
         "AFTER heldout_mse={:.8} exact={:.4} weights=[{:.6},{:.6}]",
@@ -89,5 +85,4 @@ fn main() {
     println!("RESULT train_loss={:.8}", last_train_loss);
 
     assert!(after.mse < before, "held-out MSE did not improve");
-    let _ = (input_a, target_a);
 }
