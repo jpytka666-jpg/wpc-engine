@@ -1,0 +1,4 @@
+use noworodek::{CodeAtom,CodeAtomKind,CodeAtomRegistry,CodeLanguage};
+#[test]fn atom_id_is_deterministic(){let a=CodeAtom::new(CodeLanguage::Rust,CodeAtomKind::Function,"fn add(a:i32,b:i32)->i32{a+b}","1");let b=CodeAtom::new(CodeLanguage::Rust,CodeAtomKind::Function,"fn add(a:i32,b:i32)->i32{a+b}","1");assert_eq!(a.id(),b.id());}
+#[test]fn duplicate_registration_is_idempotent(){let a=CodeAtom::new(CodeLanguage::Rust,CodeAtomKind::Function,"fn add(){}","1");let mut r=CodeAtomRegistry::new();assert!(r.insert(a.clone()).unwrap());assert!(!r.insert(a).unwrap());assert_eq!(r.len(),1);}
+#[test]fn lineage_links_parent(){let a=CodeAtom::new(CodeLanguage::Rust,CodeAtomKind::Function,"fn div(){}","1");let p=CodeAtom::patch(CodeLanguage::Rust,a.id(),"guard","1");let mut r=CodeAtomRegistry::new();r.insert(a.clone()).unwrap();r.insert(p.clone()).unwrap();assert_eq!(r.parent_of(&p.id()),Some(a.id()));}
