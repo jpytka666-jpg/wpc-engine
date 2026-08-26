@@ -1,0 +1,17 @@
+{
+  "name": "noworodek",
+  "owner": {
+    "name": "AIONS / Noworodek"
+  },
+  "metadata": {
+    "description": "AIONS experimental Claude Code teacher-observation tooling"
+  },
+  "plugins": [
+    {
+      "name": "noworodek-observer",
+      "source": "./plugins/noworodek-observer",
+      "description": "Opt-in local Claude Code observer for the Noworodek learning pipeline.",
+      "strict": true
+    }
+  ]
+}

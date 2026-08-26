@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs SessionStart"
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs UserPromptSubmit"
+      }]
+    }],
+    "PreToolUse": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs PreToolUse"
+      }]
+    }],
+    "PostToolUse": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs PostToolUse"
+      }]
+    }],
+    "PostToolUseFailure": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs PostToolUseFailure"
+      }]
+    }],
+    "SubagentStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs SubagentStart"
+      }]
+    }],
+    "SubagentStop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs SubagentStop"
+      }]
+    }],
+    "PreCompact": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs PreCompact"
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs Stop"
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/record-event.mjs SessionEnd"
+      }]
+    }]
+  }
+}

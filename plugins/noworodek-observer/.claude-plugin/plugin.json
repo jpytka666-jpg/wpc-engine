@@ -1,0 +1,12 @@
+{
+  "name": "noworodek-observer",
+  "displayName": "Noworodek Teacher Observer",
+  "description": "Opt-in local observer for Claude Code sessions. Captures observable tool/session events for the Noworodek learning pipeline; never captures private chain-of-thought and never mutates teacher state.",
+  "version": "0.1.0",
+  "author": {
+    "name": "AIONS / Noworodek"
+  },
+  "license": "MIT",
+  "keywords": ["noworodek", "teacher-observer", "claude-code", "training", "aions"],
+  "hooks": "./hooks/hooks.json"
+}
