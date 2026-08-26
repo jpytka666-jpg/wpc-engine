@@ -5,3 +5,4 @@
 /qwen_wpc_output/
 /qwen_wpc_v1_output/
 /qwen_wpc_v2_output/
+*.bak

@@ -782,6 +782,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rayon",
+ "serde_json",
  "tokenizers 0.23.1",
  "wpc-runtime",
 ]

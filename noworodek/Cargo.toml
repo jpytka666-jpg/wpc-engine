@@ -17,3 +17,5 @@ rayon = "1.8"
 # several files; a second reader here would be a second thing to keep correct.
 wpc-runtime = { path = "../wpc-runtime" }
 anyhow = "1.0"
+# Reading the shard index to enumerate tensor names.
+serde_json = "1.0"
