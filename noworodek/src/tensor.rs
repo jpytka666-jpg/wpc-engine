@@ -102,7 +102,7 @@ mod tests {
         let added = lhs.add(&rhs).unwrap().relu();
         assert_eq!(added.values(), &[1.0, 5.0, 1.0]);
         let hadamard = Tensor::from_vec(vec![3], vec![1.0, 2.0, 3.0]).unwrap()
-            .hadamard(&Tensor::from_vec(vec![2.0, 3.0, 4.0]).unwrap()).unwrap();
+            .hadamard(&Tensor::from_vec(vec![3], vec![2.0, 3.0, 4.0]).unwrap()).unwrap();
         assert_eq!(hadamard.values(), &[2.0, 6.0, 12.0]);
     }
 }
