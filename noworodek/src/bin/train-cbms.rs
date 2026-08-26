@@ -28,7 +28,8 @@
 
 use noworodek::model::transformer_backprop::train_step_ce;
 use noworodek::{
-    ArchitectureId, DType, ExternalTransformer, MemoryWeightBackend, ParameterRegistry,
+    ArchitectureId, DType, ExternalTransformer, MemoryWeightBackend, ParameterHandle,
+    ParameterRegistry, Tensor,
     TinyTransformerConfig, WeightSetId, WeightSetManager, WeightSetVersion,
 };
 use std::process::ExitCode;
@@ -77,6 +78,68 @@ fn loss_at(
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// Weights on disk: name length, name, value count, values. Nothing clever - a format a
+/// person can read with a hex editor is a format that can be debugged at three in the
+/// morning, and a daemon that runs overnight will eventually need that.
+///
+/// Without this the trainer learns in memory and exits, so every nightly cycle would
+/// start from nothing and there would be no earlier state to roll back to.
+fn save_weights(path: &str, names: &[String], mgr: &WeightSetManager, set: &WeightSetId) -> std::io::Result<usize> {
+    use std::io::Write;
+    let mut out = Vec::new();
+    let mut written = 0usize;
+    for name in names {
+        let Ok(handle) = ParameterHandle::new(set.clone(), name) else { continue };
+        let Ok(tensor) = handle.read(mgr) else { continue };
+        let values = tensor.values();
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for v in values {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        written += 1;
+    }
+    std::fs::File::create(path)?.write_all(&out)?;
+    Ok(written)
+}
+
+fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> std::io::Result<usize> {
+    let bytes = std::fs::read(path)?;
+    let mut at = 0usize;
+    let mut restored = 0usize;
+    while at + 4 <= bytes.len() {
+        let n = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        at += 4;
+        if at + n > bytes.len() { break }
+        let name = String::from_utf8_lossy(&bytes[at..at + n]).to_string();
+        at += n;
+        if at + 8 > bytes.len() { break }
+        let count = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+        at += 8;
+        if at + count * 4 > bytes.len() { break }
+        let values: Vec<f32> = bytes[at..at + count * 4]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        at += count * 4;
+        // Shape comes from the tensor already mounted, so the file carries values only.
+        // A shape saved twice is a shape that can disagree with itself.
+        if let Ok(handle) = ParameterHandle::new(set.clone(), &name) {
+            if let Ok(current) = handle.read(mgr) {
+                if current.values().len() == values.len() {
+                    if let Ok(t) = Tensor::from_vec(current.shape().to_vec(), values) {
+                        if handle.write(mgr, &t).is_ok() {
+                            restored += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(restored)
 }
 
 fn main() -> ExitCode {
@@ -256,10 +319,48 @@ fn main() -> ExitCode {
     println!("odlozone PRZED : {:.4}", held_loss(&mgr));
     println!();
 
+    // Continue from an earlier cycle if asked. Without this every nightly run would start
+    // from nothing, and there would be no earlier state to return to.
+    if let Some(from) = arg(&args, "--load") {
+        match load_weights(&from, &mut mgr, &model.weight_set) {
+            Ok(n) => println!("wczytano       : {n} tensorow z {from}"),
+            Err(e) => {
+                eprintln!("nie moge wczytac {from}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        println!("odlozone po wczytaniu: {:.4}", held_loss(&mgr));
+        println!();
+    }
+
     let start = std::time::Instant::now();
     let mut window = 0.0f32;
     let mut window_n = 0usize;
     let report_every = (steps / 20).max(1);
+
+    // Stop when the held-out figure stops improving. Measured on this corpus, held-out
+    // flattened around step 5000 while training loss kept falling - that gap is the model
+    // memorising, and every step past it costs time and makes the result worse, not
+    // better. `--patience 0` disables it for a deliberate long run.
+    let patience = num("--patience", 4);
+    // Start from what this cycle was HANDED, not from nothing. Beginning at infinity let
+    // the first improvement inside a cycle count as "best" even when it was worse than
+    // the state loaded from the previous cycle - so each night handed on something a
+    // little worse while every individual run looked like it had improved. Measured:
+    // cycle 2 loaded 5.8937 and saved 6.1721 before this line existed.
+    let mut best_held = held_loss(&mgr);
+    // The state handed in counts as the best so far. Without this a cycle that never
+    // improved had nothing to restore and saved whatever the last step produced -
+    // measured: cycle 3 loaded 5.1904 and would have saved 5.9704.
+    let mut since_best = 0usize;
+    let mut stopped_early = None;
+    let mut best_weights: Vec<(String, Vec<f32>)> = registry
+        .iter()
+        .filter_map(|p| {
+            let h = ParameterHandle::new(model.weight_set.clone(), &p.name).ok()?;
+            Some((p.name.clone(), h.read(&mgr).ok()?.values().to_vec()))
+        })
+        .collect();
 
     for step in 1..=steps {
         let at = rng.below(train.len() - seq - 1);
@@ -277,18 +378,76 @@ fn main() -> ExitCode {
         }
         if step % report_every == 0 {
             let tr = window / window_n.max(1) as f32;
+            let hl = held_loss(&mgr);
             println!(
-                "krok {step:>6} | uczace {tr:>8.4} | odlozone {:>8.4} | {:>6.0} ms/krok",
-                held_loss(&mgr),
+                "krok {step:>6} | uczace {tr:>8.4} | odlozone {hl:>8.4} | {:>6.0} ms/krok",
                 start.elapsed().as_millis() as f32 / step as f32
             );
             window = 0.0;
             window_n = 0;
+
+            // A real improvement, not noise in the third decimal.
+            if hl < best_held - 0.01 {
+                best_held = hl;
+                since_best = 0;
+                // Keep the weights that earned this figure. Early stopping without this
+                // saves whatever the last step happened to produce, which is by
+                // definition worse than the best - and over many nightly cycles that
+                // drifts steadily downhill while every individual run looks fine.
+                best_weights = registry
+                    .iter()
+                    .filter_map(|p| {
+                        let h = ParameterHandle::new(model.weight_set.clone(), &p.name).ok()?;
+                        Some((p.name.clone(), h.read(&mgr).ok()?.values().to_vec()))
+                    })
+                    .collect();
+            } else {
+                since_best += 1;
+                if patience > 0 && since_best >= patience {
+                    stopped_early = Some(step);
+                    println!();
+                    println!("STOP: odlozone nie poprawilo sie przez {patience} pomiarow.");
+                    println!("      Najlepsze bylo {best_held:.4}. Dalsze kroki tylko");
+                    println!("      pogleboja zapamietywanie - to nie jest awaria, to koniec nauki");
+                    println!("      z TEGO materialu przy TEJ wielkosci modelu.");
+                    break;
+                }
+            }
         }
     }
 
-    let final_held = held_loss(&mgr);
+    let mut final_held = held_loss(&mgr);
+
+    if let Some(to) = arg(&args, "--save") {
+        // Put the best state back before saving, so a cycle never hands its successor
+        // something worse than what it actually achieved.
+        if !best_weights.is_empty() {
+            let mut restored = 0usize;
+            for (name, values) in &best_weights {
+                if let Ok(h) = ParameterHandle::new(model.weight_set.clone(), name) {
+                    if let Ok(cur) = h.read(&mgr) {
+                        if let Ok(t) = Tensor::from_vec(cur.shape().to_vec(), values.clone()) {
+                            if h.write(&mut mgr, &t).is_ok() { restored += 1; }
+                        }
+                    }
+                }
+            }
+            println!("przywrocono    : najlepszy stan ({restored} tensorow, odlozone {best_held:.4})");
+        }
+        // Report what was actually saved. Reading the figure before the restore made the
+        // summary understate its own result - it printed the last step, not the best.
+        final_held = held_loss(&mgr);
+        let names: Vec<String> = registry.iter().map(|p| p.name.clone()).collect();
+        match save_weights(&to, &names, &mgr, &model.weight_set) {
+            Ok(n) => println!("zapisano       : {n} tensorow do {to}"),
+            Err(e) => eprintln!("nie moge zapisac {to}: {e}"),
+        }
+    }
+
     println!();
+    if let Some(at) = stopped_early {
+        println!("zatrzymany na kroku {at} z {steps} - odlozone stanelo");
+    }
     println!("PROG LOSOWY    : {chance:.4}");
     println!("odlozone PO    : {final_held:.4}");
     println!("czas calkowity : {:.1} s", start.elapsed().as_secs_f32());
