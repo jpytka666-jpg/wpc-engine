@@ -30,7 +30,7 @@ impl std::fmt::Display for TokenizerError {
         match self {
             Self::Load(message) => write!(f, "tokenizer load failed: {message}"),
             Self::VocabMismatch { expected, actual } => {
-                write!(f, "tokenizer vocab mismatch: expected {expected}, got {actual}")
+                write!(f, "tokenizer vocab mismatch: expected at most {expected}, got {actual}")
             }
         }
     }
@@ -45,10 +45,11 @@ pub struct Qwen3CoderTokenizer {
 impl Qwen3CoderTokenizer {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, TokenizerError> {
         let inner = Tokenizer::from_file(path).map_err(|error| TokenizerError::Load(error.to_string()))?;
-        // Qwen's model config declares 151,936 tokens including added tokens;
-        // tokenizers' `false` mode reports only the 151,643 base vocabulary.
+        // Qwen's model config declares 151,936 embedding rows, while the
+        // tokenizer JSON may contain fewer lexical/added-token entries.
+        // Token IDs only need to fit inside the model vocabulary.
         let actual = inner.get_vocab_size(true);
-        if actual != VOCAB_SIZE as usize {
+        if actual > VOCAB_SIZE as usize {
             return Err(TokenizerError::VocabMismatch { expected: VOCAB_SIZE, actual });
         }
         Ok(Self { inner })
@@ -75,6 +76,8 @@ impl Qwen3CoderTokenizer {
     pub fn base_vocab_size(&self) -> usize {
         self.inner.get_vocab_size(false)
     }
+
+    pub fn model_vocab_size(&self) -> usize { VOCAB_SIZE as usize }
 
     pub fn model_id(&self) -> &'static str { MODEL_ID }
     pub fn revision(&self) -> &'static str { MODEL_REVISION }
@@ -108,6 +111,12 @@ mod tests {
         assert_eq!(PAD_ID, 151_643);
         assert_eq!(IM_START_ID, 151_644);
         assert_eq!(IM_END_ID, 151_645);
+    }
+
+    #[test]
+    fn configured_model_vocab_can_exceed_tokenizer_entry_count() {
+        assert!(151_669usize <= VOCAB_SIZE as usize);
+        assert_eq!(151_643usize + 26, 151_669usize);
     }
 
     #[test]
