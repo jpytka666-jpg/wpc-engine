@@ -5,7 +5,7 @@ Noworodek v1 uses the **Qwen/Qwen3-Coder-30B-A3B-Instruct** tokenizer as its tok
 ## Pin
 
 - Model: `Qwen/Qwen3-Coder-30B-A3B-Instruct`
-- Revision: `b2cff646eb4bb1d68355c01b18ae02e7cf42d120`
+- Revision: `573fa3901e5799703b1e60825b0ec024a4c0f1d3`
 - Vocabulary size: `151936`
 - EOS: `<|im_end|>` = `151645`
 - PAD: `<|endoftext|>` = `151643`
@@ -23,7 +23,7 @@ Example preparation:
 ```text
 huggingface-cli download Qwen/Qwen3-Coder-30B-A3B-Instruct \\
   tokenizer.json tokenizer_config.json \\
-  --revision b2cff646eb4bb1d68355c01b18ae02e7cf42d120 \\
+  --revision 573fa3901e5799703b1e60825b0ec024a4c0f1d3 \\
   --local-dir ./artifacts/tokenizer/qwen3-coder-30b
 ```
 
