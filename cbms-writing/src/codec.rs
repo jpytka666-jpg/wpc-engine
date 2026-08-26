@@ -97,10 +97,12 @@ impl<'b> Codec<'b> {
     }
 
     /// Is this symbol a grammatical mark rather than a concept?
+    ///
+    /// By its section, not by its spelling. A corpus-built book holds `-` as a
+    /// punctuation run, and reading that as a verb ending turned every hyphen in the
+    /// text into grammar.
     fn is_mark(&self, sym: &str) -> bool {
-        self.book
-            .root_for(sym)
-            .is_some_and(|root| root.starts_with('-'))
+        self.book.section_of_symbol(sym) == Some(crate::book::Section::Extension)
     }
 
     /// Fold a word onto the spelling the book uses.
@@ -285,7 +287,7 @@ impl<'b> Codec<'b> {
             }
             let Some((sym, len)) = self.symbol_at(&chars, pos) else { break };
             let Some(tag) = self.book.root_for(&sym) else { break };
-            if !tag.starts_with('-') {
+            if !self.is_mark(&sym) {
                 break; // another concept: not part of this word
             }
             match tag {

@@ -141,10 +141,11 @@ impl Book {
                 section = Section::Extension;
                 continue;
             }
-            let Some((root, value)) = line.split_once('=') else {
+            let Some((raw_root, value)) = split_on_separator(line) else {
                 continue;
             };
-            let root = root.trim();
+            let root = unescape_root(raw_root.trim());
+            let root = root.as_str();
             let value = value.trim();
             if root.is_empty() || value.is_empty() {
                 return Err(BookError::Empty { line: i + 1 });
@@ -194,6 +195,16 @@ impl Book {
         self.by_symbol.get(symbol).map(|&i| self.entries[i].root.as_str())
     }
 
+    /// Which half of the book a SYMBOL belongs to.
+    ///
+    /// Grammatical marks were once recognised by their root starting with `-`, which
+    /// held until a corpus-built book gained `-` itself as a punctuation run and every
+    /// hyphen in the text started being read as a verb ending. The section is recorded;
+    /// asking it is not a guess.
+    pub fn section_of_symbol(&self, symbol: &str) -> Option<Section> {
+        self.by_symbol.get(symbol).map(|&i| self.entries[i].section)
+    }
+
     pub fn section_of(&self, root: &str) -> Option<Section> {
         self.by_root.get(root).map(|&i| self.entries[i].section)
     }
@@ -237,7 +248,7 @@ impl Book {
         let mut out = String::from(LEXICAL_HEADER);
         out.push_str("\n\n");
         for e in self.entries.iter().filter(|e| e.section == Section::Lexical) {
-            out.push_str(&e.root);
+            out.push_str(&escape_root(&e.root));
             out.push('=');
             out.push_str(&e.symbol);
             out.push('\n');
@@ -245,7 +256,7 @@ impl Book {
         out.push_str("\n\n");
         out.push_str("CBMS-Eo-v1.1-EXT\n");
         for e in self.entries.iter().filter(|e| e.section == Section::Extension) {
-            out.push_str(&e.root);
+            out.push_str(&escape_root(&e.root));
             out.push('=');
             // The extension section is conventionally written as codepoints, because
             // several of its marks are invisible or easy to mistake for each other.
@@ -256,6 +267,54 @@ impl Book {
         }
         out
     }
+}
+
+/// Split a line at its separator, honouring escapes.
+///
+/// A corpus-built book holds punctuation runs as roots, and one of them can be `=` or
+/// `==` itself. Splitting on the first `=` turns that into an empty root and the book
+/// refuses to load - which is how this was found.
+fn split_on_separator(line: &str) -> Option<(&str, &str)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2, // whatever follows is literal, separator included
+            b'=' => return Some((&line[..i], &line[i + 1..])),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Undo `escape_root`.
+fn unescape_root(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Escape a root so the line format survives it. Only the separator and the escape
+/// character itself need it; everything else is written as it is, so a book stays
+/// readable by eye.
+pub(crate) fn escape_root(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || c == '=' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `U+25CB` or a literal character. The existing book uses the first form in the
@@ -335,6 +394,24 @@ mod tests {
         let dup = "CODEBOOK_CBMS_ES\nhomo=Ա\nhomo=Ա\n";
         let book = Book::parse(dup).expect("identical duplicate is harmless");
         assert_eq!(book.len(), 1);
+    }
+
+    #[test]
+    fn a_root_that_is_the_separator_itself_survives_the_file_format() {
+        // Found by building a book from a corpus: punctuation runs become roots, and one
+        // of them is `=`. Splitting on the first `=` gave an empty root and the whole
+        // book refused to load.
+        let mut b = Book::parse("CODEBOOK_CBMS_ES\nhomo=Ա\n").unwrap();
+        b.insert(Entry { root: "=".into(), symbol: "ᐁ".into(), section: Section::Lexical });
+        b.insert(Entry { root: "==".into(), symbol: "ᐂ".into(), section: Section::Lexical });
+        b.insert(Entry { root: "a\\b".into(), symbol: "ᐃ".into(), section: Section::Lexical });
+        b.finish();
+
+        let again = Book::parse(&b.to_text()).expect("escaped book re-parses");
+        assert_eq!(again.symbol_for("="), Some("ᐁ"));
+        assert_eq!(again.symbol_for("=="), Some("ᐂ"));
+        assert_eq!(again.symbol_for("a\\b"), Some("ᐃ"));
+        assert_eq!(again.symbol_for("homo"), Some("Ա"));
     }
 
     #[test]

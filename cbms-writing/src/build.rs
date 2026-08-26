@@ -90,14 +90,26 @@ pub fn split_affixes(token: &str) -> (&str, &str, &str) {
 /// `Status`, `STATUS`. A mixed shape like `AarSvc_6e9d9` is kept verbatim, because the
 /// encoder cannot fold it either and a lowercase entry would be one it can never reach.
 pub fn words_of(text: &str) -> Vec<String> {
-    text.split(|c: char| c.is_whitespace())
-        .map(|w| split_affixes(w).1)
-        .filter(|w| !w.is_empty())
-        .map(|w| match crate::vocab::split_case(w) {
-            Some((_, folded)) => folded,
-            None => w.to_string(),
-        })
-        .collect()
+    let mut out = Vec::new();
+    for token in text.split(|c: char| c.is_whitespace()) {
+        let (lead, core, tail) = split_affixes(token);
+        // Punctuation runs are counted too, and as whole runs. The encoder spells an
+        // unlisted run out one id per byte, which is where BPE gains: it carries `", "`
+        // and `":"` as single tokens. A run listed here becomes one id as well.
+        if !lead.is_empty() {
+            out.push(lead.to_string());
+        }
+        if !core.is_empty() {
+            out.push(match crate::vocab::split_case(core) {
+                Some((_, folded)) => folded,
+                None => core.to_string(),
+            });
+        }
+        if !tail.is_empty() {
+            out.push(tail.to_string());
+        }
+    }
+    out
 }
 
 /// Count words and note how many occurrences the base book already handles.
@@ -182,7 +194,9 @@ pub fn extend(book: &Book, texts: &[String], max_new: usize, min_count: usize) -
         }
         match pool.next() {
             Some(symbol) => {
-                added_lines.push(format!("{}={}", wc.word, symbol));
+                // Escaped, because a corpus-built book holds punctuation runs as roots
+                // and one of them can be `=` itself.
+                added_lines.push(format!("{}={}", crate::book::escape_root(&wc.word), symbol));
                 added += 1;
                 newly_covered += wc.count;
             }
@@ -295,6 +309,11 @@ mod tests {
 
     #[test]
     fn words_are_split_the_same_way_the_encoder_will_see_them() {
-        assert_eq!(words_of("Status: chunk, commit."), vec!["status", "chunk", "commit"]);
+        // Punctuation runs are counted alongside words, so the book can hold `", "` as
+        // one entry and the encoder spend one id where it otherwise spends two.
+        assert_eq!(
+            words_of("Status: chunk, commit."),
+            vec!["status", ":", "chunk", ",", "commit", "."]
+        );
     }
 }

@@ -273,15 +273,60 @@ impl<'b> Vocabulary<'b> {
         if text.is_empty() {
             return;
         }
-        // Byte ids are a fixed 256 and have no spaced twin, so an unspent space here
-        // still costs an id of its own. Only words absorb it.
-        if *pending {
-            out.push(ID_SPACE);
-            *pending = false;
+        let mut rest = text;
+        let mut first = true;
+        while !rest.is_empty() {
+            // Longest listed run first. A book that holds `", "` spends one id where
+            // spelling it out spends two, which is the whole of BPE's advantage on
+            // punctuation and costs nothing to take.
+            let mut matched = 0usize;
+            let mut id = None;
+            for end in (1..=rest.chars().count().min(8)).rev() {
+                let cut: usize = rest.char_indices().nth(end).map_or(rest.len(), |(i, _)| i);
+                if let Some(sym) = self.book.symbol_for(&rest[..cut]) {
+                    // Lexical entries only. The grammar section holds `-u`, `-a` and
+                    // friends, and matching those against literal text turned
+                    // `Warm-up` into `Warmup`: the hyphen and `u` were read as an
+                    // imperative ending and folded into the word before it.
+                    if self.book.section_of_symbol(sym) == Some(crate::book::Section::Extension) {
+                        continue;
+                    }
+                    if let Some(found) = self.id_of_symbol(sym) {
+                        matched = cut;
+                        id = Some(found);
+                        break;
+                    }
+                }
+            }
+            match id {
+                Some(id) => {
+                    let id = if first && *pending {
+                        *pending = false;
+                        self.spaced(id)
+                    } else {
+                        id
+                    };
+                    out.push(id);
+                    rest = &rest[matched..];
+                }
+                None => {
+                    // Byte ids are a fixed 256 with no spaced twin, so an unspent space
+                    // here costs an id of its own.
+                    if first && *pending {
+                        out.push(ID_SPACE);
+                        *pending = false;
+                    }
+                    let ch = rest.chars().next().expect("rest is not empty");
+                    let cut = ch.len_utf8();
+                    for &b in rest[..cut].as_bytes() {
+                        out.push(BYTE_BASE + b as u16);
+                    }
+                    rest = &rest[cut..];
+                }
+            }
+            first = false;
         }
-        for &b in text.as_bytes() {
-            out.push(BYTE_BASE + b as u16);
-        }
+
     }
 
     /// Ids back to text. Exact for anything `encode` produced.
@@ -347,6 +392,15 @@ impl<'b> Vocabulary<'b> {
                             out.push(' ');
                         } else {
                             flush_bytes!();
+                            // Only a grammatical mark continues the word in progress.
+                            // Any other symbol starts its own - without this, `homo,`
+                            // encoded as two symbols would be read as one word and the
+                            // comma would be dropped on the floor.
+                            let is_mark = self.book.section_of_symbol(sym)
+                                == Some(crate::book::Section::Extension);
+                            if !is_mark {
+                                flush_word!();
+                            }
                         }
                         word.push_str(sym);
                     } else {
