@@ -69,7 +69,7 @@ fn main(){
     let mut seed=0xA10A5EEDu32; let mut scores=Vec::new();
     for (name,shape) in tensors {
         let handle=ParameterHandle::new(id.clone(),name).unwrap(); let original=handle.read(&manager).unwrap().values().to_vec();
-        let mut sum=0.0; let mut sumsq=0.0; let mut maxd=0.0;
+        let mut sum: f32=0.0; let mut sumsq: f32=0.0; let mut maxd: f32=0.0;
         for _ in 0..probes {
             let direction:Vec<f32>=(0..original.len()).map(|_|xs(&mut seed)).collect();
             let edited:Vec<f32>=original.iter().zip(direction.iter()).map(|(w,r)| *w + delta*r).collect();
