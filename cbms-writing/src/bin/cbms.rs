@@ -257,6 +257,57 @@ fn main() -> ExitCode {
             println!("the packing is spelling it out byte by byte. Fix the book, not the packer.");
             ExitCode::SUCCESS
         }
+        "build" => {
+            // <book> build <corpus> <out> [max_new] [min_count]
+            if args.len() < 4 {
+                eprintln!("cbms <book> build <corpus> <out-book> [max_new=2000] [min_count=3]");
+                return ExitCode::from(2);
+            }
+            let Ok(corpus) = std::fs::read_to_string(&args[2]) else {
+                eprintln!("cannot read corpus {}", args[2]);
+                return ExitCode::FAILURE;
+            };
+            let max_new: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(2000);
+            let min_count: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(3);
+
+            let texts = vec![corpus];
+            let (ranked, stats) = cbms_writing::survey(&book, &texts);
+            println!("corpus         : {} words, {} distinct",
+                     stats.total_words, stats.distinct_words);
+            println!("coverage now   : {:.2}%", 100.0 * stats.coverage());
+            println!();
+            println!("most frequent words the book cannot encode:");
+            let codec_ref = &codec;
+            for wc in ranked.iter().filter(|w| codec_ref.encode_word(&w.word).is_none()).take(15) {
+                println!("  {:>6}x  {}", wc.count, wc.word);
+            }
+            println!();
+
+            let report = cbms_writing::extend(&book, &texts, max_new, min_count);
+            println!("minted         : {} new entries", report.added);
+            println!("already known  : {} skipped", report.skipped_already_known);
+            if report.ran_out_of_symbols > 0 {
+                println!("NO SYMBOLS LEFT: {} words went unminted - widen MINT_RANGES",
+                         report.ran_out_of_symbols);
+            }
+            println!("coverage before: {:.2}%", 100.0 * report.coverage_before);
+            println!("coverage after : {:.2}%", 100.0 * report.coverage_after);
+
+            // A book that will not load is not a book. Check before writing it out.
+            match cbms_writing::Book::parse(&report.book_text) {
+                Ok(b) => println!("\nbuilt book     : {} entries, loads clean", b.len()),
+                Err(e) => {
+                    eprintln!("\nbuilt book will not load: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            if let Err(e) = std::fs::write(&args[3], &report.book_text) {
+                eprintln!("cannot write {}: {e}", args[3]);
+                return ExitCode::FAILURE;
+            }
+            println!("written        : {}", args[3]);
+            ExitCode::SUCCESS
+        }
         _ => usage(),
     }
 }

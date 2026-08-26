@@ -147,7 +147,13 @@ impl<'b> Vocabulary<'b> {
                 }
                 // Case is recorded as a mark and stripped before lookup, so `Homo` and
                 // `homo` reach the same entry without either losing its spelling.
-                let (case, folded) = split_case(word);
+                // A word whose case NO mark can describe - `C:\Users\User\CLAUDE.md` -
+                // must not go through the codec at all, because canonicalisation
+                // lowercases and nothing would put the capitals back.
+                let Some((case, folded)) = split_case(word) else {
+                    self.push_literal(&mut out, word);
+                    continue;
+                };
                 match self.codec.encode_word(&folded).and_then(|e| self.symbols_of(&e)) {
                     Some(syms) => {
                         if let Some(mark) = case {
@@ -302,37 +308,41 @@ impl<'b> Vocabulary<'b> {
     }
 }
 
-/// Split a word into a case mark and its folded form. Only the two shapes that carry
-/// no information beyond case are marked; anything mixed keeps its own spelling and
-/// takes the byte fallback, because a mark cannot describe it.
-fn split_case(word: &str) -> (Option<u16>, String) {
-    let has_upper = word.chars().any(|c| c.is_uppercase());
-    if !has_upper {
-        return (None, word.to_string());
+/// Split a word into a case mark and its folded form.
+///
+/// Returns `None` when no mark can describe the word's case - mixed shapes like
+/// `C:\Users\User\CLAUDE.md` or `iPhone`. Those must take the byte fallback: the codec
+/// lowercases before lookup, and with nothing recording where the capitals were, the
+/// text would come back changed. Losing a byte saving is cheap; losing the text is not.
+fn split_case(word: &str) -> Option<(Option<u16>, String)> {
+    if !word.chars().any(|c| c.is_uppercase()) {
+        return Some((None, word.to_string()));
     }
     let lower = word.to_lowercase();
-    if word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) && word.chars().any(|c| c.is_alphabetic()) {
-        // Round trip must hold: `to_uppercase` of the folded form has to give it back.
-        if lower.to_uppercase() == word {
-            return (Some(ID_UPPER), lower);
-        }
+
+    // Every letter capital, and folding back up returns exactly what came in.
+    if word.chars().any(|c| c.is_alphabetic())
+        && word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase())
+        && lower.to_uppercase() == word
+    {
+        return Some((Some(ID_UPPER), lower));
     }
+
+    // First letter capital, nothing else, and capitalising the folded form returns it.
     let mut chars = word.chars();
     if let Some(first) = chars.next() {
         if first.is_uppercase() && chars.all(|c| !c.is_uppercase()) {
-            let capitalised = {
-                let mut c = lower.chars();
-                match c.next() {
-                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    None => String::new(),
-                }
+            let mut c = lower.chars();
+            let capitalised = match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
             };
             if capitalised == word {
-                return (Some(ID_CAPITAL), lower);
+                return Some((Some(ID_CAPITAL), lower));
             }
         }
     }
-    (None, word.to_string())
+    None
 }
 
 #[cfg(test)]
@@ -430,6 +440,21 @@ mod tests {
         assert_eq!(v.encode("HOMO").len(), 2);
         assert_eq!(v.decode(&v.encode("Homo")), "Homo");
         assert_eq!(v.decode(&v.encode("HOMO")), "HOMO");
+    }
+
+    #[test]
+    fn mixed_case_takes_the_byte_fallback_rather_than_losing_its_capitals() {
+        // Found on the real corpus with a corpus-built book: a whole file path had been
+        // minted as one entry, matched, and came back lowercased. No mark describes a
+        // mixed shape, so it must not reach canonicalisation at all.
+        let pathish = ["c:", "users", "user", "claude.md"].join("\\");
+        let mixed = ["C:", "Users", "User", "CLAUDE.md"].join("\\");
+        let b = Book::parse(&BOOK.replace("homo=Ա\n", &format!("homo=Ա\n{pathish}=Ք\n"))).unwrap();
+        let v = Vocabulary::new(&b).unwrap();
+        assert_eq!(v.decode(&v.encode(&pathish)), pathish, "lowercase form still encodes");
+        for word in [mixed.as_str(), "iPhone", "McDonald", "aBc"] {
+            assert_eq!(v.decode(&v.encode(word)), word, "{word} must survive unchanged");
+        }
     }
 
     #[test]

@@ -43,8 +43,11 @@
 //! vocabulary.
 
 pub mod book;
+pub mod build;
 pub mod codec;
 pub mod vocab;
+
+pub use build::{extend, survey, BuildReport, CorpusStats, WordCount};
 
 pub use book::{Book, BookError, Collision, Entry, Section};
 pub use codec::{Codec, Coverage};
