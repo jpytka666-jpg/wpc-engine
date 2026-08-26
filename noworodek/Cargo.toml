@@ -9,3 +9,11 @@ path = "src/lib.rs"
 
 [dependencies]
 tokenizers = "0.23.1"
+# Already used across this workspace by wpc-runtime. The decomposer multiplies matrices
+# of ten million elements; single-threaded that is minutes per rank, which would make a
+# rank sweep impractical rather than merely slow.
+rayon = "1.8"
+# Reading real model weights. wpc-runtime already knows how to open a model split across
+# several files; a second reader here would be a second thing to keep correct.
+wpc-runtime = { path = "../wpc-runtime" }
+anyhow = "1.0"

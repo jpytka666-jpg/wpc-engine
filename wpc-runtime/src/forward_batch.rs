@@ -1,71 +1,77 @@
 use anyhow::Result;
 use matrixmultiply;
-use std::ffi::{c_int, c_void};
-use std::ptr::null_mut;
 
-const MADV_HUGEPAGE: c_int = 14;
-
-extern "C" {
-    fn madvise(addr: *mut c_void, length: usize, advice: c_int) -> c_int;
-    fn mmap(addr: *mut c_void, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut c_void;
-    fn munmap(addr: *mut c_void, length: usize) -> i32;
+/// Ask the kernel to back this region with huge pages.
+///
+/// Only Linux understands the request, and even there it is a hint the kernel may
+/// decline. It is worth making because the scratch areas here run to tens of millions of
+/// floats, and fewer, larger pages mean fewer address translations during a forward pass.
+/// Failure is ignored on purpose: a declined hint costs nothing and there is no sensible
+/// way for a caller to act on it.
+#[cfg(target_os = "linux")]
+fn hint_huge_pages(data: &mut [f32]) {
+    const MADV_HUGEPAGE: std::ffi::c_int = 14;
+    extern "C" {
+        fn madvise(
+            addr: *mut std::ffi::c_void,
+            length: usize,
+            advice: std::ffi::c_int,
+        ) -> std::ffi::c_int;
+    }
+    if data.is_empty() {
+        return;
+    }
+    let bytes = std::mem::size_of_val(data);
+    unsafe {
+        let _ = madvise(data.as_mut_ptr() as *mut std::ffi::c_void, bytes, MADV_HUGEPAGE);
+    }
 }
 
-const PROT_READ: i32 = libc::PROT_READ;
-const PROT_WRITE: i32 = libc::PROT_WRITE;
-const MAP_PRIVATE: i32 = libc::MAP_PRIVATE;
-const MAP_ANONYMOUS: i32 = libc::MAP_ANONYMOUS;
+#[cfg(not(target_os = "linux"))]
+fn hint_huge_pages(_data: &mut [f32]) {}
 
+/// A growable scratch buffer of f32.
+///
+/// This used to call mmap and munmap directly, which meant the engine could only be built
+/// on Unix: `libc::MAP_PRIVATE` and its neighbours do not exist elsewhere, so the crate
+/// failed to compile on Windows and took every crate depending on it down with it.
+///
+/// The allocation is now an ordinary Vec, which is portable and, at these sizes, ends up
+/// served by the same kernel machinery regardless: an allocator hands out tens of
+/// megabytes by mapping pages, not by carving up a heap. The huge-page hint the original
+/// was really after is kept, applied to the Vec's own memory.
+///
+/// The name stays. It is used throughout this file, and renaming it would be a different
+/// kind of change mixed into a port.
 pub struct MmapF32 {
-    ptr: *mut f32,
-    len: usize,
+    data: Vec<f32>,
     used: usize,
-    bytes: usize,
 }
 
 impl MmapF32 {
     pub fn new(num_elems: usize) -> Result<Self> {
-        let alloc_elems = num_elems.max(1);
-        let bytes = alloc_elems
+        num_elems
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| anyhow::anyhow!("size overflow"))?;
-
-        unsafe {
-            let p = mmap(
-                null_mut(),
-                bytes,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            );
-            if p == libc::MAP_FAILED {
-                anyhow::bail!("mmap failed");
-            }
-            let _ = madvise(p, bytes, MADV_HUGEPAGE);
-            Ok(Self {
-                ptr: p as *mut f32,
-                len: num_elems,
-                used: 0,
-                bytes,
-            })
-        }
+        let mut data = vec![0.0f32; num_elems];
+        hint_huge_pages(&mut data);
+        Ok(Self { data, used: 0 })
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+        &mut self.data
     }
 
     pub fn as_slice(&self) -> &[f32] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        &self.data
     }
 
     pub fn capacity(&self) -> usize {
-        self.len
+        self.data.len()
     }
 
     pub fn mark_used(&mut self, used: usize) -> Result<()> {
-        if used > self.len {
+        if used > self.data.len() {
             anyhow::bail!("used exceeds capacity");
         }
         self.used = used;
@@ -73,39 +79,22 @@ impl MmapF32 {
     }
 
     pub fn ensure_capacity(&mut self, need: usize) -> Result<()> {
-        if need <= self.len {
+        if need <= self.data.len() {
             return Ok(());
         }
-
         let new_len = need
             .checked_next_power_of_two()
             .ok_or_else(|| anyhow::anyhow!("capacity overflow"))?;
-        let old_used = self.used;
-        let new_map = MmapF32::new(new_len)?;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.ptr, new_map.ptr, old_used);
-            let old_ptr = self.ptr as *mut c_void;
-            let old_bytes = self.bytes;
-            self.ptr = new_map.ptr;
-            self.len = new_map.len;
-            self.bytes = new_map.bytes;
-            self.used = old_used;
-            let _ = munmap(old_ptr, old_bytes);
-        }
-
-        std::mem::forget(new_map);
+        // resize keeps everything already written, which is a superset of the `used`
+        // prefix the hand-rolled version copied across by hand.
+        self.data.resize(new_len, 0.0);
+        hint_huge_pages(&mut self.data);
         Ok(())
     }
 }
 
-impl Drop for MmapF32 {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = munmap(self.ptr as *mut c_void, self.bytes);
-        }
-    }
-}
+// No Drop impl: the Vec frees its own memory. The hand-written one called munmap on a
+// pointer this struct no longer owns.
 
 pub struct KvLayer {
     pub dim: usize,
@@ -144,17 +133,14 @@ impl KvLayer {
         let new_cap = new_rows
             .checked_mul(self.dim)
             .ok_or_else(|| anyhow::anyhow!("capacity overflow"))?;
-        let mut new_keys = MmapF32::new(new_cap)?;
-        let mut new_vals = MmapF32::new(new_cap)?;
         let copy_elems = self.seq_len * self.dim;
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.keys.ptr, new_keys.ptr, copy_elems);
-            std::ptr::copy_nonoverlapping(self.values.ptr, new_vals.ptr, copy_elems);
-        }
-        new_keys.used = copy_elems;
-        new_vals.used = copy_elems;
-        self.keys = new_keys;
-        self.values = new_vals;
+        // Growing in place: resize keeps the prefix, so the manual copy between two fresh
+        // allocations is no longer needed. Same result, no raw pointers, and it works on
+        // every platform.
+        self.keys.ensure_capacity(new_cap)?;
+        self.values.ensure_capacity(new_cap)?;
+        self.keys.mark_used(copy_elems)?;
+        self.values.mark_used(copy_elems)?;
         Ok(())
     }
 
@@ -167,10 +153,10 @@ impl KvLayer {
         }
         self.ensure_room(batch_rows)?;
         let dest_off = self.seq_len * self.dim;
-        unsafe {
-            std::ptr::copy_nonoverlapping(k_batch.as_ptr(), self.keys.ptr.add(dest_off), elems);
-            std::ptr::copy_nonoverlapping(v_batch.as_ptr(), self.values.ptr.add(dest_off), elems);
-        }
+        // Slice copy rather than raw pointers: same instruction sequence after
+        // optimisation, but the bounds are checked and it compiles everywhere.
+        self.keys.as_mut_slice()[dest_off..dest_off + elems].copy_from_slice(k_batch);
+        self.values.as_mut_slice()[dest_off..dest_off + elems].copy_from_slice(v_batch);
         self.seq_len += batch_rows;
         self.keys.used = dest_off + elems;
         self.values.used = dest_off + elems;
@@ -194,11 +180,11 @@ impl KvLayer {
     }
 
     pub fn keys_ptr(&self) -> *const f32 {
-        self.keys.ptr
+        self.keys.as_slice().as_ptr()
     }
 
     pub fn vals_ptr(&self) -> *const f32 {
-        self.values.ptr
+        self.values.as_slice().as_ptr()
     }
 }
 

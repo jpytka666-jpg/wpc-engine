@@ -38,7 +38,10 @@ pub use device::{ComputeDevice, DeviceBackend, DeviceMemoryReport, ResidencyPoli
 pub use editor::{diff_tensors, snapshot_tensor, TensorDiff, WeightEditor};
 pub use evaluator::{Evidence, EvidenceEvaluator, EvaluationResult, Evaluator, OutcomeClass};
 pub use experience::{ExperienceError, ExperienceNormalizer, NormalizedExperience, ProvenanceRef};
-pub use low_rank::{rank_metrics, LowRankError, LowRankMatrix, RankMetrics};
+pub use low_rank::{
+    low_rank_decompose, low_rank_decompose_seeded, low_rank_decompose_to_error, rank_metrics,
+    LowRankError, LowRankMatrix, RankMetrics,
+};
 pub use math_domain::{evaluate_exact, starter_curriculum, MathDomain, MathEvaluation, MathExample};
 pub use math_trace::{MathOp, MathStep, MathTrace};
 pub use math_train::{evaluate as evaluate_math_model, generate_dataset as generate_math_dataset, MathEvalReport, MathDataset, MathSample, MathTrainReport};
