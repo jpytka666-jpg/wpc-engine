@@ -1,0 +1,15 @@
+[package]
+name = "cbms-writing"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "cbms_writing"
+path = "src/lib.rs"
+
+[dependencies]
+# Nothing. The core is table lookup over strings; a dependency here would be a way
+# for the codec to fail that has nothing to do with the codec. Binaries may add
+# their own later.
+
+[dev-dependencies]
