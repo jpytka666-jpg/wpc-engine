@@ -87,12 +87,21 @@ struct Args {
     /// Without this a long answer jams: once a word is the most likely
     /// continuation of itself, nothing can break the tie differently. Seen on
     /// Qwen3-4B, Qwen3-Coder-30B and Gemma alike.
-    #[arg(long, default_value_t = 1.15)]
+    /// Off by default now. It charges a word for appearing at all, which cannot tell a
+    /// jam from a fact being recalled -- and a model forbidden to write "4096" answers
+    /// with a full-width or subscript lookalike rather than giving the word up.
+    #[arg(long, default_value_t = 1.0)]
     repeat_penalty: f32,
 
-    /// How far back the repetition penalty looks, in tokens. An older mention
-    /// falls out of the window, so a word is never silenced for good.
-    #[arg(long, default_value_t = 256)]
+    /// Cost per repetition BEYOND the first. This is the one that does the work: the
+    /// first mention is free so recalling a fact is free, while a word jammed fifteen
+    /// times pays fourteen times over.
+    #[arg(long, default_value_t = 0.8)]
+    freq_penalty: f32,
+
+    /// How far back the penalty looks, in tokens. A jam repeats within a few dozen
+    /// tokens; a fact recalled from earlier in the conversation should fall outside.
+    #[arg(long, default_value_t = 64)]
     repeat_window: usize,
 
     /// 0.0 keeps greedy decoding. Above zero the second-best word can win.
@@ -391,17 +400,18 @@ fn generate(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow::Result
 fn decoder_from(args: &Args) -> Decoder {
     let d = Decoder::new(
         args.repeat_penalty,
+        args.freq_penalty,
         args.repeat_window,
         args.temperature,
         args.top_p,
         args.seed,
     );
     if d.is_plain_greedy() {
-        eprintln!("decode: plain greedy (repeat penalty off, temperature 0)");
+        eprintln!("decode: plain greedy (no penalty, temperature 0)");
     } else {
         eprintln!(
-            "decode: repeat penalty {} over {} tokens, temperature {}, top-p {}",
-            args.repeat_penalty, args.repeat_window, args.temperature, args.top_p
+            "decode: excess-repeat cost {} (flat {}) over {} tokens, temperature {}, top-p {}",
+            args.freq_penalty, args.repeat_penalty, args.repeat_window, args.temperature, args.top_p
         );
     }
     d
@@ -450,6 +460,11 @@ fn interactive_chat(args: &Args, model: &Model, tokenizer: &Tokenizer) -> anyhow
         if matches!(question.as_str(), "koniec" | "exit" | "quit") {
             break;
         }
+
+        // The penalty starts each turn from nothing. It is there to stop one answer
+        // jamming on itself; carried between turns it instead punishes repeating a
+        // fact, which is what an answer to "what did I tell you" has to do.
+        history.clear();
 
         // Only the first turn carries the system prompt and the BOS token;
         // everything before this point is already resident in the cache.

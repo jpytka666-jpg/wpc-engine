@@ -148,7 +148,7 @@ impl ResidentEngine {
             engine: self,
             cache: self.model.new_cache(),
             history: Vec::new(),
-            decoder: Decoder::new(1.15, 256, 0.0, 0.95, 0),
+            decoder: Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 0),
             turn: 0,
             clean: 0,
         }
@@ -319,6 +319,17 @@ impl ResidentSession<'_> {
                 ids.insert(0, b);
             }
         }
+
+        // Each turn starts the penalty from nothing.
+        //
+        // The penalty exists to stop one answer jamming on itself. Carrying it between
+        // turns makes it police something else entirely: repeating a fact. Asked five
+        // turns later which card was mentioned, the model had already written "Quadro
+        // M2000M" and "4096" in turn one, so both were on its own blacklist -- and it
+        // answered "Quadro M200₀M" with "4₀96 MB", reaching for subscript lookalikes
+        // exactly as it had reached for full-width ones when the prompt was penalised.
+        // Repeating a fact across turns is not jamming; it is answering the question.
+        self.history.clear();
 
         let t1 = Instant::now();
         let mut next_logits: Vec<f32> = Vec::new();

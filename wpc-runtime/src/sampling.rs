@@ -71,23 +71,50 @@ pub fn argmax_banned(logits: &[f32], banned: &[u32]) -> u32 {
 /// entries and reallocating that per token is pure waste.
 pub struct Decoder {
     pub repeat_penalty: f32,
+    /// Cost per repetition BEYOND the first, subtracted from the score.
+    ///
+    /// This is the one that should normally do the work, and the reason is worth
+    /// spelling out. A flat penalty punishes a word for appearing at all, which is the
+    /// wrong target: it cannot tell "programming (programming) (programming)" -- the same
+    /// word jammed against itself -- from a figure mentioned once in turn one and asked
+    /// for again in turn five. Both are "a repeat" to it.
+    ///
+    /// Forbidding the second kind does not stop the model repeating. It makes it invent
+    /// a lookalike: forbidden "4096" it wrote "4０96" with full-width digits, then
+    /// "4₀96" with a subscript. It found new characters for the same word rather than
+    /// give the word up.
+    ///
+    /// Charging for the EXCESS fixes the aim. The first mention is free, so recalling a
+    /// fact costs nothing; a word jammed fifteen times pays fourteen times over, which
+    /// no continuation can survive.
+    pub freq_penalty: f32,
     pub repeat_window: usize,
     pub temperature: f32,
     pub top_p: f32,
     rng: u64,
     scratch: Vec<f32>,
     order: Vec<u32>,
+    counts: Vec<(u32, u32)>,
 }
 
 impl Decoder {
     /// `repeat_penalty` of 1.0, `temperature` of 0.0 and any `top_p` reproduce
     /// plain `argmax_banned` exactly.
-    pub fn new(repeat_penalty: f32, repeat_window: usize, temperature: f32, top_p: f32, seed: u64) -> Self {
+    pub fn new(
+        repeat_penalty: f32,
+        freq_penalty: f32,
+        repeat_window: usize,
+        temperature: f32,
+        top_p: f32,
+        seed: u64,
+    ) -> Self {
         Self {
             repeat_penalty,
+            freq_penalty,
             repeat_window,
             temperature,
             top_p,
+            counts: Vec::new(),
             // A zero state would make xorshift emit zero forever.
             rng: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
             scratch: Vec::new(),
@@ -97,7 +124,7 @@ impl Decoder {
 
     /// True when nothing would be changed and the caller could use `argmax_banned`.
     pub fn is_plain_greedy(&self) -> bool {
-        self.repeat_penalty == 1.0 && self.temperature <= 0.0
+        self.repeat_penalty == 1.0 && self.freq_penalty == 0.0 && self.temperature <= 0.0
     }
 
     fn next_rand(&mut self) -> u64 {
@@ -131,14 +158,37 @@ impl Decoder {
         self.scratch.clear();
         self.scratch.extend_from_slice(logits);
 
-        // Penalise what was said recently. Dividing a positive score and
-        // multiplying a negative one both move the value toward -inf, which is
-        // the formulation the CTRL paper uses and the one every runtime copied.
-        if self.repeat_penalty != 1.0 && self.repeat_window > 0 {
+        if self.repeat_window > 0 && (self.repeat_penalty != 1.0 || self.freq_penalty != 0.0) {
             let start = history.len().saturating_sub(self.repeat_window);
-            for &id in &history[start..] {
-                if let Some(v) = self.scratch.get_mut(id as usize) {
+            let window = &history[start..];
+
+            // Count each id once rather than paying per appearance in a loop over the
+            // window. A jam means the same id appears many times, so counting is exactly
+            // the measurement wanted, and it costs one pass.
+            self.counts.clear();
+            for &id in window {
+                match self.counts.iter_mut().find(|(k, _)| *k == id) {
+                    Some((_, n)) => *n += 1,
+                    None => self.counts.push((id, 1)),
+                }
+            }
+
+            for &(id, n) in &self.counts {
+                let Some(v) = self.scratch.get_mut(id as usize) else { continue };
+
+                // Flat part, off by default. Dividing a positive score and multiplying a
+                // negative one both move it toward -inf; that is the CTRL formulation
+                // every runtime copied, and it is the part that punishes a first mention.
+                if self.repeat_penalty != 1.0 {
                     *v = if *v > 0.0 { *v / self.repeat_penalty } else { *v * self.repeat_penalty };
+                }
+
+                // The part that should do the work: cost per repetition beyond the first.
+                if self.freq_penalty != 0.0 {
+                    let excess = n.saturating_sub(1) as f32;
+                    if excess > 0.0 {
+                        *v -= self.freq_penalty * excess;
+                    }
                 }
             }
         }
@@ -214,15 +264,51 @@ mod tests {
     #[test]
     fn decoder_with_neutral_settings_is_plain_greedy() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.0, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(1.0, 0.0, 64, 0.0, 0.95, 1);
         assert!(d.is_plain_greedy());
         assert_eq!(d.pick(&logits, &[], &[]), argmax(&logits));
     }
 
     #[test]
+    fn recalling_a_fact_once_costs_nothing() {
+        // The whole point of charging for excess rather than presence: a token said once
+        // must still be reachable, or "what did I tell you" becomes unanswerable.
+        let logits = [0.1f32, 5.0, -2.0, 4.9];
+        let mut d = Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 1);
+        assert_eq!(d.pick(&logits, &[], &[1]), 1);
+    }
+
+    #[test]
+    fn a_jam_becomes_unaffordable() {
+        // Ten repeats of a token only 0.1 ahead of its rival: the excess cost buries it.
+        let logits = [0.1f32, 5.0, -2.0, 4.9];
+        let mut d = Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 1);
+        let jam: Vec<u32> = std::iter::repeat(1).take(10).collect();
+        assert_eq!(d.pick(&logits, &[], &jam), 3);
+    }
+
+    #[test]
+    fn the_cost_grows_with_each_extra_repeat() {
+        let logits = [0.1f32, 5.0, -2.0, 4.9];
+        let mut d = Decoder::new(1.0, 0.8, 64, 0.0, 0.95, 1);
+        // Twice: 5.0 - 0.8 = 4.2, now behind 4.9.
+        assert_eq!(d.pick(&logits, &[], &[1, 1]), 3);
+        // Once: untouched, still ahead.
+        assert_eq!(d.pick(&logits, &[], &[1]), 1);
+    }
+
+    #[test]
+    fn excess_cost_also_falls_out_of_the_window() {
+        let logits = [0.1f32, 5.0, -2.0, 4.9];
+        let mut d = Decoder::new(1.0, 0.8, 2, 0.0, 0.95, 1);
+        // Only the last two entries count, so one of the three mentions is forgotten.
+        assert_eq!(d.pick(&logits, &[], &[1, 1, 0]), 1);
+    }
+
+    #[test]
     fn repetition_penalty_demotes_what_was_just_said() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(2.0, 64, 0.0, 0.95, 1);
+        let mut d = Decoder::new(2.0, 0.0, 64, 0.0, 0.95, 1);
         // 1 is the winner until it has just been used; then 3 takes over.
         assert_eq!(d.pick(&logits, &[], &[]), 1);
         assert_eq!(d.pick(&logits, &[], &[1]), 3);
@@ -231,7 +317,7 @@ mod tests {
     #[test]
     fn penalty_window_forgets_old_mentions() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(2.0, 1, 0.0, 0.95, 1);
+        let mut d = Decoder::new(2.0, 0.0, 1, 0.0, 0.95, 1);
         // Only the last entry is inside the window, so token 1 is untouched.
         assert_eq!(d.pick(&logits, &[], &[1, 0]), 1);
     }
@@ -239,7 +325,7 @@ mod tests {
     #[test]
     fn banned_ids_are_never_drawn() {
         let logits = [0.1f32, 5.0, -2.0, 4.9];
-        let mut d = Decoder::new(1.1, 64, 1.0, 1.0, 7);
+        let mut d = Decoder::new(1.1, 0.0, 64, 1.0, 1.0, 7);
         for _ in 0..200 {
             assert_ne!(d.pick(&logits, &[1], &[]), 1);
         }
@@ -249,7 +335,7 @@ mod tests {
     fn sampling_stays_inside_the_nucleus() {
         // 0 carries almost all the mass; a tight top_p must never reach 2.
         let logits = [10.0f32, 1.0, -20.0];
-        let mut d = Decoder::new(1.0, 64, 1.0, 0.9, 3);
+        let mut d = Decoder::new(1.0, 0.0, 64, 1.0, 0.9, 3);
         for _ in 0..200 {
             assert_ne!(d.pick(&logits, &[], &[]), 2);
         }
@@ -258,8 +344,8 @@ mod tests {
     #[test]
     fn same_seed_gives_the_same_sequence() {
         let logits = [1.0f32, 1.1, 0.9, 1.05];
-        let mut a = Decoder::new(1.0, 64, 1.0, 0.99, 42);
-        let mut b = Decoder::new(1.0, 64, 1.0, 0.99, 42);
+        let mut a = Decoder::new(1.0, 0.0, 64, 1.0, 0.99, 42);
+        let mut b = Decoder::new(1.0, 0.0, 64, 1.0, 0.99, 42);
         for _ in 0..50 {
             assert_eq!(a.pick(&logits, &[], &[]), b.pick(&logits, &[], &[]));
         }
