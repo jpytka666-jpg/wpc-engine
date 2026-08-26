@@ -56,21 +56,45 @@ function jsonlFiles(root) {
   return out.sort();
 }
 
-/** One line of a command, without the ceremony. A full shell line is mostly paths and
- *  flags that will never repeat; the verb and its object are what generalise. */
+/** The program and what it acts on, with everything that repeats stripped away.
+ *
+ * A full shell line is mostly ceremony. Measured on a real session: `export PATH=...`
+ * opened nearly every command, absolute paths filled the rest, and the model that trained
+ * on it answered 200 different contexts with the same symbol 88% of the time. It had
+ * learned the ceremony, because the ceremony was what repeated.
+ */
 function essence(record) {
   const input = record.payload?.tool_input ?? {};
   if (typeof input.command === 'string') {
-    return input.command.replace(/\s+/g, ' ').trim().slice(0, 200);
+    let c = input.command
+      .replace(/export\s+PATH=[^;]*;\s*/g, '')          // opens almost every line
+      .replace(/cd\s+[^\s;&|]+\s*(&&|;)?\s*/g, '')   // machine-specific, never repeats
+      .replace(/["']?[A-Za-z]:[\/][^\s"';|]*/g, '<sciezka>')
+      .replace(/\/[a-z]\/[^\s"';|]*/g, '<sciezka>')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Keep the verb and roughly its object; a hundred characters of flags teach nothing.
+    return c.slice(0, 100);
   }
-  if (typeof input.file_path === 'string') {
-    // The name matters, the machine-specific path does not.
-    return path.basename(input.file_path);
-  }
-  if (typeof input.pattern === 'string') return input.pattern.slice(0, 120);
-  if (typeof input.query === 'string') return input.query.slice(0, 120);
-  if (typeof input.prompt === 'string') return input.prompt.replace(/\s+/g, ' ').slice(0, 400);
+  if (typeof input.file_path === 'string') return path.basename(input.file_path);
+  if (typeof input.pattern === 'string') return input.pattern.slice(0, 60);
+  if (typeof input.query === 'string') return input.query.slice(0, 60);
+  if (typeof input.prompt === 'string') return input.prompt.replace(/\s+/g, ' ').slice(0, 200);
   return '';
+}
+
+/** Is this action worth a line at all?
+ *
+ * Success with no verdict is the default state of a working session and carries no
+ * information - forty lines of "did something, it was fine" teach a model to say "it was
+ * fine". What teaches is a failure, a runner's verdict, or the action that FOLLOWED a
+ * failure, because the difference between those two attempts is the actual knowledge.
+ */
+function informative(record, previousFailed) {
+  if (record.outcome === 'error') return 'blad';
+  if (record.verification) return 'werdykt';
+  if (previousFailed) return 'naprawa';
+  return null;
 }
 
 /* ---------- the quality gate ---------------------------------------------
@@ -81,21 +105,13 @@ function essence(record) {
  * a model unfiltered traces repeats that in the weights, where it cannot be quarantined
  * afterwards.
  *
- * So the same defence, one level up: named rules, and every rejection written down.
- * A gate whose refusals are invisible is a gate nobody can argue with.
- *
  * Kill switch: NOWORODEK_LESSON_GATE=0
  */
 
 const GATE_OFF = process.env.NOWORODEK_LESSON_GATE === '0';
 
-// Tools that only look around. Looking is not learning: nothing changed, nothing was
-// verified, and a model trained on it learns to look around.
 const PASSIVE = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite']);
-
-// Files that ARE the observer and the learner. A lesson about building the thing that is
-// watching is the echo problem wearing a different hat: it would train on itself.
-const SELF = /(record-event|traces-to-lessons|train-cbms|kapral|noworodek-observer|scale-probe)/i;
+const SELF = /(record-event|traces-to-lessons|train-cbms|kapral|noworodek-observer|scale-probe|probe-cbms|dyrygent|tablica|straznik|cykl)/i;
 
 const seenLessons = new Set();
 const rejections = [];
@@ -105,32 +121,21 @@ function gate(records, text) {
 
   const done = records.filter((r) => r.hook?.startsWith('PostToolUse'));
   if (done.length === 0) return { ok: false, reason: 'R1_zadnego_dzialania' };
-
   if (text.length < 40) return { ok: false, reason: 'R2_za_krotkie' };
-
-  if (done.every((r) => PASSIVE.has(r.tool))) {
-    return { ok: false, reason: 'R3_samo_rozgladanie' };
-  }
+  if (done.every((r) => PASSIVE.has(r.tool))) return { ok: false, reason: 'R3_samo_rozgladanie' };
 
   const selfHits = done.filter((r) => SELF.test(JSON.stringify(r.payload?.tool_input ?? ''))).length;
-  if (selfHits > done.length / 2) {
-    return { ok: false, reason: 'R4_obserwuje_sam_siebie' };
-  }
+  if (selfHits > done.length / 2) return { ok: false, reason: 'R4_obserwuje_sam_siebie' };
 
-  // Something objective must have happened: a runner gave a verdict, or a failure was
-  // followed by a success. Without either, the episode records activity, not learning.
   const hasVerdict = done.some((r) => r.verification);
   const outcomes = done.map((r) => r.outcome);
   const repaired = outcomes.indexOf('error') !== -1
     && outcomes.lastIndexOf('ok') > outcomes.indexOf('error');
-  if (!hasVerdict && !repaired) {
-    return { ok: false, reason: 'R5_nic_sprawdzalnego' };
-  }
+  if (!hasVerdict && !repaired) return { ok: false, reason: 'R5_nic_sprawdzalnego' };
 
   const fingerprint = text.replace(/\d+/g, '#');
   if (seenLessons.has(fingerprint)) return { ok: false, reason: 'R6_powtorka' };
   seenLessons.add(fingerprint);
-
   return { ok: true, reason: 'ok' };
 }
 
@@ -160,30 +165,33 @@ for (const [, records] of lessons) {
   records.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
   const lines = [];
 
+  let previousFailed = false;
   for (const r of records) {
     if (r.hook === 'UserPromptSubmit') {
       const asked = essence(r) || r.payload?.prompt || '';
       if (asked) lines.push(`ZADANIE ${asked}`);
       continue;
     }
-    // Only completed actions are lessons. A start with no end teaches nothing, and an
-    // action recorded twice would teach that everything happens twice.
     if (!r.hook?.startsWith('PostToolUse')) continue;
+    actions += 1;
+
+    const why = informative(r, previousFailed);
+    previousFailed = r.outcome === 'error';
+    if (!why) continue;   // ordinary success: nothing to learn from it
 
     const what = essence(r);
-    const bits = [`ROBI ${r.tool ?? 'nieznane'}`];
+    const bits = [];
+    if (why === 'blad') bits.push(`PADLO ${r.tool ?? '?'}`);
+    else if (why === 'naprawa') bits.push(`NAPRAWA ${r.tool ?? '?'}`);
+    else bits.push(`SPRAWDZAM ${r.tool ?? '?'}`);
     if (what) bits.push(what);
-    if (r.outcome) bits.push(`WYNIK ${r.outcome === 'ok' ? 'dobrze' : 'blad'}`);
     if (r.verification) {
       const v = r.verification;
-      bits.push(
-        `SPRAWDZENIE ${v.kind} ${v.ok ? 'przeszlo' : 'padlo'}` +
-          (v.passed !== undefined ? ` ${v.passed} zdanych ${v.failed} padlych` : '')
-      );
+      bits.push(`-> ${v.kind} ${v.ok ? 'przeszlo' : 'padlo'}` +
+        (v.passed !== undefined ? ` ${v.passed}/${v.passed + v.failed}` : ''));
       withVerdict += 1;
     }
     lines.push(bits.join(' '));
-    actions += 1;
   }
 
   const text = lines.join('\n');

@@ -47,6 +47,12 @@ STOP_FILE = DAEMON / "STOP"
 # that grows is a state vocabulary nobody can act on.
 RUN, LEARNING, PLATEAU, STOP, ERROR = "RUN", "LEARNING", "PLATEAU", "STOP", "ERROR"
 
+# The one code book everything shares, kept where M. Szul can see it rather than buried
+# in an application directory. Both the daemon and the memory store write through it, and
+# it only ever grows: an id is a position in this file, so losing it would make every
+# block ever written unreadable and every checkpoint meaningless.
+SHARED_BOOK = HOME / "Desktop" / "AIONS-CBMS" / "ksiazka-wspolna.txt"
+
 # Improvement smaller than this is noise in the third decimal, not learning.
 REAL_IMPROVEMENT = 0.01
 
@@ -81,7 +87,8 @@ def main() -> int:
     ap.add_argument("--traces", default=str(Path("D:/AIONS/.noworodek/observer-data/traces")))
     ap.add_argument("--cbms", required=True, help="sciezka do binarki cbms")
     ap.add_argument("--trainer", required=True, help="sciezka do binarki train-cbms")
-    ap.add_argument("--book", required=True, help="ksiazka kodow na starcie")
+    ap.add_argument("--book", default=None,
+                    help=f"wspolna ksiazka kodow (domyslnie {SHARED_BOOK})")
     ap.add_argument("--scripts", default=str(ROOT / "scripts"))
     ap.add_argument("--cores", type=int, default=4)
     ap.add_argument("--memory-gb", type=float, default=8.0)
@@ -121,16 +128,52 @@ def main() -> int:
         print("STOP: nie ma z czego sie uczyc w tym cyklu")
         return 0
 
-    # ---- 2. extend the book, encode ---------------------------------------------
-    book_out = WORK / "ksiazka.txt"
-    ok, out = run([args.cbms, args.book, "build", str(lessons), str(book_out), "20000", "1"], timeout=600)
-    if not ok or not book_out.exists():
+    # ---- 2. grow the SHARED book, encode ----------------------------------------
+    #
+    # One book, in one place, that only ever grows. Every cycle used to build a fresh
+    # book from the base one, which meant a word learned on Monday was gone on Tuesday
+    # unless it happened to appear again - all 21 recorded cycles report the same
+    # vocabulary size, 10134, because nothing ever accumulated.
+    #
+    # It also has to be the SAME book the memory store writes with. An id is a position
+    # in this file and nothing else, so two books mean two different meanings for the
+    # same number: measured, `cargo test przeszlo` was 5049 5885 9983 under one and
+    # 5041 5768 9859 under the other. Sharing the file is what makes anything written
+    # by one side readable by the other.
+    book = Path(args.book) if args.book else SHARED_BOOK
+    if not book.exists():
+        write_state(ERROR, krok="ksiazka", powod=f"wspolna ksiazka nie istnieje: {book}")
+        print(f"BRAK WSPOLNEJ KSIAZKI: {book}")
+        print("       zaloz ja kopiujac ksiazka-bazowa.txt - nie tworze jej sam,")
+        print("       bo pusta ksiazka nadalaby numery od nowa.")
+        return 1
+
+    # One step back, kept before every growth. `grow` refuses to renumber and writes
+    # atomically, so this is not about a torn file - it is about a bad corpus adding
+    # entries nobody wanted, which is only visible afterwards.
+    previous = book.with_name(book.stem + "-poprzednia" + book.suffix)
+    try:
+        previous.write_bytes(book.read_bytes())
+    except OSError as exc:
+        write_state(ERROR, krok="ksiazka", powod=f"nie moge zrobic kopii: {exc}")
+        print(f"NIE MOGE ZROBIC KOPII ZAPASOWEJ: {exc}")
+        return 1
+
+    ok, out = run([args.cbms, str(book), "grow", str(lessons), "20000", "1"], timeout=600)
+    if not ok:
         write_state(ERROR, krok="ksiazka", szczegol=out[-600:])
         print(out[-600:])
         return 1
+    added = int(re.search(r"dopisano\s*:\s*(\d+)", out).group(1)) if "dopisano" in out else 0
+    entries = int(re.search(r"wpisow teraz\s*:\s*(\d+)", out).group(1)) if "wpisow teraz" in out else 0
+    print(f"ksiazka: +{added} nowych slow, {entries} wpisow lacznie")
+    # A growth journal, so the history is visible without keeping a copy of every book.
+    with (DAEMON / "ksiazka.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "dopisano": added,
+                             "wpisow": entries, "ksiazka": str(book)}, ensure_ascii=False) + "\n")
 
     ids = WORK / "lekcje.u16"
-    ok, out = run([args.cbms, str(book_out), "ids", str(lessons), str(ids)], timeout=600)
+    ok, out = run([args.cbms, str(book), "ids", str(lessons), str(ids)], timeout=600)
     if not ok:
         write_state(ERROR, krok="symbole", szczegol=out[-600:])
         print(out[-600:])
@@ -146,6 +189,46 @@ def main() -> int:
            "--hidden", str(args.hidden), "--inter", str(args.inter),
            "--steps", str(args.steps), "--patience", str(args.patience),
            "--save", str(nxt)]
+    lineage_file = WORK / "wagi-rodowod.json"
+    if prev.exists():
+        # LINEAGE FIRST - before asking the trainer whether the file loads.
+        #
+        # The trainer now carries rows forward when the vocabulary grows, and it cannot
+        # tell a book that grew from an unrelated book that merely got bigger. In the
+        # second case row 500 names a different word than it did, so the weights load
+        # cleanly and answer from a shifted vocabulary with nothing to report.
+        #
+        # The checkpoint records the book's size and its mark at that size when it was
+        # written. Recomputing the mark over that many entries of the CURRENT book
+        # reproduces it only if those entries are untouched - which is precisely the
+        # condition under which the carried rows still mean what they meant.
+        lineage = None
+        try:
+            lineage = json.loads(lineage_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+        if lineage is None:
+            # Written before lineage was recorded. Refusing outright would throw away
+            # real learning over a missing note, so it is carried with the fact stated.
+            print("UWAGA: checkpoint bez zapisanego rodowodu ksiazki.")
+            print("       Przenoszony dalej, ale nie da sie potwierdzic, ze numery zgadzaja")
+            print("       sie z ta ksiazka. Nastepny zapis bedzie juz mial rodowod.")
+        else:
+            ok_mark, mark_out = run([args.cbms, str(book), "mark", str(lineage["wpisow"])],
+                                    timeout=120)
+            now = re.search(r"znak\s*:\s*([0-9a-f]+)", mark_out) if ok_mark else None
+            if not ok_mark or not now or now.group(1) != lineage["znak"]:
+                aside = prev.with_name(f"wagi-obca-ksiazka-{time.strftime('%Y%m%d-%H%M%S')}.bin")
+                prev.rename(aside)
+                lineage_file.unlink(missing_ok=True)
+                print("INNA KSIAZKA: ten checkpoint uczyl sie przy ksiazce, ktorej ta nie jest")
+                print(f"       potomkiem (wpisow {lineage['wpisow']}, znak {lineage['znak'][:12]}).")
+                print(f"       Odlozony do {aside.name}, cykl zaczyna od nowa.")
+                print("       Nie przenosze wag: numery znaczylyby co innego niz wtedy.")
+                write_state(RUN, krok="obca_ksiazka", odlozony=str(aside))
+                prev = WORK / "wagi.bin"  # gone now; the branch below sees it missing
+
     if prev.exists():
         # A checkpoint the trainer refuses must not block every future night. It is set
         # aside under a dated name - never deleted, because it may be the only copy of
@@ -221,6 +304,25 @@ def main() -> int:
         return 1
 
     nxt.replace(prev)
+
+    # Stamp the book this checkpoint learned against, at the size it had. Written AFTER
+    # the weights are in place, so a crash between the two leaves a checkpoint with no
+    # lineage - which is carried with a warning - rather than a lineage pointing at
+    # weights that were never adopted, which would be a false all-clear.
+    ok_mark, mark_out = run([args.cbms, str(book), "mark"], timeout=120)
+    stamp = re.search(r"znak\s*:\s*([0-9a-f]+)", mark_out) if ok_mark else None
+    count = re.search(r"wpisow\s*:\s*(\d+)", mark_out) if ok_mark else None
+    if stamp and count:
+        lineage_file.write_text(
+            json.dumps({"wpisow": int(count.group(1)), "znak": stamp.group(1),
+                        "ksiazka": str(book), "at": time.strftime("%Y-%m-%d %H:%M:%S")},
+                       ensure_ascii=False, indent=1),
+            encoding="utf-8")
+    else:
+        # Not fatal, but it must not pass silently: the next cycle would then carry these
+        # weights into any book at all without being able to check.
+        print("UWAGA: nie udalo sie zapisac rodowodu ksiazki dla tego checkpointu")
+
     elapsed = round(time.time() - started, 1)
     state = LEARNING if improved else PLATEAU
     payload = write_state(
