@@ -124,9 +124,25 @@ def main() -> int:
     # Nothing worth learning from is not a failure. It is the normal state of a machine
     # whose owner spent the day reading rather than verifying.
     if accepted == 0 or chars < 200:
-        write_state(STOP, powod="brak nowych lekcji", przyjete=accepted, odrzucone=rejected)
-        print("STOP: nie ma z czego sie uczyc w tym cyklu")
-        return 0
+        # No lessons is the normal state of a machine whose owner spent the day reading.
+        # It is not a reason to idle: the feeder keeps a corpus of fetched material -
+        # literature, then mathematics, physics, chemistry, biology, physiology, code -
+        # and a cycle with nothing observed can learn from that instead.
+        #
+        # Lessons still come FIRST whenever they exist. Eight verdicts from real work are
+        # worth more than eight thousand words of encyclopedia, and mixing them would let
+        # prose drown the part that carries a cost and a consequence.
+        korpus = DAEMON / "material" / "korpus.txt"
+        if korpus.exists() and korpus.stat().st_size > 2000:
+            lessons = korpus
+            chars = korpus.stat().st_size
+            accepted = -1  # -1 means "from the corpus", so the log cannot claim a lesson
+            print(f"brak lekcji - ucze sie z przyniesionego materialu ({chars} znakow)")
+        else:
+            write_state(STOP, powod="brak nowych lekcji i brak materialu",
+                        przyjete=0, odrzucone=rejected)
+            print("STOP: nie ma z czego sie uczyc ani czym nakarmic")
+            return 0
 
     # ---- 2. grow the SHARED book, encode ----------------------------------------
     #
