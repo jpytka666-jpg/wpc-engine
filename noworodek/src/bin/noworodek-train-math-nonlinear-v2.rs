@@ -1,3 +1,10 @@
+/*
+ * ==========================================
+ * AUTHOR: M. SZUL
+ * AI MODEL: Claude Opus 5
+ * ==========================================
+ */
+
 use noworodek::{ArchitectureId, DType, LinearTrainer, MemoryWeightBackend, Tensor, TensorSpec, WeightSetHeader, WeightSetId, WeightSetManager, WeightSetManifest, WeightSetVersion};
 
 fn features(a: f32, b: f32) -> [f32; 6] { [a, b, a * a, b * b, a * b, 1.0] }
