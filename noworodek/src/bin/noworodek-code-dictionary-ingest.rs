@@ -1,3 +1,10 @@
+/*
+ * ==========================================
+ * AUTHOR: M. SZUL
+ * AI MODEL: Claude Opus 5
+ * ==========================================
+ */
+
 use std::{env,fs,path::{Path,PathBuf}};
 use noworodek::{extract_functions,CodeAtomRegistry,CodeLanguage,Qwen3CoderTokenizer};
 fn lang(p:&Path)->Option<CodeLanguage>{match p.extension().and_then(|x|x.to_str()).unwrap_or_default(){"rs"=>Some(CodeLanguage::Rust),"c"|"h"|"cc"|"cpp"|"cxx"|"hpp"|"hh"|"hxx"=>Some(CodeLanguage::Cpp),_=>None}}
