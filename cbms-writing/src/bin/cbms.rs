@@ -378,7 +378,7 @@ fn main() -> ExitCode {
             let min_count: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(2);
 
             let before = book.len();
-            let report = cbms_writing::extend(&book, &vec![corpus], max_new, min_count);
+            let report = cbms_writing::extend(&book, &vec![corpus.clone()], max_new, min_count);
             let grown = match cbms_writing::Book::parse(&report.book_text) {
                 Ok(b) => b,
                 Err(e) => {
@@ -406,6 +406,27 @@ fn main() -> ExitCode {
                     eprintln!("book on disk NOT touched");
                     return ExitCode::FAILURE;
                 }
+            }
+
+            // And it must still be able to READ what it grew from.
+            //
+            // The order check above proves no id moved, which is about the past. This is
+            // about the present: a growth can mint an entry that makes the corpus stop
+            // round-tripping, and the book would be written out looking healthy. Found
+            // this way - a shared book of 17843 entries encoded the lessons and the whole
+            // memory store exactly, and refused two other files, because those files were
+            // themselves code books and contained the symbol characters. Whatever the
+            // cause, the growth that introduces it must not be the one that ships.
+            let Some(check) = cbms_writing::Vocabulary::new(&grown) else {
+                eprintln!("REFUSED: z tej ksiazki nie da sie zlozyc slownika");
+                eprintln!("ksiazka na dysku NIE zostala ruszona");
+                return ExitCode::FAILURE;
+            };
+            if check.decode(&check.encode(&corpus)) != corpus {
+                eprintln!("REFUSED: po dopisaniu ksiazka nie koduje juz tego korpusu \
+                           tam i z powrotem");
+                eprintln!("ksiazka na dysku NIE zostala ruszona");
+                return ExitCode::FAILURE;
             }
 
             // Write beside, then rename. A half-written shared book is worse than an old
