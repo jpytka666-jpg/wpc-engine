@@ -1,24 +1,57 @@
 #!/bin/sh
+# ==========================================
+# AUTHOR: M. SZUL
+# AI MODEL: Claude Opus 5
+# TIMESTAMP: 2026-08-26 15:30:18
+# REASON FOR CREATION: The Noworodek commit standard was written, documented and never
+#   enforced - core.hooksPath was unset, so this file never ran, and the eight commits
+#   before it carry zero of the seven fields it requires. A rule nothing checks is a wish.
+# MECHANICS: Rejects a commit whose subject does not match the project format or whose
+#   body omits a required field. Fires on the Noworodek branch OR on any commit whose
+#   subject claims the [WPC-ENGINE][NOWORODEK] tag, so work done on a feature branch is
+#   held to the same contract as work done on the trunk.
+# SYSTEM PART: Noworodek - commit provenance
+# ARCHITECTURE FUNCTION: Makes every commit self-identifying - what changed, why, when,
+#   whose work it is and which model wrote it. Provenance kept in the history cannot
+#   drift away from the code the way a side document can.
+# DEPENDENCIES/LINKS: docs/noworodek/commit-metadata-standard.md; enabled by
+#   `git config core.hooksPath .githooks`
+# TECH STACK: POSIX sh - runs under Git for Windows, WSL and Linux with no runtime.
+# LOCAL WORKSPACE: C:\temp\aions-nowo-prov
+# GIT COMMIT: PENDING
+# GITHUB METADATA: jpytka666-jpg/wpc-engine, branch noworodek/commit-provenance
+# ==========================================
 set -eu
 
 msg_file="$1"
 branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-
-# Only enforce the project contract on the Noworodek branch.
-[ "$branch" = "Noworodek" ] || exit 0
-
 subject="$(sed -n '1p' "$msg_file")"
+
+# Enforce on the trunk, and on anything anywhere that claims the project tag. Gating on
+# the branch alone let every feature branch opt out by accident.
+claims_tag=0
+case "$subject" in
+  '[WPC-ENGINE][NOWORODEK]'*) claims_tag=1 ;;
+esac
+if [ "$branch" != "Noworodek" ] && [ "$claims_tag" -eq 0 ]; then
+  exit 0
+fi
+
 pattern='^\[WPC-ENGINE\]\[NOWORODEK\]\[[A-Z0-9._-]+\] (feat|fix|test|docs|chore|refactor|perf)(\([a-z0-9._-]+\))?: .+'
 
 if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
   echo "ERROR: invalid Noworodek commit subject." >&2
   echo "Expected: [WPC-ENGINE][NOWORODEK][WORKSTREAM] type(scope): summary" >&2
+  echo "Got:      $subject" >&2
   exit 1
 fi
 
-for field in Project Branch Workstream Change Parent CI Evidence; do
+# Author and AI-Model answer "whose work" and "who typed it"; Date answers "when" in
+# local terms rather than only git's own timestamp, which travels with a rebase.
+for field in Project Branch Workstream Change Reason Author AI-Model Date Parent CI Evidence; do
   if ! grep -Eq "^${field}: .+" "$msg_file"; then
     echo "ERROR: missing commit metadata field: ${field}:" >&2
+    echo "Required: Project Branch Workstream Change Reason Author AI-Model Date Parent CI Evidence" >&2
     exit 1
   fi
 done
@@ -28,7 +61,19 @@ if ! grep -Eq '^Project: wpc-engine$' "$msg_file"; then
   exit 1
 fi
 
-if ! grep -Eq '^Branch: Noworodek$' "$msg_file"; then
-  echo "ERROR: Branch must be Noworodek." >&2
+if ! grep -Eq '^Author: M\. Szul$' "$msg_file"; then
+  echo "ERROR: Author must be 'M. Szul' - the work is his, whichever model typed it." >&2
+  exit 1
+fi
+
+if ! grep -Eq '^Date: [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$' "$msg_file"; then
+  echo "ERROR: Date must be YYYY-MM-DD HH:MM:SS, the local time of the change." >&2
+  exit 1
+fi
+
+# CI: pending is allowed at creation and must be replaced after verification. Anything
+# outside the vocabulary is a typo, and a typo here quietly weakens the record.
+if ! grep -Eq '^CI: (pending|green|failed|historical|not-run)$' "$msg_file"; then
+  echo "ERROR: CI must be one of: pending green failed historical not-run" >&2
   exit 1
 fi
