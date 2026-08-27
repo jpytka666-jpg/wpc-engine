@@ -1,3 +1,10 @@
+/*
+ * ==========================================
+ * AUTHOR: M. SZUL
+ * AI MODEL: Claude Opus 5
+ * ==========================================
+ */
+
 use noworodek::{
     evaluate_math_model, generate_math_dataset, ArchitectureId, DType, LinearTrainer,
     MathDataset, MemoryWeightBackend, Tensor, TensorSpec, WeightSetHeader, WeightSetId,
