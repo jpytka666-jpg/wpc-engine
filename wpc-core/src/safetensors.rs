@@ -1,6 +1,6 @@
-use std::fs::File;
 use half::f16;
 use safetensors::SafeTensors;
+use std::fs::File;
 
 pub struct LayerInfo {
     pub name: String,
@@ -18,32 +18,36 @@ pub fn extract_layers(path: &str) -> Result<Vec<LayerInfo>, String> {
     for (name, view) in st.tensors() {
         let shape = view.shape().to_vec();
         // Only process 2D weight matrices (e.g. dense layers, attention projections)
-        if shape.len() != 2 { continue; }
-        
+        if shape.len() != 2 {
+            continue;
+        }
+
         let n: usize = shape.iter().product();
-        if n < 4096 { continue; }
+        if n < 4096 {
+            continue;
+        }
 
         let f32_data: Vec<f32> = match view.dtype() {
             safetensors::Dtype::F32 => {
                 let raw = view.data();
                 raw.chunks_exact(4)
-                   .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                   .collect()
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
             }
             safetensors::Dtype::F16 => {
                 let raw = view.data();
                 raw.chunks_exact(2)
-                   .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
-                   .collect()
+                    .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                    .collect()
             }
             safetensors::Dtype::BF16 => {
                 let raw = view.data();
                 raw.chunks_exact(2)
-                   .map(|c| {
-                       let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
-                       f32::from_bits(bits << 16)
-                   })
-                   .collect()
+                    .map(|c| {
+                        let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
+                        f32::from_bits(bits << 16)
+                    })
+                    .collect()
             }
             _ => continue,
         };

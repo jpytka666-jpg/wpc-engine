@@ -34,7 +34,10 @@ fn optimized_attention_matches_reference_across_shapes() {
             .unwrap();
 
         let max_diff = max_abs_diff(&reference, &optimized);
-        assert!(max_diff < 1e-4, "dim={dim} batch={batch} past={past}, max diff={max_diff}");
+        assert!(
+            max_diff < 1e-4,
+            "dim={dim} batch={batch} past={past}, max diff={max_diff}"
+        );
     }
 }
 
@@ -88,7 +91,10 @@ fn mmap_and_kv_reallocation_preserve_all_rows() {
     assert_eq!(kv.seq_len, 10);
     for row in 0..10 {
         assert_eq!(kv.get_key_row(row).unwrap(), expected_keys[row].as_slice());
-        assert_eq!(kv.get_value_row(row).unwrap(), expected_values[row].as_slice());
+        assert_eq!(
+            kv.get_value_row(row).unwrap(),
+            expected_values[row].as_slice()
+        );
     }
 }
 
@@ -103,7 +109,10 @@ fn mmap_direct_reallocation_preserves_data() {
     map.as_mut_slice()[4..8].copy_from_slice(&[5.0, 6.0, 7.0, 8.0]);
     map.mark_used(8).unwrap();
     map.ensure_capacity(32).unwrap();
-    assert_eq!(&map.as_slice()[..8], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    assert_eq!(
+        &map.as_slice()[..8],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    );
 }
 
 #[test]

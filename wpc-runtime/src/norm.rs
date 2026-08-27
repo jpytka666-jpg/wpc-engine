@@ -55,7 +55,12 @@ mod tests {
         // mean_sq = (9+16)/4 = 6.25, rms = 2.5
         let expected = [3.0 / 2.5, 4.0 / 2.5, 0.0, 0.0];
         for i in 0..4 {
-            assert!((out[i] - expected[i]).abs() < 1e-4, "idx {i}: {} vs {}", out[i], expected[i]);
+            assert!(
+                (out[i] - expected[i]).abs() < 1e-4,
+                "idx {i}: {} vs {}",
+                out[i],
+                expected[i]
+            );
         }
     }
 

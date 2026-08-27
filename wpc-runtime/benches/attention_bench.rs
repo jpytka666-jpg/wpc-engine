@@ -4,9 +4,7 @@ use wpc_runtime::forward_batch::{BatchEngine, KvLayer};
 
 fn generate_random_matrix(rows: usize, cols: usize, seed: u64) -> Vec<f32> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..rows * cols)
-        .map(|_| rng.gen_range(-1.0..1.0))
-        .collect()
+    (0..rows * cols).map(|_| rng.gen_range(-1.0..1.0)).collect()
 }
 
 fn get_rss_kb() -> Option<u64> {
@@ -41,9 +39,7 @@ fn bench_attention(c: &mut Criterion) {
             });
         });
 
-        let q_vecs: Vec<Vec<f32>> = (0..b)
-            .map(|i| q[i * dim..(i + 1) * dim].to_vec())
-            .collect();
+        let q_vecs: Vec<Vec<f32>> = (0..b).map(|i| q[i * dim..(i + 1) * dim].to_vec()).collect();
         c.bench_with_input(BenchmarkId::new("reference", b), &b, |bencher, &_b| {
             bencher.iter(|| {
                 black_box(engine.reference_attention_batch(&q_vecs, &kv).unwrap());

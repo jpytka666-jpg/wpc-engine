@@ -1,17 +1,20 @@
 use clap::Parser;
+use half::f16;
 use rayon::prelude::*;
+use safetensors::SafeTensors;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use walkdir::WalkDir;
 use wpc_core::codebook::{PatternDict, ResidualDict, BLOCK_DIM};
 use wpc_core::encoder::{encode_block, normalize_block, BlockNorm, INPUT_SCALE};
 use wpc_core::quant_encoder;
-use wpc_format::{CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, PATTERN_COUNT, RESIDUAL_COUNT, BLOCK_SIZE_V2};
-use safetensors::SafeTensors;
-use half::f16;
+use wpc_format::{
+    CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, BLOCK_SIZE_V2, PATTERN_COUNT,
+    RESIDUAL_COUNT,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "WPC Full-Model Compiler")]
@@ -150,7 +153,11 @@ fn classify_tensor(name: &str) -> &'static str {
 }
 
 fn get_raw_residual(weights: &[f32; BLOCK_DIM], pattern_dict: &PatternDict) -> [f32; BLOCK_DIM] {
-    let BlockNorm { base, scale_i8, norm } = normalize_block(weights);
+    let BlockNorm {
+        base,
+        scale_i8,
+        norm,
+    } = normalize_block(weights);
 
     let (pid, _) = pattern_dict.nearest(&norm);
     let p_vec = pattern_dict.centroids[pid as usize];
@@ -169,28 +176,28 @@ fn read_tensor_f32(shard_path: &Path, name: &str) -> Vec<f32> {
     let mmap = unsafe { memmap2::Mmap::map(&file) }.unwrap();
     let st = SafeTensors::deserialize(&mmap).unwrap();
     let view = st.tensor(name).unwrap();
-    
+
     match view.dtype() {
         safetensors::Dtype::F32 => {
             let raw = view.data();
             raw.chunks_exact(4)
-               .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-               .collect()
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
         }
         safetensors::Dtype::F16 => {
             let raw = view.data();
             raw.chunks_exact(2)
-               .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
-               .collect()
+                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect()
         }
         safetensors::Dtype::BF16 => {
             let raw = view.data();
             raw.chunks_exact(2)
-               .map(|c| {
-                   let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
-                   f32::from_bits(bits << 16)
-               })
-               .collect()
+                .map(|c| {
+                    let bits = u32::from(c[0]) | (u32::from(c[1]) << 8);
+                    f32::from_bits(bits << 16)
+                })
+                .collect()
         }
         _ => panic!("Unsupported dtype {:?}", view.dtype()),
     }
@@ -200,7 +207,10 @@ fn main() {
     let args = Args::parse();
 
     if args.scheme != "v1" && args.scheme != "v2" && args.scheme != "v3" && args.scheme != "v4" {
-        eprintln!("Invalid scheme '{}'. Must be 'v1', 'v2', 'v3' or 'v4'.", args.scheme);
+        eprintln!(
+            "Invalid scheme '{}'. Must be 'v1', 'v2', 'v3' or 'v4'.",
+            args.scheme
+        );
         return;
     }
 
@@ -217,7 +227,10 @@ fn main() {
         return;
     }
 
-    println!("Found {} shards. Extracting tensor metadata...", shards.len());
+    println!(
+        "Found {} shards. Extracting tensor metadata...",
+        shards.len()
+    );
 
     let mut all_tensors = Vec::new();
     // Tallied so the run can report what it left behind instead of dropping
@@ -313,16 +326,17 @@ fn main() {
     }
 
     let total_blocks: usize = all_tensors.iter().map(|t| t.num_blocks).sum();
-    println!("Extracted {} valid 2D matrix tensors. Total blocks: {}", all_tensors.len(), total_blocks);
+    println!(
+        "Extracted {} valid 2D matrix tensors. Total blocks: {}",
+        all_tensors.len(),
+        total_blocks
+    );
 
     // Say out loud what was left behind. Silently dropping tensors is how a
     // multimodal model's whole vision tower went missing from a .wpc without
     // anyone noticing until the model was asked to look at something.
-    let skipped_total = skipped_not_2d
-        + skipped_too_small
-        + skipped_dtype
-        + skipped_router
-        + skipped_bad_width;
+    let skipped_total =
+        skipped_not_2d + skipped_too_small + skipped_dtype + skipped_router + skipped_bad_width;
     if skipped_total > 0 {
         println!(
             "NOT compressed: {} tensors, {:.1} MB total",
@@ -382,13 +396,16 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
     let mut class_groups: HashMap<&'static str, Vec<&TensorRef>> = HashMap::new();
     for t_ref in all_tensors {
         let class = classify_tensor(&t_ref.name);
-        class_groups.entry(class).or_insert_with(Vec::new).push(t_ref);
+        class_groups
+            .entry(class)
+            .or_insert_with(Vec::new)
+            .push(t_ref);
     }
 
     // Train per-class codebooks
     let mut class_dicts: HashMap<&'static str, (PatternDict, ResidualDict)> = HashMap::new();
     let mut dict_files: HashMap<String, DictFiles> = HashMap::new();
-    use rand::{Rng, thread_rng};
+    use rand::{thread_rng, Rng};
 
     for (class, tensors) in &class_groups {
         if tensors.is_empty() {
@@ -399,7 +416,12 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         let target_sample = 262144;
         let sample_rate = (target_sample as f64 / class_blocks as f64).min(1.0);
 
-        println!("Training codebook for class '{}' ({} tensors, {} blocks)...", class, tensors.len(), class_blocks);
+        println!(
+            "Training codebook for class '{}' ({} tensors, {} blocks)...",
+            class,
+            tensors.len(),
+            class_blocks
+        );
 
         // Sample from this class only
         let mut sampled_blocks = Vec::new();
@@ -429,13 +451,15 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         }
 
         // Train pattern dict for this class
-        let normalized_samples: Vec<[f32; BLOCK_DIM]> = sampled_blocks.iter()
+        let normalized_samples: Vec<[f32; BLOCK_DIM]> = sampled_blocks
+            .iter()
             .map(|b| normalize_block(b).norm)
             .collect();
         let pattern_dict = PatternDict::train(&normalized_samples, PATTERN_COUNT, 20);
 
         // Compute residuals
-        let residuals: Vec<[f32; BLOCK_DIM]> = sampled_blocks.par_iter()
+        let residuals: Vec<[f32; BLOCK_DIM]> = sampled_blocks
+            .par_iter()
             .map(|b| get_raw_residual(b, &pattern_dict))
             .collect();
 
@@ -452,7 +476,9 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         let mut p_file = File::create(&patterns_path).unwrap();
         for c in &pattern_dict.centroids {
             for &val in c {
-                p_file.write_all(&(val / INPUT_SCALE).to_le_bytes()).unwrap();
+                p_file
+                    .write_all(&(val / INPUT_SCALE).to_le_bytes())
+                    .unwrap();
             }
         }
 
@@ -463,10 +489,13 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
             }
         }
 
-        dict_files.insert(class.to_string(), DictFiles {
-            patterns: patterns_filename,
-            residuals: residuals_filename,
-        });
+        dict_files.insert(
+            class.to_string(),
+            DictFiles {
+                patterns: patterns_filename,
+                residuals: residuals_filename,
+            },
+        );
 
         class_dicts.insert(*class, (pattern_dict, residual_dict));
     }
@@ -488,7 +517,12 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
 
     for (idx, t_ref) in all_tensors.iter().enumerate() {
         let class = classify_tensor(&t_ref.name);
-        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        println!(
+            "  Encoding tensor {}/{} ({})...",
+            idx + 1,
+            all_tensors.len(),
+            t_ref.name
+        );
         let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
 
         let (pattern_dict, residual_dict) = &class_dicts[&class];
@@ -512,7 +546,10 @@ fn compress_v1(args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
             dict_class: class.to_string(),
         });
 
-        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let bytes: Vec<u8> = compressed_blocks
+            .iter()
+            .flat_map(|b| b.to_le_bytes())
+            .collect();
         wpc_file.write_all(&bytes).unwrap();
 
         current_offset += size_bytes;
@@ -539,7 +576,12 @@ fn compress_v2(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
     };
 
     for (idx, t_ref) in all_tensors.iter().enumerate() {
-        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        println!(
+            "  Encoding tensor {}/{} ({})...",
+            idx + 1,
+            all_tensors.len(),
+            t_ref.name
+        );
         let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
 
         // Encode with v2
@@ -553,7 +595,10 @@ fn compress_v2(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
             size_bytes,
         });
 
-        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let bytes: Vec<u8> = compressed_blocks
+            .iter()
+            .flat_map(|b| b.to_le_bytes())
+            .collect();
         wpc_file.write_all(&bytes).unwrap();
 
         current_offset += size_bytes;
@@ -592,7 +637,12 @@ fn compress_v3(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
     let mut v2_equivalent_bytes = 0usize;
 
     for (idx, t_ref) in all_tensors.iter().enumerate() {
-        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        println!(
+            "  Encoding tensor {}/{} ({})...",
+            idx + 1,
+            all_tensors.len(),
+            t_ref.name
+        );
         let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
 
         let compressed_blocks: Vec<QuantBlockV3> = quant_encoder::encode_tensor_v3(&t_data);
@@ -607,7 +657,10 @@ fn compress_v3(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
             size_bytes,
         });
 
-        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let bytes: Vec<u8> = compressed_blocks
+            .iter()
+            .flat_map(|b| b.to_le_bytes())
+            .collect();
         wpc_file.write_all(&bytes).unwrap();
 
         current_offset += size_bytes;
@@ -627,7 +680,11 @@ fn compress_v3(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         current_offset as f64 / 1024.0 / 1024.0 / 1024.0,
         v2_equivalent_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
         saved as f64 / 1024.0 / 1024.0 / 1024.0,
-        if v2_equivalent_bytes > 0 { saved as f64 * 100.0 / v2_equivalent_bytes as f64 } else { 0.0 },
+        if v2_equivalent_bytes > 0 {
+            saved as f64 * 100.0 / v2_equivalent_bytes as f64
+        } else {
+            0.0
+        },
     );
 }
 
@@ -655,7 +712,12 @@ fn compress_v4(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
     let mut v3_equivalent_bytes = 0usize;
 
     for (idx, t_ref) in all_tensors.iter().enumerate() {
-        println!("  Encoding tensor {}/{} ({})...", idx + 1, all_tensors.len(), t_ref.name);
+        println!(
+            "  Encoding tensor {}/{} ({})...",
+            idx + 1,
+            all_tensors.len(),
+            t_ref.name
+        );
         let t_data = read_tensor_f32(&t_ref.shard_path, &t_ref.name);
 
         let compressed_blocks: Vec<QuantBlockV4> = quant_encoder::encode_tensor_v4(&t_data);
@@ -670,7 +732,10 @@ fn compress_v4(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
             size_bytes,
         });
 
-        let bytes: Vec<u8> = compressed_blocks.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let bytes: Vec<u8> = compressed_blocks
+            .iter()
+            .flat_map(|b| b.to_le_bytes())
+            .collect();
         wpc_file.write_all(&bytes).unwrap();
 
         current_offset += size_bytes;
@@ -691,6 +756,10 @@ fn compress_v4(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         current_offset as f64 / 1024.0 / 1024.0,
         v3_equivalent_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
         saved as f64 / 1024.0 / 1024.0 / 1024.0,
-        if v3_equivalent_bytes > 0 { saved as f64 * 100.0 / v3_equivalent_bytes as f64 } else { 0.0 },
+        if v3_equivalent_bytes > 0 {
+            saved as f64 * 100.0 / v3_equivalent_bytes as f64
+        } else {
+            0.0
+        },
     );
 }

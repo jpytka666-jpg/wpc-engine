@@ -108,7 +108,12 @@ pub fn load(model_dir: &Path, config: Config) -> anyhow::Result<Model> {
         "Qwen3 dense",
     );
     let final_norm = st.read_f32("model.norm.weight");
-    Ok(Model { config, embed, layers, final_norm })
+    Ok(Model {
+        config,
+        embed,
+        layers,
+        final_norm,
+    })
 }
 
 /// Load through the WPC v1 (VQ-codebook) backend. Norms still come from the
@@ -131,7 +136,12 @@ pub fn load_wpc(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::Res
         "Qwen3 WPC v1",
     );
     let final_norm = st.read_f32("model.norm.weight");
-    Ok(Model { config, embed, layers, final_norm })
+    Ok(Model {
+        config,
+        embed,
+        layers,
+        final_norm,
+    })
 }
 
 /// Load through the WPC v2 (affine 6-bit) backend.
@@ -153,7 +163,12 @@ pub fn load_wpc_v2(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::
         "Qwen3 WPC v2",
     );
     let final_norm = st.read_f32("model.norm.weight");
-    Ok(Model { config, embed, layers, final_norm })
+    Ok(Model {
+        config,
+        embed,
+        layers,
+        final_norm,
+    })
 }
 
 /// Load through the WPC v3 backend (v2's quantization, 6-bit codes bit-packed).
@@ -176,7 +191,12 @@ pub fn load_wpc_v3(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::
         "Qwen3 WPC v3",
     );
     let final_norm = st.read_f32("model.norm.weight");
-    Ok(Model { config, embed, layers, final_norm })
+    Ok(Model {
+        config,
+        embed,
+        layers,
+        final_norm,
+    })
 }
 
 /// Load through the WPC v4 backend (affine 4-bit, two codes per byte).
@@ -202,5 +222,10 @@ pub fn load_wpc_v4(model_dir: &Path, wpc_dir: &Path, config: Config) -> anyhow::
         "Qwen3 WPC v4",
     );
     let final_norm = st.read_f32("model.norm.weight");
-    Ok(Model { config, embed, layers, final_norm })
+    Ok(Model {
+        config,
+        embed,
+        layers,
+        final_norm,
+    })
 }

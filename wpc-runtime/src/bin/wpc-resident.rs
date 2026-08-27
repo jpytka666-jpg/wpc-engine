@@ -10,16 +10,21 @@ use wpc_runtime::sampling::{argmax_banned, banned_from_env};
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(long)] model: PathBuf,
-    #[arg(long)] wpc: PathBuf,
-    #[arg(long, default_value = "v4")] scheme: String,
-    #[arg(long, default_value_t = 120)] max_tokens: usize,
+    #[arg(long)]
+    model: PathBuf,
+    #[arg(long)]
+    wpc: PathBuf,
+    #[arg(long, default_value = "v4")]
+    scheme: String,
+    #[arg(long, default_value_t = 120)]
+    max_tokens: usize,
 }
 
 #[derive(Deserialize)]
 struct Request {
     prompt: String,
-    #[serde(default)] max_tokens: Option<usize>,
+    #[serde(default)]
+    max_tokens: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -32,7 +37,11 @@ fn bos_id(model_dir: &Path) -> Option<u32> {
     std::fs::read_to_string(model_dir.join("config.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("bos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32))
+        .and_then(|v| {
+            v.get("bos_token_id")
+                .and_then(|x| x.as_u64())
+                .map(|x| x as u32)
+        })
 }
 
 fn eos_ids(model_dir: &Path) -> Vec<u32> {
@@ -41,7 +50,10 @@ fn eos_ids(model_dir: &Path) -> Vec<u32> {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("eos_token_id").cloned())
         .map(|v| match v {
-            serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect(),
+            serde_json::Value::Array(a) => a
+                .iter()
+                .filter_map(|x| x.as_u64().map(|n| n as u32))
+                .collect(),
             serde_json::Value::Number(n) => n.as_u64().map(|x| vec![x as u32]).unwrap_or_default(),
             _ => Vec::new(),
         })
@@ -49,7 +61,9 @@ fn eos_ids(model_dir: &Path) -> Vec<u32> {
 }
 
 fn encode(tokenizer: &Tokenizer, prompt: &str, bos: Option<u32>) -> Result<Vec<u32>> {
-    let enc = tokenizer.encode(prompt, true).map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
+    let enc = tokenizer
+        .encode(prompt, true)
+        .map_err(|e| anyhow::anyhow!("tokenizer encode failed: {e}"))?;
     let mut ids = enc.get_ids().to_vec();
     if let Some(bos) = bos {
         if ids.first().copied() != Some(bos) {
@@ -60,7 +74,9 @@ fn encode(tokenizer: &Tokenizer, prompt: &str, bos: Option<u32>) -> Result<Vec<u
 }
 
 fn decode(tokenizer: &Tokenizer, ids: &[u32]) -> Result<String> {
-    tokenizer.decode(ids, true).map_err(|e| anyhow::anyhow!("tokenizer decode failed: {e}"))
+    tokenizer
+        .decode(ids, true)
+        .map_err(|e| anyhow::anyhow!("tokenizer decode failed: {e}"))
 }
 
 fn main() -> Result<()> {
@@ -90,7 +106,9 @@ fn main() -> Result<()> {
 
     for line in stdin.lock().lines() {
         let line = line?;
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         let req: Request = serde_json::from_str(&line).context("invalid resident request JSON")?;
         let prompt_ids = encode(&tokenizer, &req.prompt, bos_id(&args.model))?;
         let mut cache = model.new_cache();
@@ -104,12 +122,20 @@ fn main() -> Result<()> {
         for _ in 0..limit {
             let next_id = argmax_banned(&next_logits, &banned);
             generated.push(next_id);
-            if eos.contains(&next_id) { break; }
+            if eos.contains(&next_id) {
+                break;
+            }
             next_logits = model.forward_token(next_id, &mut cache);
         }
 
         let text = decode(&tokenizer, &generated)?;
-        serde_json::to_writer(&mut stdout, &Response { text, generated_tokens: generated.len() })?;
+        serde_json::to_writer(
+            &mut stdout,
+            &Response {
+                text,
+                generated_tokens: generated.len(),
+            },
+        )?;
         stdout.write_all(b"\n")?;
         stdout.flush()?;
     }

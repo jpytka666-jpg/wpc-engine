@@ -1,5 +1,5 @@
-use std::arch::x86_64::*;
 use half::f16;
+use std::arch::x86_64::*;
 use wpc_format::{
     CompressedBlock, QuantBlockV2, QuantBlockV3, QuantBlockV4, BLOCK_SIZE, BLOCK_SIZE_V2,
     BLOCK_SIZE_V4, PACKED_BYTES_V4,
@@ -42,7 +42,7 @@ pub unsafe fn matvec_wpc_fused(
 
         // -- 2. Broadcast base_value and scale --
         let v_base = _mm256_set1_ps(b.base_value.to_f32());
-        let v_scl  = _mm256_set1_ps(b.scale as f32);
+        let v_scl = _mm256_set1_ps(b.scale as f32);
 
         // -- 3. Load pattern (pre-scaled by 1/127) and GENERATE weights --
         let p_ptr = patterns.add(b.pattern_id as usize * BLOCK_SIZE);
@@ -96,11 +96,7 @@ pub unsafe fn matvec_fp32_baseline(w: *const f32, x: *const f32, n: usize) -> f3
 /// Each block's 128 weights are decoded via: value = zero_point + code * scale,
 /// then immediately consumed by FMA. Branch-free decode, no dictionary lookups.
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn matvec_v2_fused(
-    blocks: &[QuantBlockV2],
-    x: *const f32,
-    n_blocks: usize,
-) -> f32 {
+pub unsafe fn matvec_v2_fused(blocks: &[QuantBlockV2], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
     for i in 0..n_blocks {
         let b = *blocks.get_unchecked(i);
@@ -160,11 +156,7 @@ pub fn matvec_v2_scalar(blocks: &[QuantBlockV2], x: &[f32]) -> f32 {
 /// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
 /// floats.
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn matvec_v3_fused(
-    blocks: &[QuantBlockV3],
-    x: *const f32,
-    n_blocks: usize,
-) -> f32 {
+pub unsafe fn matvec_v3_fused(blocks: &[QuantBlockV3], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
     for i in 0..n_blocks {
         let b = *blocks.get_unchecked(i);
@@ -234,11 +226,7 @@ pub fn matvec_v3_scalar(blocks: &[QuantBlockV3], x: &[f32]) -> f32 {
 /// Requires AVX2 and FMA. `x` must have at least `n_blocks * 128` readable
 /// floats.
 #[target_feature(enable = "avx2,fma")]
-pub unsafe fn matvec_v4_fused(
-    blocks: &[QuantBlockV4],
-    x: *const f32,
-    n_blocks: usize,
-) -> f32 {
+pub unsafe fn matvec_v4_fused(blocks: &[QuantBlockV4], x: *const f32, n_blocks: usize) -> f32 {
     let mut acc = _mm256_setzero_ps();
     let nibble_mask = _mm256_set1_epi32(0x0F);
     for i in 0..n_blocks {
@@ -340,7 +328,8 @@ mod tests {
 
         let mut expected = 0.0f32;
         for j in 0..BLOCK_SIZE {
-            let w = raw_centroid[j] * (scale as f32 / 127.0) + base + raw_residual[j] * INV_INPUT_SCALE;
+            let w =
+                raw_centroid[j] * (scale as f32 / 127.0) + base + raw_residual[j] * INV_INPUT_SCALE;
             expected += w;
         }
 
@@ -385,9 +374,7 @@ mod tests {
         }
 
         // Compute v2_fused
-        let y = unsafe {
-            matvec_v2_fused(std::slice::from_ref(&block), x.as_ptr(), 1)
-        };
+        let y = unsafe { matvec_v2_fused(std::slice::from_ref(&block), x.as_ptr(), 1) };
 
         let rel_err = (y - expected).abs() / expected.abs().max(1e-6);
         assert!(
@@ -470,7 +457,10 @@ mod tests {
         let expected = reference_dot(&blocks, &x);
         let got = matvec_v2_scalar(&blocks, &x);
         let rel = (got - expected).abs() / expected.abs().max(1e-6);
-        assert!(rel < 1e-4, "scalar v2 multi-block: got {got}, expected {expected}");
+        assert!(
+            rel < 1e-4,
+            "scalar v2 multi-block: got {got}, expected {expected}"
+        );
     }
 
     #[test]
@@ -488,8 +478,7 @@ mod tests {
     #[test]
     fn scalar_v3_matches_scalar_v2_on_the_same_weights() {
         let (v2_blocks, x) = multi_block_fixture(9);
-        let v3_blocks: Vec<QuantBlockV3> =
-            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+        let v3_blocks: Vec<QuantBlockV3> = v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
 
         let v2 = matvec_v2_scalar(&v2_blocks, &x);
         let v3 = matvec_v3_scalar(&v3_blocks, &x);
@@ -503,8 +492,7 @@ mod tests {
             return;
         }
         let (v2_blocks, x) = multi_block_fixture(13);
-        let v3_blocks: Vec<QuantBlockV3> =
-            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+        let v3_blocks: Vec<QuantBlockV3> = v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
 
         let v2 = unsafe { matvec_v2_fused(&v2_blocks, x.as_ptr(), v2_blocks.len()) };
         let v3 = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
@@ -518,8 +506,7 @@ mod tests {
             return;
         }
         let (v2_blocks, x) = multi_block_fixture(6);
-        let v3_blocks: Vec<QuantBlockV3> =
-            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+        let v3_blocks: Vec<QuantBlockV3> = v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
 
         let s = matvec_v3_scalar(&v3_blocks, &x);
         let f = unsafe { matvec_v3_fused(&v3_blocks, x.as_ptr(), v3_blocks.len()) };
@@ -530,8 +517,7 @@ mod tests {
     #[test]
     fn scalar_v3_matches_the_reference_formula() {
         let (v2_blocks, x) = multi_block_fixture(5);
-        let v3_blocks: Vec<QuantBlockV3> =
-            v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
+        let v3_blocks: Vec<QuantBlockV3> = v2_blocks.iter().map(QuantBlockV3::from_v2).collect();
         let expected = reference_dot(&v2_blocks, &x);
         let got = matvec_v3_scalar(&v3_blocks, &x);
         let rel = (got - expected).abs() / expected.abs().max(1e-6);
@@ -597,7 +583,10 @@ mod tests {
         let expected = reference_dot_v4(&blocks, &x);
         let got = matvec_v4_scalar(&blocks, &x);
         let rel = (got - expected).abs() / expected.abs().max(1e-6);
-        assert!(rel < 1e-4, "scalar v4 multi-block: got {got}, expected {expected}");
+        assert!(
+            rel < 1e-4,
+            "scalar v4 multi-block: got {got}, expected {expected}"
+        );
     }
 
     #[test]
@@ -640,7 +629,9 @@ mod tests {
                 scale: f16::from_f32(0.03125), // exact in f16, so the check is tight
                 packed: QuantBlockV4::pack_codes(&codes),
             };
-            let x: Vec<f32> = (0..BLOCK_SIZE_V4).map(|i| (i as f32) * 0.01 - 0.6).collect();
+            let x: Vec<f32> = (0..BLOCK_SIZE_V4)
+                .map(|i| (i as f32) * 0.01 - 0.6)
+                .collect();
 
             let got = unsafe { matvec_v4_fused(std::slice::from_ref(&block), x.as_ptr(), 1) };
             let expected = reference_dot_v4(std::slice::from_ref(&block), &x);
@@ -676,9 +667,16 @@ mod tests {
         // Scaled against the magnitude of the terms rather than against the sum,
         // which is a near-cancellation of positives and negatives and so is a
         // misleading denominator.
-        let scale: f32 = weights.iter().zip(x.iter()).map(|(w, a)| (w * a).abs()).sum();
+        let scale: f32 = weights
+            .iter()
+            .zip(x.iter())
+            .map(|(w, a)| (w * a).abs())
+            .sum();
         let e3 = (y3 - exact).abs() / scale;
         let e4 = (y4 - exact).abs() / scale;
-        assert!(e4 < 0.02, "v4 dot product off by {e4} of term magnitude (v3: {e3})");
+        assert!(
+            e4 < 0.02,
+            "v4 dot product off by {e4} of term magnitude (v3: {e3})"
+        );
     }
 }

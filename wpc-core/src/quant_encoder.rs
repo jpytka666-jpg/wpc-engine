@@ -1,18 +1,26 @@
+use rayon::prelude::*;
 use wpc_format::{
     QuantBlockV2, QuantBlockV3, QuantBlockV4, BLOCK_SIZE_V2, BLOCK_SIZE_V4, MAX_CODE_V4,
 };
-use rayon::prelude::*;
 
 /// Quantize a block of 128 f32 values to v2 format (6-bit affine).
 pub fn affine_quant_block(weights: &[f32; BLOCK_SIZE_V2]) -> QuantBlockV2 {
     let mut min_v = f32::MAX;
     let mut max_v = f32::MIN;
     for &w in weights {
-        if w < min_v { min_v = w; }
-        if w > max_v { max_v = w; }
+        if w < min_v {
+            min_v = w;
+        }
+        if w > max_v {
+            max_v = w;
+        }
     }
     let levels = 63.0_f32; // 2^6 - 1
-    let scale = if max_v > min_v { (max_v - min_v) / levels } else { 1.0 };
+    let scale = if max_v > min_v {
+        (max_v - min_v) / levels
+    } else {
+        1.0
+    };
     let mut codes = [0u8; BLOCK_SIZE_V2];
     for i in 0..BLOCK_SIZE_V2 {
         let code = ((weights[i] - min_v) / scale).round().clamp(0.0, levels);
@@ -27,13 +35,20 @@ pub fn affine_quant_block(weights: &[f32; BLOCK_SIZE_V2]) -> QuantBlockV2 {
 
 /// Encode a flat tensor into v2 quantized blocks.
 pub fn encode_tensor_v2(data: &[f32]) -> Vec<QuantBlockV2> {
-    assert_eq!(data.len() % BLOCK_SIZE_V2, 0, "tensor length must be a multiple of {BLOCK_SIZE_V2}");
+    assert_eq!(
+        data.len() % BLOCK_SIZE_V2,
+        0,
+        "tensor length must be a multiple of {BLOCK_SIZE_V2}"
+    );
     let n_blocks = data.len() / BLOCK_SIZE_V2;
-    (0..n_blocks).into_par_iter().map(|i| {
-        let mut block = [0.0f32; BLOCK_SIZE_V2];
-        block.copy_from_slice(&data[i*BLOCK_SIZE_V2..(i+1)*BLOCK_SIZE_V2]);
-        affine_quant_block(&block)
-    }).collect()
+    (0..n_blocks)
+        .into_par_iter()
+        .map(|i| {
+            let mut block = [0.0f32; BLOCK_SIZE_V2];
+            block.copy_from_slice(&data[i * BLOCK_SIZE_V2..(i + 1) * BLOCK_SIZE_V2]);
+            affine_quant_block(&block)
+        })
+        .collect()
 }
 
 /// Quantize a block to v3: identical arithmetic to v2, packed layout.
@@ -47,13 +62,20 @@ pub fn affine_quant_block_v3(weights: &[f32; BLOCK_SIZE_V2]) -> QuantBlockV3 {
 
 /// Encode a flat tensor into v3 packed blocks.
 pub fn encode_tensor_v3(data: &[f32]) -> Vec<QuantBlockV3> {
-    assert_eq!(data.len() % BLOCK_SIZE_V2, 0, "tensor length must be a multiple of {BLOCK_SIZE_V2}");
+    assert_eq!(
+        data.len() % BLOCK_SIZE_V2,
+        0,
+        "tensor length must be a multiple of {BLOCK_SIZE_V2}"
+    );
     let n_blocks = data.len() / BLOCK_SIZE_V2;
-    (0..n_blocks).into_par_iter().map(|i| {
-        let mut block = [0.0f32; BLOCK_SIZE_V2];
-        block.copy_from_slice(&data[i*BLOCK_SIZE_V2..(i+1)*BLOCK_SIZE_V2]);
-        affine_quant_block_v3(&block)
-    }).collect()
+    (0..n_blocks)
+        .into_par_iter()
+        .map(|i| {
+            let mut block = [0.0f32; BLOCK_SIZE_V2];
+            block.copy_from_slice(&data[i * BLOCK_SIZE_V2..(i + 1) * BLOCK_SIZE_V2]);
+            affine_quant_block_v3(&block)
+        })
+        .collect()
 }
 
 /// Quantize a block of 128 f32 values to v4 format (4-bit affine).
@@ -67,11 +89,19 @@ pub fn affine_quant_block_v4(weights: &[f32; BLOCK_SIZE_V4]) -> QuantBlockV4 {
     let mut min_v = f32::MAX;
     let mut max_v = f32::MIN;
     for &w in weights {
-        if w < min_v { min_v = w; }
-        if w > max_v { max_v = w; }
+        if w < min_v {
+            min_v = w;
+        }
+        if w > max_v {
+            max_v = w;
+        }
     }
     let levels = MAX_CODE_V4 as f32; // 2^4 - 1
-    let scale = if max_v > min_v { (max_v - min_v) / levels } else { 1.0 };
+    let scale = if max_v > min_v {
+        (max_v - min_v) / levels
+    } else {
+        1.0
+    };
     let mut codes = [0u8; BLOCK_SIZE_V4];
     for i in 0..BLOCK_SIZE_V4 {
         let code = ((weights[i] - min_v) / scale).round().clamp(0.0, levels);
@@ -86,13 +116,20 @@ pub fn affine_quant_block_v4(weights: &[f32; BLOCK_SIZE_V4]) -> QuantBlockV4 {
 
 /// Encode a flat tensor into v4 packed blocks.
 pub fn encode_tensor_v4(data: &[f32]) -> Vec<QuantBlockV4> {
-    assert_eq!(data.len() % BLOCK_SIZE_V4, 0, "tensor length must be a multiple of {BLOCK_SIZE_V4}");
+    assert_eq!(
+        data.len() % BLOCK_SIZE_V4,
+        0,
+        "tensor length must be a multiple of {BLOCK_SIZE_V4}"
+    );
     let n_blocks = data.len() / BLOCK_SIZE_V4;
-    (0..n_blocks).into_par_iter().map(|i| {
-        let mut block = [0.0f32; BLOCK_SIZE_V4];
-        block.copy_from_slice(&data[i*BLOCK_SIZE_V4..(i+1)*BLOCK_SIZE_V4]);
-        affine_quant_block_v4(&block)
-    }).collect()
+    (0..n_blocks)
+        .into_par_iter()
+        .map(|i| {
+            let mut block = [0.0f32; BLOCK_SIZE_V4];
+            block.copy_from_slice(&data[i * BLOCK_SIZE_V4..(i + 1) * BLOCK_SIZE_V4]);
+            affine_quant_block_v4(&block)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -113,7 +150,11 @@ mod tests {
         for v in 0u8..64 {
             let uniform = [v; BLOCK_SIZE_V2];
             let p = QuantBlockV3::pack_codes(&uniform);
-            assert_eq!(QuantBlockV3::unpack_codes(&p), uniform, "code value {v} failed");
+            assert_eq!(
+                QuantBlockV3::unpack_codes(&p),
+                uniform,
+                "code value {v} failed"
+            );
         }
     }
 
@@ -193,7 +234,10 @@ mod tests {
         let rel_rmse = rmse / (sum_sq_original / BLOCK_SIZE_V2 as f32).sqrt();
 
         // 6-bit quantization on a ramp should have small relative error
-        assert!(rel_rmse < 0.05, "relative RMSE {rel_rmse} too high (should be <5% for this block)");
+        assert!(
+            rel_rmse < 0.05,
+            "relative RMSE {rel_rmse} too high (should be <5% for this block)"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -214,7 +258,11 @@ mod tests {
         for v in 0u8..=MAX_CODE_V4 {
             let uniform = [v; BLOCK_SIZE_V4];
             let p = QuantBlockV4::pack_codes(&uniform);
-            assert_eq!(QuantBlockV4::unpack_codes(&p), uniform, "code value {v} failed");
+            assert_eq!(
+                QuantBlockV4::unpack_codes(&p),
+                uniform,
+                "code value {v} failed"
+            );
         }
 
         let mut codes = [0u8; BLOCK_SIZE_V4];
@@ -298,8 +346,14 @@ mod tests {
         let rmse3 = (e3 / BLOCK_SIZE_V4 as f32).sqrt();
         let rmse4 = (e4 / BLOCK_SIZE_V4 as f32).sqrt();
 
-        assert!(rmse4 >= rmse3, "v4 RMSE {rmse4} should not beat v3's {rmse3}");
-        assert!(rmse4 < rmse3 * 8.0, "v4 RMSE {rmse4} is far worse than 4x v3's {rmse3}");
+        assert!(
+            rmse4 >= rmse3,
+            "v4 RMSE {rmse4} should not beat v3's {rmse3}"
+        );
+        assert!(
+            rmse4 < rmse3 * 8.0,
+            "v4 RMSE {rmse4} is far worse than 4x v3's {rmse3}"
+        );
     }
 
     #[test]

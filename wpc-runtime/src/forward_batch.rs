@@ -1,112 +1,164 @@
 use anyhow::Result;
 use matrixmultiply;
-use std::ffi::{c_int, c_void};
-use std::ptr::null_mut;
 
-const MADV_HUGEPAGE: c_int = 14;
-
-extern "C" {
-    fn madvise(addr: *mut c_void, length: usize, advice: c_int) -> c_int;
-    fn mmap(addr: *mut c_void, length: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut c_void;
-    fn munmap(addr: *mut c_void, length: usize) -> i32;
-}
-
-const PROT_READ: i32 = libc::PROT_READ;
-const PROT_WRITE: i32 = libc::PROT_WRITE;
-const MAP_PRIVATE: i32 = libc::MAP_PRIVATE;
-const MAP_ANONYMOUS: i32 = libc::MAP_ANONYMOUS;
-
-pub struct MmapF32 {
-    ptr: *mut f32,
-    len: usize,
-    used: usize,
-    bytes: usize,
-}
-
-impl MmapF32 {
-    pub fn new(num_elems: usize) -> Result<Self> {
-        let alloc_elems = num_elems.max(1);
-        let bytes = alloc_elems
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or_else(|| anyhow::anyhow!("size overflow"))?;
-
-        unsafe {
-            let p = mmap(
-                null_mut(),
-                bytes,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            );
-            if p == libc::MAP_FAILED {
-                anyhow::bail!("mmap failed");
+#[cfg(unix)]
+mod platform_mmap {
+    use super::Result;
+    use std::ffi::{c_int, c_void};
+    use std::ptr::null_mut;
+    const MADV_HUGEPAGE: c_int = 14;
+    extern "C" {
+        fn madvise(addr: *mut c_void, length: usize, advice: c_int) -> c_int;
+        fn mmap(
+            addr: *mut c_void,
+            length: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            offset: i64,
+        ) -> *mut c_void;
+        fn munmap(addr: *mut c_void, length: usize) -> i32;
+    }
+    const PROT_READ: i32 = libc::PROT_READ;
+    const PROT_WRITE: i32 = libc::PROT_WRITE;
+    const MAP_PRIVATE: i32 = libc::MAP_PRIVATE;
+    const MAP_ANONYMOUS: i32 = libc::MAP_ANONYMOUS;
+    pub struct MmapF32 {
+        pub(crate) ptr: *mut f32,
+        pub(crate) len: usize,
+        pub(crate) used: usize,
+        pub(crate) bytes: usize,
+    }
+    impl MmapF32 {
+        pub fn new(n: usize) -> Result<Self> {
+            let a = n.max(1);
+            let bytes = a
+                .checked_mul(4)
+                .ok_or_else(|| anyhow::anyhow!("size overflow"))?;
+            unsafe {
+                let p = mmap(
+                    null_mut(),
+                    bytes,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1,
+                    0,
+                );
+                if p == libc::MAP_FAILED {
+                    anyhow::bail!("mmap failed")
+                };
+                let _ = madvise(p, bytes, MADV_HUGEPAGE);
+                Ok(Self {
+                    ptr: p as *mut f32,
+                    len: n,
+                    used: 0,
+                    bytes,
+                })
             }
-            let _ = madvise(p, bytes, MADV_HUGEPAGE);
+        }
+        pub fn as_mut_slice(&mut self) -> &mut [f32] {
+            unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+        }
+        pub fn as_slice(&self) -> &[f32] {
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        }
+        pub fn capacity(&self) -> usize {
+            self.len
+        }
+        pub fn mark_used(&mut self, u: usize) -> Result<()> {
+            if u > self.len {
+                anyhow::bail!("used exceeds capacity")
+            };
+            self.used = u;
+            Ok(())
+        }
+        pub fn ensure_capacity(&mut self, need: usize) -> Result<()> {
+            if need <= self.len {
+                return Ok(());
+            };
+            let nl = need
+                .checked_next_power_of_two()
+                .ok_or_else(|| anyhow::anyhow!("capacity overflow"))?;
+            let ou = self.used;
+            let nm = Self::new(nl)?;
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.ptr, nm.ptr, ou);
+                let op = self.ptr as *mut c_void;
+                let ob = self.bytes;
+                self.ptr = nm.ptr;
+                self.len = nm.len;
+                self.bytes = nm.bytes;
+                self.used = ou;
+                let _ = munmap(op, ob);
+            }
+            std::mem::forget(nm);
+            Ok(())
+        }
+    }
+    impl Drop for MmapF32 {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = munmap(self.ptr as *mut c_void, self.bytes);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+mod platform_mmap {
+    use super::Result;
+    pub struct MmapF32 {
+        pub(crate) backing: Vec<f32>,
+        pub(crate) ptr: *mut f32,
+        pub(crate) len: usize,
+        pub(crate) used: usize,
+        pub(crate) bytes: usize,
+    }
+    impl MmapF32 {
+        pub fn new(n: usize) -> Result<Self> {
+            let a = n.max(1);
+            let mut backing = vec![0.0f32; a];
+            let ptr = backing.as_mut_ptr();
             Ok(Self {
-                ptr: p as *mut f32,
-                len: num_elems,
+                backing,
+                ptr,
+                len: n,
                 used: 0,
-                bytes,
+                bytes: a * 4,
             })
         }
-    }
-
-    pub fn as_mut_slice(&mut self) -> &mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-
-    pub fn as_slice(&self) -> &[f32] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.len
-    }
-
-    /// Mark the first `used` elements as initialized so growth can preserve them.
-    pub fn mark_used(&mut self, used: usize) -> Result<()> {
-        if used > self.len {
-            anyhow::bail!("used exceeds capacity");
+        pub fn as_mut_slice(&mut self) -> &mut [f32] {
+            &mut self.backing[..self.len]
         }
-        self.used = used;
-        Ok(())
-    }
-
-    pub fn ensure_capacity(&mut self, need: usize) -> Result<()> {
-        if need <= self.len {
-            return Ok(());
+        pub fn as_slice(&self) -> &[f32] {
+            &self.backing[..self.len]
         }
-
-        let new_len = need
-            .checked_next_power_of_two()
-            .ok_or_else(|| anyhow::anyhow!("capacity overflow"))?;
-        let old_used = self.used;
-        let new_map = MmapF32::new(new_len)?;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.ptr, new_map.ptr, old_used);
-            let old_ptr = self.ptr as *mut c_void;
-            let old_bytes = self.bytes;
-            self.ptr = new_map.ptr;
-            self.len = new_map.len;
-            self.bytes = new_map.bytes;
-            self.used = old_used;
-            let _ = munmap(old_ptr, old_bytes);
+        pub fn capacity(&self) -> usize {
+            self.len
         }
-
-        std::mem::forget(new_map);
-        Ok(())
-    }
-}
-
-impl Drop for MmapF32 {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = munmap(self.ptr as *mut c_void, self.bytes);
+        pub fn mark_used(&mut self, u: usize) -> Result<()> {
+            if u > self.len {
+                anyhow::bail!("used exceeds capacity")
+            };
+            self.used = u;
+            Ok(())
+        }
+        pub fn ensure_capacity(&mut self, need: usize) -> Result<()> {
+            if need <= self.len {
+                return Ok(());
+            };
+            let nl = need
+                .checked_next_power_of_two()
+                .ok_or_else(|| anyhow::anyhow!("capacity overflow"))?;
+            self.backing.resize(nl, 0.0);
+            self.ptr = self.backing.as_mut_ptr();
+            self.len = nl;
+            self.bytes = nl * 4;
+            Ok(())
         }
     }
 }
+pub use platform_mmap::MmapF32;
 
 pub struct KvLayer {
     pub dim: usize,
@@ -159,7 +211,12 @@ impl KvLayer {
         Ok(())
     }
 
-    pub fn append_batch(&mut self, k_batch: &[f32], v_batch: &[f32], batch_rows: usize) -> Result<()> {
+    pub fn append_batch(
+        &mut self,
+        k_batch: &[f32],
+        v_batch: &[f32],
+        batch_rows: usize,
+    ) -> Result<()> {
         let elems = batch_rows
             .checked_mul(self.dim)
             .ok_or_else(|| anyhow::anyhow!("batch size overflow"))?;
@@ -362,7 +419,11 @@ impl BatchEngine {
         )
     }
 
-    pub fn reference_attention_batch(&self, q_batch: &[Vec<f32>], kv: &KvLayer) -> Result<Vec<Vec<f32>>> {
+    pub fn reference_attention_batch(
+        &self,
+        q_batch: &[Vec<f32>],
+        kv: &KvLayer,
+    ) -> Result<Vec<Vec<f32>>> {
         let batch_size = q_batch.len();
         if batch_size > kv.seq_len {
             anyhow::bail!("batch larger than KV sequence");
