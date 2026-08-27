@@ -1,3 +1,10 @@
+/*
+ * ==========================================
+ * AUTHOR: M. SZUL
+ * AI MODEL: Claude Opus 5
+ * ==========================================
+ */
+
 use noworodek::{ArchitectureId, DType, ExternalTransformer, MemoryWeightBackend, ParameterHandle, Tensor, TensorSpec, TinyTransformerConfig, WeightSetHeader, WeightSetId, WeightSetManager, WeightSetManifest, WeightSetVersion};
 
 #[derive(Debug)]
