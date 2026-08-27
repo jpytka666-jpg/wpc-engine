@@ -130,7 +130,15 @@ fn save_weights(path: &str, names: &[String], mgr: &WeightSetManager, set: &Weig
     Ok(written)
 }
 
-fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> std::io::Result<usize> {
+/// Returns how many tensors were restored, and how many vocabulary rows were carried.
+///
+/// The row count is what tells the caller which ids are NEW - everything at or above it
+/// arrived with the book's growth and has never been trained on anything.
+fn load_weights(
+    path: &str,
+    mgr: &mut WeightSetManager,
+    set: &WeightSetId,
+) -> std::io::Result<(usize, Option<usize>)> {
     use std::io::{Error, ErrorKind};
     let bytes = std::fs::read(path)?;
     let bad = |m: String| Error::new(ErrorKind::InvalidData, m);
@@ -146,6 +154,10 @@ fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> st
 
     let mut at = 12usize;
     let mut restored = 0usize;
+    // Smallest across the tensors that grew. They should agree - both vocabulary-shaped
+    // tensors grow together - and taking the minimum means a disagreement understates
+    // what was carried rather than treating an untrained row as trained.
+    let mut carried_rows: Option<usize> = None;
     // Truncation is an error, not a place to stop. Reading eight tensors out of twelve
     // and calling it success is how a corrupted checkpoint survives into the next night.
     while at < bytes.len() {
@@ -205,6 +217,7 @@ fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> st
                 )));
             }
             let carried = values.len() / row;
+            carried_rows = Some(carried_rows.map_or(carried, |c: usize| c.min(carried)));
             let fresh = (want - values.len()) / row;
             println!(
                 "  {name}: przeniesiono {carried} wierszy, {fresh} nowych zaczyna od zera"
@@ -225,7 +238,83 @@ fn load_weights(path: &str, mgr: &mut WeightSetManager, set: &WeightSetId) -> st
             "plik deklaruje {declared} tensorow, wczytano {restored} - niekompletny checkpoint"
         )));
     }
-    Ok(restored)
+    Ok((restored, carried_rows))
+}
+
+/// Give a word the model has never seen the company it keeps.
+///
+/// When the shared book grows, the new words arrive as rows at their fresh initialisation
+/// - the model knows nothing about them and must learn each from scratch. But the corpus
+/// already says something about them: the words they appear NEXT TO. Averaging the rows
+/// of the trained neighbours is the same move a person makes on hearing an unfamiliar
+/// word in a sentence and getting the gist from what surrounds it.
+///
+/// This writes knowledge into the weights directly, with no training step at all, which
+/// is the whole point: it is checkable by measuring held-out loss before and after.
+///
+/// Only neighbours BELOW `carried` are used - those are the rows that were actually
+/// trained. Averaging in another untrained row would spread noise and dress it up as
+/// meaning. A new word with no trained neighbour is left alone rather than guessed at.
+fn warm_start(
+    ids: &[usize],
+    carried: usize,
+    vocab: usize,
+    window: usize,
+    mgr: &mut WeightSetManager,
+    set: &WeightSetId,
+) -> Result<(usize, usize), String> {
+    use std::collections::HashMap;
+
+    // new id -> sum of trained neighbour rows, and how many were added
+    let mut company: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, &id) in ids.iter().enumerate() {
+        if id < carried || id >= vocab {
+            continue;
+        }
+        let lo = i.saturating_sub(window);
+        let hi = (i + window + 1).min(ids.len());
+        for &near in &ids[lo..hi] {
+            if near < carried {
+                company.entry(id).or_default().push(near);
+            }
+        }
+    }
+    if company.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let mut filled = 0usize;
+    for name in ["model.embeddings.token.weight", "model.lm_head.weight"] {
+        let handle = ParameterHandle::new(set.clone(), name).map_err(|e| format!("{name}: {e:?}"))?;
+        let current = handle.read(mgr).map_err(|e| format!("{name}: {e:?}"))?;
+        let shape = current.shape().to_vec();
+        if shape.len() < 2 || shape[0] < vocab {
+            continue;
+        }
+        let hidden = shape[1];
+        let mut values = current.values().to_vec();
+        for (&new_id, neighbours) in &company {
+            if neighbours.is_empty() {
+                continue;
+            }
+            let mut row = vec![0.0f32; hidden];
+            for &n in neighbours {
+                let base = n * hidden;
+                for k in 0..hidden {
+                    row[k] += values[base + k];
+                }
+            }
+            let scale = neighbours.len() as f32;
+            let dst = new_id * hidden;
+            for k in 0..hidden {
+                values[dst + k] = row[k] / scale;
+            }
+            filled += 1;
+        }
+        let t = Tensor::from_vec(shape, values).map_err(|e| format!("{name}: {e:?}"))?;
+        handle.write(mgr, &t).map_err(|e| format!("{name}: {e:?}"))?;
+    }
+    Ok((company.len(), filled))
 }
 
 fn main() -> ExitCode {
@@ -408,14 +497,43 @@ fn main() -> ExitCode {
     // Continue from an earlier cycle if asked. Without this every nightly run would start
     // from nothing, and there would be no earlier state to return to.
     if let Some(from) = arg(&args, "--load") {
-        match load_weights(&from, &mut mgr, &model.weight_set) {
-            Ok(n) => println!("wczytano       : {n} tensorow z {from}"),
+        let carried = match load_weights(&from, &mut mgr, &model.weight_set) {
+            Ok((n, carried)) => {
+                println!("wczytano       : {n} tensorow z {from}");
+                carried
+            }
             Err(e) => {
                 eprintln!("nie moge wczytac {from}: {e}");
                 return ExitCode::FAILURE;
             }
+        };
+        let after_load = held_loss(&mgr);
+        println!("odlozone po wczytaniu: {after_load:.4}");
+
+        // Words the book gained since this checkpoint have never been trained on
+        // anything. Before spending a single step on them, give them the company they
+        // keep - and print both numbers, because a change with no measurement beside it
+        // is a claim.
+        if let Some(carried) = carried {
+            if carried < vocab && !args.iter().any(|a| a == "--bez-rozgrzewki") {
+                match warm_start(&ids, carried, vocab, seq, &mut mgr, &model.weight_set) {
+                    Ok((words, rows)) if words > 0 => {
+                        let after_warm = held_loss(&mgr);
+                        println!(
+                            "rozgrzewka     : {words} nowych slow dostalo srednia sasiadow \
+                             ({rows} wierszy)"
+                        );
+                        println!(
+                            "odlozone po rozgrzewce: {after_warm:.4}   ({:+.4}, bez ani jednego \
+                             kroku uczenia)",
+                            after_warm - after_load
+                        );
+                    }
+                    Ok(_) => println!("rozgrzewka     : zadne nowe slowo nie ma wyuczonego sasiada"),
+                    Err(e) => println!("rozgrzewka nieudana: {e}"),
+                }
+            }
         }
-        println!("odlozone po wczytaniu: {:.4}", held_loss(&mgr));
         println!();
     }
 
