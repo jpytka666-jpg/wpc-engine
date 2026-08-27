@@ -3,7 +3,7 @@
 # AUTHOR: M. SZUL
 # AI MODEL: Claude Opus 5
 # TIMESTAMP: 2026-08-27 01:22:40
-# REASON FOR CREATION: Every source file carries `GIT COMMIT: PENDING` and the rule says to
+# REASON FOR CREATION: Every source file carries `GIT COMMIT: e40c82057dee7fdc673ad364f3a9c616faa09111` and the rule says to
 #   fill it once the hash exists. Nobody ever went back, so the field has been PENDING in
 #   every file since the convention started - a field that is always the same value tells
 #   you nothing, and a rule nobody follows is worse than no rule, because it looks kept.
@@ -19,7 +19,7 @@
 # TECH STACK: Python 3, standard library. Same as the other hooks, and it must run when
 #   other things are broken.
 # LOCAL WORKSPACE: C:\Users\User\.claude\hooks\stamp_commit.py
-# GIT COMMIT: PENDING
+# GIT COMMIT: e40c82057dee7fdc673ad364f3a9c616faa09111
 # GITHUB METADATA: local hook, not in a project repository
 # ==========================================
 """Wpisuje prawdziwy hash w pole GIT COMMIT po udanym zapisie."""

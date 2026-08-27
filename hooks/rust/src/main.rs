@@ -22,7 +22,7 @@
 //   cost, and a compiled binary starts in microseconds where an interpreter pays tens of
 //   milliseconds each time. It is also the language the rule is about.
 // LOCAL WORKSPACE: C:\Users\User\.claude\hooks\rust
-// GIT COMMIT: PENDING
+// GIT COMMIT: e40c82057dee7fdc673ad364f3a9c616faa09111
 // GITHUB METADATA: local hook, not in a project repository
 // ==========================================
 
