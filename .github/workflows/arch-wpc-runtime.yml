@@ -1,0 +1,35 @@
+name: AIONS Architecture - WPC Runtime
+
+on:
+  push:
+    branches: ["arch/wpc-runtime"]
+  pull_request:
+    branches: [main]
+    paths:
+      - "CLAUDE.md"
+      - "docs/**"
+      - "modules/wpc-runtime/**"
+      - ".github/workflows/arch-wpc-runtime.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify module contract
+        shell: bash
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          test -f modules/wpc-runtime/README.md
+          grep -q "GitHub first" CLAUDE.md
+          grep -q "WPC Runtime" docs/MODULE-CONTRACT.md
+          grep -q "resident runtime" modules/wpc-runtime/README.md
+      - name: Verify repository cleanliness contract
+        shell: bash
+        run: |
+          ! find modules/wpc-runtime -type f -name '*.env' -o -name '*.key' -o -name '*.pem' | grep -q .
+          ! find modules/wpc-runtime -type f -name '.*secret*' | grep -q .
