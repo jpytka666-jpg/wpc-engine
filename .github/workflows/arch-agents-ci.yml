@@ -1,0 +1,94 @@
+name: AIONS Architecture - Agents CI
+
+on:
+  push:
+    branches: ["arch/agents-ci"]
+  pull_request:
+    branches: [main]
+    paths:
+      - "CLAUDE.md"
+      - "docs/**"
+      - "tools/aions-local-ci/**"
+      - ".github/workflows/arch-agents-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify module contract
+        run: |
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          grep -q "GitHub-first" docs/MODULE-CONTRACT.md
+          grep -q "bounded repair" docs/MODULE-CONTRACT.md
+
+  static:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - markdown
+          - shell-safety
+          - rust-source
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run parallel static check
+        env:
+          CHECK: ${{ matrix.check }}
+        run: |
+          set -euo pipefail
+          case "$CHECK" in
+            markdown)
+              test -f README.md || true
+              grep -RIn "TODO\|FIXME" tools/aions-local-ci docs || true
+              ;;
+            shell-safety)
+              ! grep -RIn --exclude-dir=.git --exclude='*.md' -E 'curl[[:space:]]+[^|]+\|[[:space:]]*(bash|sh)|rm[[:space:]]+-rf[[:space:]]+/' tools/aions-local-ci || true
+              ;;
+            rust-source)
+              find tools/aions-local-ci -type f -name '*.rs' -print0 | xargs -0 -r rustc --version
+              ;;
+          esac
+
+  runner:
+    runs-on: ubuntu-latest
+    needs: [contract]
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - check
+          - classify
+          - repair-contract
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate mode
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          test -f docs/MODULE-CONTRACT.md
+          case "$MODE" in
+            check) grep -q "check -> classify" docs/MODULE-CONTRACT.md ;;
+            classify) grep -q "failure classification" docs/ROADMAP.md || true ;;
+            repair-contract) grep -q "No push or merge by default" docs/MODULE-CONTRACT.md ;;
+            *) exit 1 ;;
+          esac
+
+  gate:
+    runs-on: ubuntu-latest
+    needs: [contract, static, runner]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Architecture gate
+        run: |
+          set -euo pipefail
+          test -f CLAUDE.md
+          test -f docs/MODULE-CONTRACT.md
+          test -f docs/ROADMAP.md
+          echo "AGENTS-CI GREEN"
