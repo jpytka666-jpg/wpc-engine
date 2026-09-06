@@ -30,35 +30,35 @@ use crate::codec::Codec;
 use std::collections::HashMap;
 
 /// Control ids come first so that adding book entries never moves them.
-pub const ID_PAD: u16 = 0;
+pub const ID_PAD: u32 = 0;
 /// Reserved. Kept so the control block keeps its shape as things are added to it;
 /// removing it would shift every id after it and make stored data unreadable.
-pub const ID_RESERVED: u16 = 1;
+pub const ID_RESERVED: u32 = 1;
 /// Separates words. Whitespace is structure, not a concept.
-pub const ID_SPACE: u16 = 2;
-pub const ID_NEWLINE: u16 = 3;
+pub const ID_SPACE: u32 = 2;
+pub const ID_NEWLINE: u32 = 3;
 /// Marks the start of a run of literal bytes; the id after it is the run length.
-pub const ID_RAW_RUN: u16 = 4;
+pub const ID_RAW_RUN: u32 = 4;
 /// The next word starts with a capital. Canonicalisation lowercases, so without these
 /// every sentence-initial word would fall to the byte fallback in order to keep its
 /// capital - paying one id per byte for a word that is otherwise one id, to record one bit.
-pub const ID_CAPITAL: u16 = 5;
+pub const ID_CAPITAL: u32 = 5;
 /// The next word is in capitals throughout.
-pub const ID_UPPER: u16 = 6;
+pub const ID_UPPER: u32 = 6;
 /// The same two, with a leading space folded in. A capitalised word usually starts a
 /// sentence, so without these the commonest word in the language to follow a space would
 /// be the one that still had to pay an id for it.
-pub const ID_CAPITAL_SPACED: u16 = 7;
-pub const ID_UPPER_SPACED: u16 = 8;
-const CONTROL_COUNT: u16 = 16;
+pub const ID_CAPITAL_SPACED: u32 = 7;
+pub const ID_UPPER_SPACED: u32 = 8;
+const CONTROL_COUNT: u32 = 16;
 /// 256 ids for raw bytes, immediately after the control block.
-const BYTE_BASE: u16 = CONTROL_COUNT;
-const SYMBOL_BASE: u16 = BYTE_BASE + 256;
+const BYTE_BASE: u32 = CONTROL_COUNT;
+const SYMBOL_BASE: u32 = BYTE_BASE + 256;
 
 pub struct Vocabulary<'b> {
     codec: Codec<'b>,
     book: &'b Book,
-    symbol_to_id: HashMap<String, u16>,
+    symbol_to_id: HashMap<String, u32>,
     id_to_symbol: Vec<String>,
 }
 
@@ -89,7 +89,7 @@ impl<'b> Vocabulary<'b> {
             // ids that already mean something, which is the one failure that cannot be
             // detected downstream - the data would decode, into the wrong words.
             let index = id_to_symbol.len();
-            let id = SYMBOL_BASE.checked_add(2u16.checked_mul(u16::try_from(index).ok()?)?)?;
+            let id = SYMBOL_BASE.checked_add(2u32.checked_mul(u32::try_from(index).ok()?)?)?;
             symbol_to_id.insert(entry.symbol.clone(), id);
             id_to_symbol.push(entry.symbol.clone());
         }
@@ -110,20 +110,20 @@ impl<'b> Vocabulary<'b> {
 
     /// Bits needed per id if packed at fixed width.
     pub fn bits_per_id(&self) -> u32 {
-        let n = self.len().max(2) as u32;
-        32 - (n - 1).leading_zeros()
+        let n = self.len().max(2);
+        usize::BITS - (n - 1).leading_zeros()
     }
 
     pub fn symbol_count(&self) -> usize {
         self.id_to_symbol.len()
     }
 
-    fn id_of_symbol(&self, sym: &str) -> Option<u16> {
+    fn id_of_symbol(&self, sym: &str) -> Option<u32> {
         self.symbol_to_id.get(sym).copied()
     }
 
     /// The symbol an id names, and whether that id also carries a leading space.
-    fn symbol_of_id(&self, id: u16) -> Option<(&str, bool)> {
+    fn symbol_of_id(&self, id: u32) -> Option<(&str, bool)> {
         if id < SYMBOL_BASE {
             return None;
         }
@@ -161,7 +161,7 @@ impl<'b> Vocabulary<'b> {
 
     /// Text to ids. Anything the book does not have is spelled out in bytes, so this
     /// never fails and never invents.
-    pub fn encode(&self, text: &str) -> Vec<u16> {
+    pub fn encode(&self, text: &str) -> Vec<u32> {
         let mut out = Vec::new();
         let mut first = true;
         for line in text.split('\n') {
@@ -206,7 +206,7 @@ impl<'b> Vocabulary<'b> {
     }
 
     /// Re-apply a case mark to a decoded word.
-    fn apply_case(mark: Option<u16>, word: &str) -> String {
+    fn apply_case(mark: Option<u32>, word: &str) -> String {
         match mark {
             Some(ID_UPPER) => word.to_uppercase(),
             Some(ID_CAPITAL) => {
@@ -224,7 +224,7 @@ impl<'b> Vocabulary<'b> {
     ///
     /// The twin is the next id up, never an offset by the book's size - see the note in
     /// `new`. This is what lets a book grow without renumbering anything already written.
-    fn spaced(&self, id: u16) -> u16 {
+    fn spaced(&self, id: u32) -> u32 {
         id + 1
     }
 
@@ -232,7 +232,7 @@ impl<'b> Vocabulary<'b> {
     ///
     /// `pending` carries a leading space that has not been spent yet: if the word
     /// encodes, the space rides on its first symbol and costs nothing.
-    fn push_word(&self, out: &mut Vec<u16>, word: &str, pending: &mut bool) {
+    fn push_word(&self, out: &mut Vec<u32>, word: &str, pending: &mut bool) {
         if word.is_empty() {
             return;
         }
@@ -244,7 +244,7 @@ impl<'b> Vocabulary<'b> {
         // shape like `AarSvc_6e9d9` can be encoded: no mark describes it, so the book
         // must hold it exactly as written or it goes out byte by byte.
         // Take the space if there is one; the first id pushed below carries it.
-        let take = |out: &mut Vec<u16>, id: u16, pending: &mut bool, first: &mut bool| {
+        let take = |out: &mut Vec<u32>, id: u32, pending: &mut bool, first: &mut bool| {
             let id = if *first && *pending {
                 *pending = false;
                 self.spaced(id)
@@ -292,7 +292,7 @@ impl<'b> Vocabulary<'b> {
     /// No framing: byte ids occupy their own range, so a decoder recognises them by
     /// value. The run marker this used to write cost two ids per literal word to say
     /// something the id already said.
-    fn push_literal(&self, out: &mut Vec<u16>, text: &str, pending: &mut bool) {
+    fn push_literal(&self, out: &mut Vec<u32>, text: &str, pending: &mut bool) {
         if text.is_empty() {
             return;
         }
@@ -341,8 +341,8 @@ impl<'b> Vocabulary<'b> {
                     }
                     let ch = rest.chars().next().expect("rest is not empty");
                     let cut = ch.len_utf8();
-                    for &b in rest[..cut].as_bytes() {
-                        out.push(BYTE_BASE + b as u16);
+                    for &b in &rest.as_bytes()[..cut] {
+                        out.push(BYTE_BASE + b as u32);
                     }
                     rest = &rest[cut..];
                 }
@@ -355,11 +355,11 @@ impl<'b> Vocabulary<'b> {
     /// Ids back to text. Exact for anything `encode` produced.
     // The final flush! clears `case` on the way out and nothing reads it afterwards.
     #[allow(unused_assignments)]
-    pub fn decode(&self, ids: &[u16]) -> String {
+    pub fn decode(&self, ids: &[u32]) -> String {
         let mut out = String::new();
         let mut word = String::new();
         let mut bytes: Vec<u8> = Vec::new();
-        let mut case: Option<u16> = None;
+        let mut case: Option<u32> = None;
 
         // Symbols accumulate into a word so the codec can read the grammar off it;
         // byte ids accumulate separately so a multi-byte character is not split.
@@ -438,13 +438,13 @@ impl<'b> Vocabulary<'b> {
     }
 
     /// Fixed-width bit packing. This is the step that stops CBMS being text.
-    pub fn pack(&self, ids: &[u16]) -> Vec<u8> {
+    pub fn pack(&self, ids: &[u32]) -> Vec<u8> {
         let width = self.bits_per_id();
         let mut out = Vec::with_capacity((ids.len() * width as usize).div_ceil(8));
-        let mut acc: u32 = 0;
+        let mut acc: u64 = 0;
         let mut bits = 0u32;
         for &id in ids {
-            acc |= (id as u32) << bits;
+            acc |= u64::from(id) << bits;
             bits += width;
             while bits >= 8 {
                 out.push((acc & 0xFF) as u8);
@@ -458,21 +458,21 @@ impl<'b> Vocabulary<'b> {
         out
     }
 
-    pub fn unpack(&self, bytes: &[u8], count: usize) -> Vec<u16> {
+    pub fn unpack(&self, bytes: &[u8], count: usize) -> Vec<u32> {
         let width = self.bits_per_id();
-        let mask = ((1u32 << width) - 1) as u16;
+        let mask = (1u64 << width) - 1;
         let mut out = Vec::with_capacity(count);
-        let mut acc: u32 = 0;
+        let mut acc: u64 = 0;
         let mut bits = 0u32;
         let mut idx = 0;
         while out.len() < count {
             while bits < width {
                 let byte = bytes.get(idx).copied().unwrap_or(0);
-                acc |= (byte as u32) << bits;
+                acc |= u64::from(byte) << bits;
                 bits += 8;
                 idx += 1;
             }
-            out.push((acc as u16) & mask);
+            out.push((acc & mask) as u32);
             acc >>= width;
             bits -= width;
         }
@@ -486,7 +486,7 @@ impl<'b> Vocabulary<'b> {
 /// `C:\Users\User\CLAUDE.md` or `iPhone`. Those must take the byte fallback: the codec
 /// lowercases before lookup, and with nothing recording where the capitals were, the
 /// text would come back changed. Losing a byte saving is cheap; losing the text is not.
-pub(crate) fn split_case(word: &str) -> Option<(Option<u16>, String)> {
+pub(crate) fn split_case(word: &str) -> Option<(Option<u32>, String)> {
     if !word.chars().any(|c| c.is_uppercase()) {
         return Some((None, word.to_string()));
     }
@@ -538,6 +538,43 @@ mod tests {
 
     fn book() -> Book {
         Book::parse(BOOK).unwrap()
+    }
+
+    #[test]
+    fn canonical_slots_above_u16_round_trip_through_both_containers() {
+        use std::fmt::Write;
+
+        // Synthetic entries only; no corpus, minting, or external book is needed.
+        let mut source = BOOK.to_string();
+        source.push_str("\nCODEBOOK_CBMS_ES\nignored note\nhomo=Ա\n");
+        let initial_slots = book().entries().len();
+        for slot in initial_slots..=32632 {
+            writeln!(source, "word{slot}=U+{:X}", 0x20000 + slot).unwrap();
+        }
+        let mut b = Book::parse(&source).unwrap();
+        let text = "word32632 word32632";
+        let lengths = {
+            let v = Vocabulary::new(&b).unwrap();
+            let ids = v.encode(text);
+            assert_eq!(ids, [65536, 65537]);
+            assert_eq!(v.bits_per_id(), 17);
+            assert_eq!(v.decode(&ids), text);
+            let packed = v.pack(&ids);
+            assert_eq!(packed.len(), 5);
+            assert_eq!(v.unpack(&packed, ids.len()), ids);
+            let bytes = crate::container::write(&b, &v, text).unwrap();
+            assert!(!crate::container::peek(&bytes).unwrap().huffman());
+            assert_eq!(crate::container::read(&b, &v, &bytes).unwrap(), text);
+            let frequencies = HashMap::from([(65536, 1), (65537, 1)]);
+            crate::huffman::Code::from_frequencies(&frequencies, v.len())
+                .lengths()
+                .to_vec()
+        };
+        b.set_code_lengths(lengths);
+        let v = Vocabulary::new(&b).unwrap();
+        let bytes = crate::container::write(&b, &v, text).unwrap();
+        assert!(crate::container::peek(&bytes).unwrap().huffman());
+        assert_eq!(crate::container::read(&b, &v, &bytes).unwrap(), text);
     }
 
     #[test]

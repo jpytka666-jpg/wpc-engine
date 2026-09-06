@@ -21,6 +21,14 @@
 use cbms_writing::{Book, Codec, Section};
 use std::process::ExitCode;
 
+fn ids_to_le_bytes(ids: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(ids));
+    for id in ids {
+        bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    bytes
+}
+
 fn usage() -> ExitCode {
     eprintln!(
         "cbms <book> <command> [text]\n\
@@ -251,7 +259,7 @@ fn main() -> ExitCode {
             // Fixed-width packing spends the same bits on the 1367th `status` as on a
             // one-off hash. Order-0 entropy is what a frequency-weighted code would
             // spend instead, and the gap between the two is the money left on the table.
-            let mut freq: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+            let mut freq: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
             for &id in &ids {
                 *freq.entry(id).or_default() += 1;
             }
@@ -289,7 +297,7 @@ fn main() -> ExitCode {
 
             // How much of the saving is the writing system, and how much is just that
             // any repetitive text compresses? Without this the number means little.
-            let literal_ids = ids.iter().filter(|&&i| i >= 8 && i < 8 + 256).count();
+            let literal_ids = ids.iter().filter(|&&i| (8..8 + 256).contains(&i)).count();
             println!();
             println!("ids that are literal bytes : {literal_ids} ({:.1}%)",
                      100.0 * literal_ids as f64 / ids.len().max(1) as f64);
@@ -378,7 +386,7 @@ fn main() -> ExitCode {
             let min_count: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(2);
 
             let before = book.len();
-            let report = cbms_writing::extend(&book, &vec![corpus.clone()], max_new, min_count);
+            let report = cbms_writing::extend(&book, std::slice::from_ref(&corpus), max_new, min_count);
             let grown = match cbms_writing::Book::parse(&report.book_text) {
                 Ok(b) => b,
                 Err(e) => {
@@ -491,15 +499,15 @@ fn main() -> ExitCode {
             }
         }
         "ids" => {
-            // <book> ids <text-file> <out.u16> - the interface to anything that trains.
+            // <book> ids <text-file> <out.u32> - the interface to anything that trains.
             //
-            // Deliberately the dumbest possible format: little-endian u16, no header, no
+            // Deliberately the dumbest possible format: little-endian u32, no header, no
             // framing. A trainer should not have to understand the writing system to
             // consume it, and a format with opinions is a format two programs can
             // disagree about. The vocabulary size is printed, because that is the one
             // number the consumer cannot recover from the file itself.
             if args.len() < 4 {
-                eprintln!("cbms <book> ids <text-file> <out.u16>");
+                eprintln!("cbms <book> ids <text-file> <out.u32>");
                 return ExitCode::from(2);
             }
             let Ok(text) = std::fs::read_to_string(&args[2]) else {
@@ -519,16 +527,13 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
 
-            let mut bytes = Vec::with_capacity(ids.len() * 2);
-            for id in &ids {
-                bytes.extend_from_slice(&id.to_le_bytes());
-            }
+            let bytes = ids_to_le_bytes(&ids);
             if let Err(e) = std::fs::write(&args[3], &bytes) {
                 eprintln!("cannot write {}: {e}", args[3]);
                 return ExitCode::FAILURE;
             }
 
-            let mut hi = 0u16;
+            let mut hi = 0u32;
             let mut distinct = std::collections::HashSet::new();
             for &id in &ids {
                 hi = hi.max(id);
@@ -559,7 +564,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let ids = vocab.encode(&corpus);
-            let mut freq: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+            let mut freq: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
             for &id in &ids {
                 *freq.entry(id).or_default() += 1;
             }
@@ -657,5 +662,29 @@ fn main() -> ExitCode {
             }
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ids_to_le_bytes;
+
+    #[test]
+    fn raw_ids_are_four_byte_little_endian_without_truncation() {
+        let ids = [272u32, 274, 65536, 94280, 110352, u32::MAX];
+        let bytes = ids_to_le_bytes(&ids);
+        assert_eq!(bytes.len(), ids.len() * 4);
+        assert_eq!(
+            bytes,
+            [
+                0x10, 0x01, 0, 0, 0x12, 0x01, 0, 0, 0, 0, 1, 0, 0x48, 0x70, 1, 0, 0x10, 0xaf, 1, 0,
+                0xff, 0xff, 0xff, 0xff,
+            ]
+        );
+        let decoded: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded, ids);
     }
 }

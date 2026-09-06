@@ -178,7 +178,7 @@ mod tests {
         let lengths = {
             let vocab = Vocabulary::new(&book).unwrap();
             let ids = vocab.encode(SAMPLE);
-            let mut freq: HashMap<u16, usize> = HashMap::new();
+            let mut freq: HashMap<u32, usize> = HashMap::new();
             for &id in &ids {
                 *freq.entry(id).or_default() += 1;
             }
@@ -203,7 +203,7 @@ mod tests {
         let book = Book::parse(BOOK).unwrap();
         let vocab = Vocabulary::new(&book).unwrap();
         let bytes = write(&book, &vocab, SAMPLE).unwrap();
-        assert_eq!(peek(&bytes).unwrap().huffman(), false);
+        assert!(!peek(&bytes).unwrap().huffman());
         assert_eq!(read(&book, &vocab, &bytes).unwrap(), SAMPLE);
     }
 

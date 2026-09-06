@@ -36,7 +36,7 @@ pub struct Code {
     lengths: Vec<u8>,
     codes: Vec<u32>,
     /// Ids sorted by (length, id) - the canonical order decoding walks.
-    order: Vec<u16>,
+    order: Vec<u32>,
     /// first_code[len] and first_index[len], indexed by code length.
     first_code: Vec<u32>,
     first_index: Vec<usize>,
@@ -46,9 +46,9 @@ pub struct Code {
 impl Code {
     /// Build from id frequencies. Ids never seen get no code, which is correct: a code
     /// for something that does not occur is bits spent on nothing.
-    pub fn from_frequencies(freq: &HashMap<u16, usize>, vocab_size: usize) -> Code {
+    pub fn from_frequencies(freq: &HashMap<u32, usize>, vocab_size: usize) -> Code {
         let mut lengths = vec![0u8; vocab_size];
-        let present: Vec<(u16, usize)> =
+        let present: Vec<(u32, usize)> =
             freq.iter().filter(|(_, &c)| c > 0).map(|(&s, &c)| (s, c)).collect();
 
         match present.len() {
@@ -70,8 +70,11 @@ impl Code {
         if max_len == 0 {
             return Code::default();
         }
-        let mut order: Vec<u16> = (0..lengths.len() as u16)
-            .filter(|&s| lengths[s as usize] > 0)
+        let mut order: Vec<u32> = lengths
+            .iter()
+            .enumerate()
+            .filter(|&(_, &len)| len > 0)
+            .map(|(id, _)| u32::try_from(id).expect("Huffman token ID exceeds u32"))
             .collect();
         // Sort by length then id. Both sides must agree on this exactly.
         order.sort_by_key(|&s| (lengths[s as usize], s));
@@ -112,7 +115,7 @@ impl Code {
     }
 
     /// Bits this code would spend on a stream, without building it.
-    pub fn bit_cost(&self, ids: &[u16]) -> u64 {
+    pub fn bit_cost(&self, ids: &[u32]) -> u64 {
         ids.iter()
             .map(|&id| *self.lengths.get(id as usize).unwrap_or(&0) as u64)
             .sum()
@@ -123,7 +126,7 @@ impl Code {
     /// A table built from one corpus has no code for an id that corpus never used, and
     /// encoding such a stream would drop those ids. The caller has to know BEFORE it
     /// writes a header claiming a count it cannot deliver.
-    pub fn covers(&self, ids: &[u16]) -> bool {
+    pub fn covers(&self, ids: &[u32]) -> bool {
         ids.iter()
             .all(|&id| self.lengths.get(id as usize).copied().unwrap_or(0) > 0)
     }
@@ -131,7 +134,7 @@ impl Code {
     /// Encode, or refuse. Silently skipping an id without a code is what made a stored
     /// chunk come back with its last word missing: the header promised more ids than
     /// the payload held, and decoding ran off the end.
-    pub fn try_encode(&self, ids: &[u16]) -> Option<Vec<u8>> {
+    pub fn try_encode(&self, ids: &[u32]) -> Option<Vec<u8>> {
         if self.covers(ids) {
             Some(self.encode(ids))
         } else {
@@ -140,7 +143,7 @@ impl Code {
     }
 
     /// Ids with no code are skipped. Call `covers` first, or use `try_encode`.
-    pub fn encode(&self, ids: &[u16]) -> Vec<u8> {
+    pub fn encode(&self, ids: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut acc: u64 = 0;
         let mut bits = 0u32;
@@ -164,7 +167,7 @@ impl Code {
     }
 
     /// `count` is carried alongside the stream; a bitstream has no natural end.
-    pub fn decode(&self, bytes: &[u8], count: usize) -> Vec<u16> {
+    pub fn decode(&self, bytes: &[u8], count: usize) -> Vec<u32> {
         let mut out = Vec::with_capacity(count);
         if self.max_len == 0 {
             return out;
@@ -183,7 +186,7 @@ impl Code {
             if len > self.max_len {
                 break; // corrupt stream rather than a silent wrong answer
             }
-            let count_at_len = if len + 1 <= self.max_len {
+            let count_at_len = if len < self.max_len {
                 self.first_index[len + 1] - self.first_index[len]
             } else {
                 self.order.len() - self.first_index[len]
@@ -202,11 +205,11 @@ impl Code {
 }
 
 /// Standard Huffman by repeated smallest-pair merge, returning code lengths only.
-fn huffman_lengths(present: &[(u16, usize)]) -> Vec<(u16, u8)> {
+fn huffman_lengths(present: &[(u32, usize)]) -> Vec<(u32, u8)> {
     #[derive(Clone)]
     struct Node {
         weight: usize,
-        symbol: Option<u16>,
+        symbol: Option<u32>,
         left: usize,
         right: usize,
     }
@@ -255,8 +258,21 @@ fn huffman_lengths(present: &[(u16, usize)]) -> Vec<(u16, u8)> {
 mod tests {
     use super::*;
 
-    fn freq(pairs: &[(u16, usize)]) -> HashMap<u16, usize> {
+    fn freq(pairs: &[(u32, usize)]) -> HashMap<u32, usize> {
         pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn high_ids_survive_a_rebuilt_huffman_table() {
+        let ids = [272u32, 274, 65536, 94280, 110352, 94280];
+        let mut frequencies = HashMap::new();
+        for id in ids {
+            *frequencies.entry(id).or_default() += 1;
+        }
+        let sender = Code::from_frequencies(&frequencies, 110354);
+        let receiver = Code::from_lengths(sender.lengths().to_vec());
+        let bytes = sender.try_encode(&ids).unwrap();
+        assert_eq!(receiver.decode(&bytes, ids.len()), ids);
     }
 
     #[test]
@@ -274,7 +290,7 @@ mod tests {
 
     #[test]
     fn round_trips_a_stream() {
-        let ids: Vec<u16> = "aaaaabbbcd".bytes().map(|b| b as u16).collect();
+        let ids: Vec<u32> = "aaaaabbbcd".bytes().map(|b| b as u32).collect();
         let mut f = HashMap::new();
         for &id in &ids {
             *f.entry(id).or_default() += 1;
@@ -290,7 +306,7 @@ mod tests {
         let f = freq(&[(1, 50), (2, 20), (3, 20), (4, 5), (5, 5)]);
         let sender = Code::from_frequencies(&f, 16);
         let receiver = Code::from_lengths(sender.lengths().to_vec());
-        let ids = vec![1u16, 2, 1, 3, 4, 5, 1, 1];
+        let ids = vec![1u32, 2, 1, 3, 4, 5, 1, 1];
         let bytes = sender.encode(&ids);
         assert_eq!(receiver.decode(&bytes, ids.len()), ids);
     }
@@ -308,15 +324,15 @@ mod tests {
         let f = freq(&[(7, 100)]);
         let code = Code::from_frequencies(&f, 16);
         assert_eq!(code.lengths()[7], 1);
-        let ids = vec![7u16; 5];
+        let ids = vec![7u32; 5];
         assert_eq!(code.decode(&code.encode(&ids), 5), ids);
     }
 
     #[test]
     fn it_spends_fewer_bits_than_fixed_width_on_a_skewed_stream() {
-        let mut ids = vec![1u16; 900];
-        ids.extend(vec![2u16; 90]);
-        ids.extend(vec![3u16; 10]);
+        let mut ids = vec![1u32; 900];
+        ids.extend(vec![2u32; 90]);
+        ids.extend(vec![3u32; 10]);
         let mut f = HashMap::new();
         for &id in &ids {
             *f.entry(id).or_default() += 1;
