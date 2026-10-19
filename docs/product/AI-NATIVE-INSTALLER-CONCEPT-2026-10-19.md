@@ -62,7 +62,7 @@ Blockers: unknown first supported platform and executor, commercial licensing, p
 
 ## Project registers and handoffs
 
-- Asana parent: https://app.asana.com/1/1212466479846504/project/1219479440101227/task/1219667024176113 (9 uncompleted subtasks).
+- Asana parent: https://app.asana.com/1/1212466479846504/project/1219479440101227/task/1219667024176113 (10 open subtasks; Maximus demo due 2026-10-20 and future marketing tracked separately).
 - GitHub tracking issue: https://github.com/jpytka666-jpg/wpc-engine/issues/33.
 - This branch is documentation-only and must remain a draft until reviewed. No merge, code execution, package publication or advertising is implied.
 
