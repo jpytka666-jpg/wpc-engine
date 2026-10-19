@@ -1,0 +1,6 @@
+schema: 1
+id: aions-installer-lab
+version: 0.1.0
+payload: modules/welcome.md
+payload_sha256: 7c47056b0bd3f2cc0e2b03c91e1900b8f944bb6af6992042b5e2a87420e3a4bf
+mode: isolated-demo
