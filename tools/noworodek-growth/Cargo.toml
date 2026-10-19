@@ -1,0 +1,10 @@
+[package]
+name = "noworodek-gpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cudarc = { version = "0.19", default-features = false, features = ["std", "cublas", "nvrtc", "driver", "dynamic-loading", "cuda-12080"] }
+
+# Isolated lab crate; do not enroll automatically in root WPC workspace.
+[workspace]
