@@ -1,0 +1,19 @@
+[package]
+name = "codeone-wpc-api"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental loopback OpenAI-chat adapter for the native Rust WPC Qwen3-MoE runtime; CPU baseline, NOT CUDA-ready"
+
+[dependencies]
+anyhow = "1"
+axum = "0.7"
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokenizers = "0.20"
+wpc-runtime = { path = "../wpc-runtime" }
+
+[[bin]]
+name = "codeone-wpc-api"
+path = "src/main.rs"
