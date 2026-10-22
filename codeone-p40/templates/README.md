@@ -1,0 +1,4 @@
+# Example ONLY: do not install
+The JSON file in this directory is NOT usable with currently shipped codeone-wpc-api. The current server loads qwen3_moe on CPU, while this future profile targets qwen3_5_moe_text on P40. Current server does NOT support 8192 output tokens, 65536 context, true SSE incremental generation, or Qwen3.6 tools. If you apply the template now, API/model mismatch must fail.
+
+Merge the provider object into the EXISTING OpenCode config instead of overwriting existing provider/Ollama, after implementation/testing and owner GO. Verify opencode version, actual baseURL as seen FROM the OpenCode runtime (for localhost remote PTY tunnels), actual model id from /v1/models, and any auth rule. Register separate selectable model, never change default during current P40 job. The 65536 window includes up to 8192 generated tokens; 57344 potential input leaves >50000. GitHub CI validates JSON syntax only.

@@ -14,3 +14,8 @@ pub mod wpc_weights_v3;
 pub mod wpc_weights_v4;
 
 pub mod forward_batch;
+
+// Historical CUDA Driver API bridge, recovered source, no model forward offload yet.
+// Device discovery is explicit; never run GPU operations on module load.
+#[cfg(any(target_os = "linux", windows))]
+pub mod gpu;

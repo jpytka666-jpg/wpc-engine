@@ -1,0 +1,47 @@
+name: CODEONE P40 (GitHub-only static build; no model/GPU)
+on:
+  pull_request:
+    paths:
+      - "codeone-p40/**"
+      - "codeone-wpc-api/**"
+      - "wpc-compiler/**"
+      - "wpc-runtime/src/gpu.rs"
+      - "wpc-runtime/src/bin/codeone-gpu-selftest.rs"
+      - "wpc-runtime/src/lib.rs"
+      - "Cargo.toml"
+      - ".github/workflows/codeone-p40-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  p40-preflight-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: cargo build (CPU only; GPU dynamic driver bridge compiles without hardware)
+        run: cargo build -p codeone-wpc-api -p wpc-runtime --release
+      - name: negative and geometry tests
+        run: cargo test -p codeone-wpc-api --all-targets
+      - name: compressor 3D expert regression tests
+        run: cargo test -p wpc-full-compiler --all-targets
+      - name: P40 65536-token memory sizing (plan, NOT runtime)
+        run: cargo run -q -p codeone-wpc-api --bin codeone-p40-capacity -- --config codeone-p40/fixtures/qwen36-35b-source-geometry.json --context-tokens 65536 --scheme v4
+  sm61-ptx-static:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.4.1-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile historical WPC4 fused GEMV to Pascal sm_61 PTX; NOT executed
+        run: |
+          nvcc -ptx -arch=sm_61 -O3 codeone-p40/kernels/wpc4_gemv_sm50.cu -o codeone-wpc4-gemv-sm61.ptx
+          grep -q '.target sm_61' codeone-wpc4-gemv-sm61.ptx
+          sha256sum codeone-wpc4-gemv-sm61.ptx > codeone-wpc4-gemv-sm61.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeone-wpc4-gemv-sm61-UNTESTED
+          path: |
+            codeone-wpc4-gemv-sm61.ptx
+            codeone-wpc4-gemv-sm61.sha256
