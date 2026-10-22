@@ -73,6 +73,25 @@ struct TensorRef {
     num_blocks: usize,
 }
 
+// Qwen3.5/3.6 MoE uses stacked *3D* expert matrices, unlike Qwen3-MoE's
+// individually named 2D experts. Every slice [expert, out, in] is an ordinary
+// contiguous 2D GEMV matrix. Encode all of it as one WPC payload while
+// preserving the ORIGINAL 3D dimensions in model_v4.meta for the GPU loader.
+// Other rank-3/4 tensors (e.g. vision/convolution) remain deliberately excluded.
+fn affine_input_width(name: &str, shape: &[usize]) -> Option<usize> {
+    match shape {
+        [_, in_features] => Some(*in_features),
+        [experts, _, in_features]
+            if *experts > 0
+                && name.contains(".mlp.experts.")
+                && (name.ends_with(".gate_up_proj") || name.ends_with(".down_proj")) =>
+        {
+            Some(*in_features)
+        }
+        _ => None,
+    }
+}
+
 /// Sort key: (layer, section, expert, projection).
 ///
 /// Tensors arrive in shard/manifest order, which is effectively random: the
@@ -244,18 +263,18 @@ fn main() {
 
         for (name, view) in st.tensors() {
             let shape = view.shape().to_vec();
-            if shape.len() != 2 {
-                // Two very different things land here. 1D tensors are the norms
-                // and biases, which are meant to stay dense and which the
-                // runtime always reads from the checkpoint. 3D/4D tensors are
-                // convolution kernels — and that is why a multimodal
-                // checkpoint's vision tower never reaches the .wpc file at all:
-                // it starts with a 4D patch convolution, so the whole tower gets
-                // dropped here without ever being mentioned.
-                skipped_not_2d += 1;
-                skipped_bytes += view.data().len();
-                continue;
-            }
+            let block_width = match affine_input_width(&name, &shape) {
+                Some(width) => width,
+                None => {
+                    // Norms and biases (1D), 4D vision convolution and
+                    // unrelated rank-3 tensors are NOT blindly flattened.
+                    // Qwen3.5 stacked MoE matrices ARE safe to flatten:
+                    // their last dimension is the logical input width.
+                    skipped_not_2d += 1;
+                    skipped_bytes += view.data().len();
+                    continue;
+                }
+            };
 
             let n: usize = shape.iter().product();
             if n < 4096 {
@@ -294,10 +313,10 @@ fn main() {
             // For the affine schemes, in_features (shape[1]) must be a whole
             // number of blocks. v2, v3 and v4 all use 128-wide blocks.
             if (args.scheme == "v2" || args.scheme == "v3" || args.scheme == "v4")
-                && shape[1] % BLOCK_SIZE_V2 != 0
+                && block_width % BLOCK_SIZE_V2 != 0
             {
                 eprintln!("Skipping tensor '{}' with shape {:?}: in_features {} not divisible by BLOCK_SIZE_V2 ({})",
-                    name, shape, shape[1], BLOCK_SIZE_V2);
+                    name, shape, block_width, BLOCK_SIZE_V2);
                 skipped_bad_width += 1;
                 skipped_bytes += view.data().len();
                 continue;
@@ -313,7 +332,7 @@ fn main() {
     }
 
     let total_blocks: usize = all_tensors.iter().map(|t| t.num_blocks).sum();
-    println!("Extracted {} valid 2D matrix tensors. Total blocks: {}", all_tensors.len(), total_blocks);
+    println!("Extracted {} valid 2D and stacked 3D expert matrix tensors. Total blocks: {}", all_tensors.len(), total_blocks);
 
     // Say out loud what was left behind. Silently dropping tensors is how a
     // multimodal model's whole vision tower went missing from a .wpc without
@@ -332,7 +351,7 @@ fn main() {
         if skipped_not_2d > 0 {
             println!(
                 "  {skipped_not_2d:6}  not a 2D matrix — 1D norms/biases (expected), \
-                 or 3D/4D conv kernels (a vision tower would land here)"
+                 or unsupported 3D/4D kernels (vision tower remains separate)"
             );
         }
         if skipped_too_small > 0 {
@@ -693,4 +712,50 @@ fn compress_v4(_args: &Args, all_tensors: &[TensorRef], out_dir: &Path) {
         saved as f64 / 1024.0 / 1024.0 / 1024.0,
         if v3_equivalent_bytes > 0 { saved as f64 * 100.0 / v3_equivalent_bytes as f64 } else { 0.0 },
     );
+}
+
+#[cfg(test)]
+mod codeone_p40_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_official_qwen36_stacked_expert_shapes() {
+        assert_eq!(
+            affine_input_width("model.language_model.layers.0.mlp.experts.gate_up_proj", &[256, 1024, 2048]),
+            Some(2048)
+        );
+        assert_eq!(
+            affine_input_width("model.language_model.layers.0.mlp.experts.down_proj", &[256, 2048, 512]),
+            Some(512)
+        );
+        assert_eq!(
+            affine_input_width("model.language_model.layers.0.self_attn.q_proj.weight", &[4096, 2048]),
+            Some(2048)
+        );
+    }
+
+    #[test]
+    fn refuses_unrelated_rank3_and_vision_conv() {
+        assert_eq!(
+            affine_input_width("model.vision.patch_embed.proj.weight", &[1152, 3, 16, 16]),
+            None
+        );
+        assert_eq!(
+            affine_input_width("model.language_model.layers.0.linear_attn.conv1d.weight", &[2048, 1, 4]),
+            None
+        );
+        assert_eq!(
+            affine_input_width("model.language_model.layers.0.mlp.experts.unsupported_tensor", &[256, 512, 2048]),
+            None
+        );
+        assert_eq!(affine_input_width("norm.weight", &[2048]), None);
+    }
+
+    #[test]
+    fn rejects_expert_count_zero() {
+        assert_eq!(
+            affine_input_width("model.language_model.layers.0.mlp.experts.down_proj", &[0, 2048, 512]),
+            None
+        );
+    }
 }
