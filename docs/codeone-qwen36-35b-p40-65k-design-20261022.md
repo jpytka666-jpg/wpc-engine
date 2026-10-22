@@ -1,6 +1,11 @@
 # Codeone WPC / Tesla P40 / Qwen3.6-35B-A3B — design and deployment gates
 2026-10-22 / GPT-6 / status: PROTOTYPE SOURCE ONLY. No GPU operations and no Darkstar changes.
 
+
+> **Operational checkpoint — Asana 22 Oct 2026 (later than original preflight):** the original "No Darkstar changes" line above describes this *GitHub author's initial scope*, not the current deployment. Following subsequent explicit owner authorization, Codex reported verified Darkstar SSD downloads of **40 files / 148,453,850,869 bytes**, live **CPU Qwen3.5-122B-A10B Q4_K_M** via existing Ollama/OpenCode in place of GPT-OSS, and a successful **CPU→existing P40 Qwen3-Coder→CPU relay test (8/8 bridge tests)**. The new **Qwen3.6-35B-A3B P40 WPC model remains only downloaded**, with **no native Qwen3.6 Rust full forward, no complete WPC4 checkpoint, and no 65K P40 inference proof**. The updated source-bound timeline, model SHA pins and safety gates live in [Darkstar checkpoint](codeone-darkstar-checkpoint-20261022.md). Do not infer current service state solely from this historical design; check the latest Asana reports.
+
+
+
 ## Model selection
 PRIMARY: Qwen/Qwen3.6-35B-A3B. Model metadata https://huggingface.co/Qwen/Qwen3.6-35B-A3B . Exact architecture https://huggingface.co/Qwen/Qwen3.6-35B-A3B/raw/main/config.json . Model is Apache-2.0, 35,951,824,188 parameters, 3B active, type qwen3_5_moe, text_config qwen3_5_moe_text. 40 layers, 30 Gated DeltaNet linear_attention + 10 full_attention, 256 MoE experts (8 routed), 2 KV heads each dimension 256, native context max 262144, separate vision tower. Need text-only WPC compiler and first ensure full tensor mapping, then optionally vision.
 
