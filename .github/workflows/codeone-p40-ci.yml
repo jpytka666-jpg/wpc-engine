@@ -4,6 +4,7 @@ on:
     paths:
       - "codeone-p40/**"
       - "codeone-wpc-api/**"
+      - "wpc-compiler/**"
       - "wpc-runtime/src/gpu.rs"
       - "wpc-runtime/src/bin/codeone-gpu-selftest.rs"
       - "wpc-runtime/src/lib.rs"
@@ -24,6 +25,8 @@ jobs:
         run: cargo build -p codeone-wpc-api -p wpc-runtime --release
       - name: negative and geometry tests
         run: cargo test -p codeone-wpc-api --all-targets
+      - name: compressor 3D expert regression tests
+        run: cargo test -p wpc-full-compiler --all-targets
       - name: P40 65536-token memory sizing (plan, NOT runtime)
         run: cargo run -q -p codeone-wpc-api --bin codeone-p40-capacity -- --config codeone-p40/fixtures/qwen36-35b-source-geometry.json --context-tokens 65536 --scheme v4
   sm61-ptx-static:
